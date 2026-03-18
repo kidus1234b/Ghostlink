@@ -374,6 +374,10 @@
         const timerRef = useRef(null);
         const fileInputRef = useRef(null);
 
+        // Responsive
+        const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+        const [isTablet, setIsTablet] = useState(window.innerWidth >= 768 && window.innerWidth < 1024);
+
         // Demo peers
         const [peers] = useState([
           { id: 1, name: "Alex Chen", status: "online", pubKey: "04a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5", lastSeen: "now", avatar: "AC", color: "#1a3a2a", unread: 2 },
@@ -436,6 +440,16 @@
             return () => clearInterval(timerRef.current);
           } else { setCallTimer(0); }
         }, [callActive]);
+
+        useEffect(() => {
+          const onResize = () => {
+            const w = window.innerWidth;
+            setIsMobile(w < 768);
+            setIsTablet(w >= 768 && w < 1024);
+          };
+          window.addEventListener("resize", onResize);
+          return () => window.removeEventListener("resize", onResize);
+        }, []);
 
         // ==================== ACTIONS ====================
         const initSetup = () => {
@@ -646,6 +660,13 @@
           @keyframes scanline { 0% { top:-100%; } 100% { top:200%; } }
           * { box-sizing: border-box; }
           input:focus, textarea:focus { outline: none; }
+          @media (max-width: 767px) {
+            ::-webkit-scrollbar { width: 2px; }
+            button { -webkit-tap-highlight-color: transparent; }
+          }
+          @media (hover: none) and (pointer: coarse) {
+            button:active { opacity: 0.7; }
+          }
         `;
 
         // Tag helper
@@ -674,7 +695,7 @@
             <style>{globalCSS}</style>
             {[15, 30, 45, 60, 75, 85].map((t, i) => <div key={i} style={{ position: "absolute", width: "100%", height: 1, top: `${t}%`, background: `linear-gradient(90deg, transparent, ${th.accent}15, transparent)` }} />)}
             <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20 }}><I t="ghost" s={80} c={th.accent} /></div>
-            <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>GHOSTLINK</div>
+            <div style={{ fontSize: isMobile ? 28 : 44, fontWeight: 800, letterSpacing: isMobile ? 6 : 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>GHOSTLINK</div>
             <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase" }}>Zero Trust · Zero Trace · Zero Servers</div>
             <div style={{ marginTop: 40, display: "flex", gap: 5 }}>
               {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 0.25}s` }} />)}
@@ -817,7 +838,7 @@
             <style>{globalCSS}</style>
 
             {/* ══════ SIDEBAR ══════ */}
-            <div style={{ width: 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
+            <div style={{ width: isTablet ? 52 : 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
               <div style={{ color: th.accent, marginBottom: 16, cursor: "pointer" }}><I t="ghost" s={28} c={th.accent} /></div>
               {[
                 { id: "chat", icon: "chat", label: "Chats" },
@@ -847,14 +868,55 @@
             </div>
 
             {/* ══════ PEER LIST / FILES LIST ══════ */}
-            <div style={{ width: 270, background: th.bg3, borderRight: "1px solid rgba(255,255,255,0.04)", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
-              <div style={{ padding: "16px 14px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5 }}>{activeTab === "files" ? "FILES" : activeTab === "calls" ? "CALLS" : "PEERS"}</div>
-                  <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{identity ? `${identity.fingerprint.slice(0, 8)}...` : ""}</div>
+            <div style={{ width: isMobile ? "100%" : isTablet ? 220 : 270, background: th.bg3, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile && activeConvo ? "none" : "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+              {/* Mobile top bar with ghost icon + identity */}
+              {isMobile && (
+                <div style={{ padding: "12px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <I t="ghost" s={22} c={th.accent} />
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: 2, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>GHOSTLINK</div>
+                      <div style={{ fontSize: 8, color: "#4a5568" }}>{identity ? `${identity.fingerprint.slice(0, 12)}...` : ""}</div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={openRecovery} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><I t="recover" s={16} /></button>
+                    <button onClick={() => setShowSettings(true)} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><I t="settings" s={16} /></button>
+                  </div>
                 </div>
-                <Btn small ghost onClick={genInvite}><I t="plus" s={13} /> Invite</Btn>
-              </div>
+              )}
+              {/* Mobile tab row */}
+              {isMobile && (
+                <div style={{ display: "flex", borderBottom: "1px solid rgba(255,255,255,0.04)", background: th.bg2 }}>
+                  {[
+                    { id: "chat", icon: "chat", label: "Chats" },
+                    { id: "files", icon: "file", label: "Files" },
+                    { id: "calls", icon: "phone", label: "Calls" },
+                    { id: "chain", icon: "chain", label: "Chain" },
+                  ].map(tab => (
+                    <button key={tab.id} onClick={() => { setActiveTab(tab.id); if (tab.id === "chain") setShowChainExplorer(true); if (tab.id !== "chat" && tab.id !== "calls") setActiveConvo(null); }} style={{
+                      flex: 1, padding: "10px 0", border: "none", background: "transparent",
+                      color: activeTab === tab.id ? th.accent : "#4a5568", cursor: "pointer",
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                      borderBottom: activeTab === tab.id ? `2px solid ${th.accent}` : "2px solid transparent",
+                      transition: "all 0.2s ease",
+                    }}>
+                      <I t={tab.icon} s={16} c={activeTab === tab.id ? th.accent : undefined} />
+                      <span style={{ fontSize: 8, fontWeight: 600, letterSpacing: 0.5, fontFamily: "'JetBrains Mono', monospace" }}>{tab.label.toUpperCase()}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Desktop peer list header */}
+              {!isMobile && (
+                <div style={{ padding: "16px 14px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5 }}>{activeTab === "files" ? "FILES" : activeTab === "calls" ? "CALLS" : "PEERS"}</div>
+                    <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{identity ? `${identity.fingerprint.slice(0, 8)}...` : ""}</div>
+                  </div>
+                  <Btn small ghost onClick={genInvite}><I t="plus" s={13} /> Invite</Btn>
+                </div>
+              )}
 
               {activeTab === "calls" ? (
                 <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
@@ -928,13 +990,22 @@
                 </div>
               )}
 
-              <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 8, color: "#1a1a2a", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                <I t="key" s={9} c="#2a2a3a" /> {identity?.fingerprint || "..."}
-              </div>
+              {isMobile ? (
+                <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: 8, color: "#1a1a2a", display: "flex", alignItems: "center", gap: 4, flex: 1, overflow: "hidden" }}>
+                    <I t="key" s={9} c="#2a2a3a" /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{identity?.fingerprint || "..."}</span>
+                  </div>
+                  <Btn small accent onClick={genInvite} style={{ flexShrink: 0 }}><I t="plus" s={12} /> Invite</Btn>
+                </div>
+              ) : (
+                <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 8, color: "#1a1a2a", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                  <I t="key" s={9} c="#2a2a3a" /> {identity?.fingerprint || "..."}
+                </div>
+              )}
             </div>
 
             {/* ══════ MAIN CONTENT AREA ══════ */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", background: th.bg, minWidth: 0, position: "relative" }}
+            <div style={{ flex: 1, display: isMobile && !activeConvo ? "none" : "flex", flexDirection: "column", background: th.bg, minWidth: 0, position: "relative" }}
               onDragOver={e => { e.preventDefault(); setDragOver(true); }}
               onDragLeave={() => setDragOver(false)}
               onDrop={handleFileDrop}>
@@ -953,26 +1024,41 @@
               ) : (
                 <>
                   {/* ── CHAT HEADER ── */}
-                  <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, backdropFilter: "blur(12px)", flexShrink: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 11, cursor: "pointer" }} onClick={() => setShowPeerInfo(true)}>
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${activePeer?.color}, ${activePeer?.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{activePeer?.avatar}</div>
-                      <div>
-                        <div style={{ fontSize: 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
-                          {activePeer?.name}
-                          <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>
+                  <div style={{ padding: isMobile ? "10px 12px" : "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, backdropFilter: "blur(12px)", flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 11 }}>
+                      {/* Mobile back button */}
+                      {isMobile && (
+                        <button onClick={() => setActiveConvo(null)} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.04)", color: th.accent, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15,18 9,12 15,6"/></svg>
+                        </button>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 11, cursor: "pointer" }} onClick={() => setShowPeerInfo(true)}>
+                        <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${activePeer?.color}, ${activePeer?.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{activePeer?.avatar}</div>
+                        <div>
+                          <div style={{ fontSize: isMobile ? 13 : 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            {activePeer?.name}
+                            {!isMobile && <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>}
+                          </div>
+                          <div style={{ fontSize: 9.5, color: "#4a5568" }}>{isMobile ? (chainValid ? "✓ encrypted" : "⚠ broken") : `${convoMsgs.length} blocks · E2E encrypted · P2P`}</div>
                         </div>
-                        <div style={{ fontSize: 9.5, color: "#4a5568" }}>{convoMsgs.length} blocks · E2E encrypted · P2P</div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
-                      {[
-                        { icon: "search", action: () => setShowSearch(!showSearch) },
-                        { icon: "phone", action: () => startCall("voice") },
-                        { icon: "video", action: () => startCall("video") },
-                        { icon: "screen", action: () => startCall("screen") },
-                        { icon: "export", action: exportChat },
-                      ].map((b, i) => (
-                        <button key={i} onClick={b.action} style={{ width: 34, height: 34, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}
+                      {(isMobile
+                        ? [
+                            { icon: "search", action: () => setShowSearch(!showSearch) },
+                            { icon: "phone", action: () => startCall("voice") },
+                            { icon: "video", action: () => startCall("video") },
+                          ]
+                        : [
+                            { icon: "search", action: () => setShowSearch(!showSearch) },
+                            { icon: "phone", action: () => startCall("voice") },
+                            { icon: "video", action: () => startCall("video") },
+                            { icon: "screen", action: () => startCall("screen") },
+                            { icon: "export", action: exportChat },
+                          ]
+                      ).map((b, i) => (
+                        <button key={i} onClick={b.action} style={{ width: isMobile ? 38 : 34, height: isMobile ? 38 : 34, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}
                           onMouseEnter={e => { e.currentTarget.style.background = `${th.accent}15`; e.currentTarget.style.color = th.accent; }}
                           onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; e.currentTarget.style.color = "#5a5a6a"; }}>
                           <I t={b.icon} s={15} />
@@ -1032,7 +1118,7 @@
                         </div>
                       );
                       return (
-                        <div key={i} style={{ animation: "fadeIn 0.25s ease", animationFillMode: "both", animationDelay: `${Math.min(i, 10) * 0.02}s`, alignSelf: isMe ? "flex-end" : "flex-start", maxWidth: "72%", position: "relative" }}
+                        <div key={i} style={{ animation: "fadeIn 0.25s ease", animationFillMode: "both", animationDelay: `${Math.min(i, 10) * 0.02}s`, alignSelf: isMe ? "flex-end" : "flex-start", maxWidth: isMobile ? "88%" : "72%", position: "relative" }}
                           onContextMenu={e => { e.preventDefault(); setMsgContext(msg); }}>
 
                           {msg.meta?.replyTo && (
@@ -1107,9 +1193,9 @@
 
                   {/* ── INPUT BAR ── */}
                   {showEmojiPicker && (
-                    <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 64, left: 14, background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 10, display: "flex", flexWrap: "wrap", gap: 4, width: 260, zIndex: 50, animation: "fadeInScale 0.15s ease", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
+                    <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 64, left: isMobile ? 0 : 14, right: isMobile ? 0 : "auto", background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: isMobile ? "12px 12px 0 0" : 12, padding: 10, display: "flex", flexWrap: "wrap", gap: 4, width: isMobile ? "100%" : 260, zIndex: 50, animation: "fadeInScale 0.15s ease", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
                       {EMOJIS.map((em, i) => (
-                        <button key={i} onClick={() => { setMsgInput(p => p + em); setShowEmojiPicker(false); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: 3, borderRadius: 6, lineHeight: 1, transition: "background 0.1s" }}
+                        <button key={i} onClick={() => { setMsgInput(p => p + em); setShowEmojiPicker(false); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: isMobile ? 24 : 20, padding: isMobile ? 6 : 3, borderRadius: 6, lineHeight: 1, transition: "background 0.1s" }}
                           onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.08)"}
                           onMouseLeave={e => e.currentTarget.style.background = "none"}>
                           {em}
@@ -1117,31 +1203,33 @@
                       ))}
                     </div>
                   )}
-                  <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: 8, background: `${th.bg}ee`, flexShrink: 0 }}>
+                  <div style={{ padding: isMobile ? "8px 10px" : "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, background: `${th.bg}ee`, flexShrink: 0 }}>
                     <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) sendFile(e.target.files[0].name, e.target.files[0].size); }} />
-                    <button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <button onClick={() => fileInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <I t="file" s={15} />
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setShowEmojiPicker(p => !p); }} style={{ width: 36, height: 36, borderRadius: 8, border: "none", background: showEmojiPicker ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: showEmojiPicker ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <button onClick={e => { e.stopPropagation(); setShowEmojiPicker(p => !p); }} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: showEmojiPicker ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: showEmojiPicker ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <I t="emoji" s={15} />
                     </button>
 
-                    <button onClick={() => setSelfDestruct(selfDestruct === 0 ? 30 : selfDestruct === 30 ? 60 : selfDestruct === 60 ? 300 : 0)} title={selfDestruct ? `Self-destruct: ${selfDestruct}s` : "Self-destruct off"} style={{
-                      width: 36, height: 36, borderRadius: 8, border: "none",
-                      background: selfDestruct ? `${th.accent3}15` : "rgba(255,255,255,0.03)",
-                      color: selfDestruct ? th.accent3 : "#4a5568", cursor: "pointer",
-                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative",
-                    }}>
-                      <I t="timer" s={15} c={selfDestruct ? th.accent3 : undefined} />
-                      {selfDestruct > 0 && <span style={{ position: "absolute", top: 2, right: 2, fontSize: 7, color: th.accent3, fontWeight: 700 }}>{selfDestruct}s</span>}
-                    </button>
+                    {!isMobile && (
+                      <button onClick={() => setSelfDestruct(selfDestruct === 0 ? 30 : selfDestruct === 30 ? 60 : selfDestruct === 60 ? 300 : 0)} title={selfDestruct ? `Self-destruct: ${selfDestruct}s` : "Self-destruct off"} style={{
+                        width: 36, height: 36, borderRadius: 8, border: "none",
+                        background: selfDestruct ? `${th.accent3}15` : "rgba(255,255,255,0.03)",
+                        color: selfDestruct ? th.accent3 : "#4a5568", cursor: "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative",
+                      }}>
+                        <I t="timer" s={15} c={selfDestruct ? th.accent3 : undefined} />
+                        {selfDestruct > 0 && <span style={{ position: "absolute", top: 2, right: 2, fontSize: 7, color: th.accent3, fontWeight: 700 }}>{selfDestruct}s</span>}
+                      </button>
+                    )}
 
                     <input value={msgInput} onChange={e => setMsgInput(e.target.value)}
                       onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), sendMessage(msgInput))}
-                      placeholder={selfDestruct ? `Self-destruct in ${selfDestruct}s...` : "Type encrypted message..."}
-                      style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: "10px 14px", color: "#e0e0e8", fontSize: 12.5, fontFamily: "inherit" }} />
+                      placeholder={selfDestruct ? `Self-destruct ${selfDestruct}s...` : isMobile ? "Message..." : "Type encrypted message..."}
+                      style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: isMobile ? "10px 12px" : "10px 14px", color: "#e0e0e8", fontSize: isMobile ? 14 : 12.5, fontFamily: "inherit" }} />
                     <button onClick={() => sendMessage(msgInput)} style={{
-                      width: 40, height: 40, borderRadius: 10, border: "none",
+                      width: isMobile ? 44 : 40, height: isMobile ? 44 : 40, borderRadius: 10, border: "none",
                       background: msgInput.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
                       color: msgInput.trim() ? "#000" : "#3a3a4a", cursor: msgInput.trim() ? "pointer" : "default",
                       display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s ease",
@@ -1175,8 +1263,8 @@
 
             {/* ══════ BLOCK INFO MODAL ══════ */}
             {showBlockInfo && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowBlockInfo(null)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 540, width: "100%", animation: "fadeInScale 0.2s ease", maxHeight: "85vh", overflowY: "auto" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowBlockInfo(null)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 540, width: "100%", animation: "fadeInScale 0.2s ease", maxHeight: "85vh", overflowY: "auto" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="chain" s={20} c={th.accent} />
@@ -1217,8 +1305,8 @@
 
             {/* ══════ CHAIN EXPLORER ══════ */}
             {showChainExplorer && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 580, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 580, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <div>
                       <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
@@ -1257,8 +1345,8 @@
 
             {/* ══════ INVITE MODAL ══════ */}
             {showInvite && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowInvite(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 460, width: "100%", animation: "fadeInScale 0.2s ease" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowInvite(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 460, width: "100%", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="link" s={20} c={th.accent} /> PEER CONNECTION
@@ -1304,8 +1392,8 @@
 
             {/* ══════ PEER INFO MODAL ══════ */}
             {showPeerInfo && activePeer && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowPeerInfo(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 420, width: "100%", animation: "fadeInScale 0.2s ease", textAlign: "center" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowPeerInfo(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 420, width: "100%", animation: "fadeInScale 0.2s ease", textAlign: "center" }}>
                   <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg, ${activePeer.color}, ${activePeer.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, margin: "0 auto 14px", border: `2px solid ${th.accent}25` }}>{activePeer.avatar}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{activePeer.name}</div>
                   <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 16 }}>
@@ -1333,8 +1421,8 @@
 
             {/* ══════ SETTINGS MODAL ══════ */}
             {showSettings && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowSettings(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 500, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowSettings(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 500, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="settings" s={20} c={th.accent} /> SETTINGS
@@ -1438,8 +1526,8 @@
 
             {/* ══════ RECOVERY MODAL ══════ */}
             {showRecovery && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowRecovery(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: 20, padding: 28, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(16px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 200, padding: isMobile ? 0 : 16 }} onClick={() => setShowRecovery(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: isMobile ? "20px 20px 0 0" : 20, padding: isMobile ? "20px 14px" : 28, maxWidth: 520, width: "100%", maxHeight: "92vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
 
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1450,7 +1538,7 @@
                   </div>
 
                   {/* Layer badges */}
-                  <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
                     {[
                       { label: "L1 · Seed Phrase", color: th.accent },
                       { label: "L2 · Shamir Shares", color: th.accent2 },
