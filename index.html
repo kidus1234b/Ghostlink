@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GhostLink v2</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #0a0a0f; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel">
+      const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+      /* ═══════════════════════════════════════════════════════════════
+         GHOSTLINK v2 — Zero Trust · Zero Trace · Full Featured
+         ═══════════════════════════════════════════════════════════════ */
+
+      // ==================== CONSTANTS (outside component) ====================
+      const BIP39_WORDS = ["abandon","ability","able","above","absent","absorb","abuse","access","account","achieve","acid","across","action","actor","adapt","address","admit","adult","advance","advice","afford","afraid","again","agent","agree","aim","airport","alarm","album","alert","alien","alley","allow","almost","alone","already","alter","amateur","amazing","anchor","ancient","anger","angle","animal","annual","antenna","anxiety","appear","approve","arch","arctic","area","argue","armor","army","arrest","arrive","artist","aspect","assault","assist","athlete","attach","attend","attract","audit","author","autumn","aware","awesome","axis","balance","bamboo","banner","barely","barrel","battle","beauty","become","benefit","betray","bicycle","biology","birth","bitter","blade","blame","blast","bless","blind","blossom","boost","border","bounce","bracket","brave","bridge","brief","bright","brisk","broken","brother","bubble","bullet","bundle","burden","burst","business","butter","cable","cactus","canvas","capable","captain","carbon","cargo","carry","castle","casual","catalog","cause","caution","cement","century","cereal","champion","chapter","charge","chase","cheap","chest","chief","child","choice","circuit","citizen","civil","claim","clever","client","climb","clinic","clog","cloth","cloud","cluster","clutch","coast","coconut","combine","comfort","company","confirm","congress","connect","consider","control","convince","copper","coral","correct","cotton","country","couple","cousin","cover","crack","cradle","craft","crane","crash","cream","cricket","crime","crisp","cross","crucial","crystal","culture","curious","current","custom","cycle","damage","danger","daring","daughter","decade","decline","define","delay","deliver","demand","dental","derive","describe","design","detect","develop","device","diagram","diamond","digital","dilemma","discover","display","domain","donate","double","dragon","drama","draw","dream","dress","drift","drive","dynamic","eagle","economy","effort","eight","electric","element","elite","emerge","emotion","employ","enable","endorse","energy","enforce","engage","engine","enjoy","enough","enrich","enter","equal","equip","escape","estate","ethics","evidence","evolve","exact","excess","excite","exercise","exhaust","exist","expand","explain","expose","extend","fabric","faculty","faith","famous","fantasy","fashion","feature","festival","fiction","figure","filter","fiscal","fitness","flame","flavor","flight","float","flower","fluid","focus","forest","fortune","fossil","frame","frequent","fresh","future","galaxy","gallery","garlic","gather","genius","genuine","ghost","giant","ginger","giraffe","global","gospel","govern","grace","grain","grape","gravity","great","guard","guide","guitar","habit","harvest","hazard","health","heavy","height","hidden","history","hobby","hockey","holiday","honey","hospital","hover","humble","humor","hybrid","icon","ignore","illegal","image","immune","impact","improve","impulse","income","indoor","industry","infant","innocent","inquiry","inspire","install","intact","invest","invite","island","isolate","jacket","jaguar","jealous","journey","jungle","kangaroo","kingdom","kitchen","knowledge","language","laptop","laundry","lawsuit","leader","lecture","legend","liberty","license","liquid","lottery","luggage","luxury","magic","magnet","marble","margin","marine","master","matrix","meadow","melody","memory","mentor","mercy","middle","midnight","miracle","mitten","monitor","monkey","moral","morning","mountain","museum","mystery","nature","network","neutral","noble","nominee","nuclear","object","obtain","ocean","olympic","onion","orbit","orchard","order","organ","orphan","ostrich","output","oxygen","paddle","palace","panic","patrol","payment","peasant","pelican","penalty","perfect","permit","phrase","physical","pioneer","pistol","planet","plastic","pledge","polar","popular","portrait","pottery","poverty","predict","preserve","primary","priority","prison","produce","profit","program","promote","property","protect","provide","pudding","quantum","question","rabbit","raccoon","radar","rainbow","rally","random","rebel","rebuild","recall","recipe","reduce","reform","region","regular","release","remain","remind","rescue","resist","resource","result","retire","reunion","reveal","reward","rhythm","ribbon","ritual","robust","romance","rookie","rotate","satellite","satisfy","scatter","science","scorpion","screen","second","section","security","segment","seminar","separate","shadow","sheriff","shield","signal","silent","similar","simple","siren","social","solar","soldier","solution","someone","source","space","spatial","spawn","special","sphere","spirit","sponsor","stable","stadium","stairs","strategy","street","struggle","student","style","submit","subway","surface","surprise","sustain","symbol","symptom","tackle","talent","target","texture","theory","thunder","timber","tissue","token","tornado","tourist","traffic","tragic","transfer","trigger","trophy","trumpet","tunnel","unique","universe","unlock","unusual","upgrade","uphold","urban","utility","vacant","valley","vendor","venture","verify","vibrant","victory","vintage","virtual","vital","vivid","volcano","voyage","walnut","warfare","warrior","wealth","weapon","wedding","whisper","wildlife","wisdom","witness","wonder","wrist","yellow","zebra","zero"];
+      const EMOJIS = ["😀","😂","😍","🥰","😎","🤔","😤","😭","🥺","😅","🙏","👍","👎","❤️","🔥","✅","⚡","🎉","👀","💀","🤝","🚀","💡","🔒","⚠️","📎","📁","🛡️","🌐","💬"];
+
+      // ==================== CRYPTO ENGINE ====================
+      const CryptoEngine = {
+        async generateKeyPair() {
+          const kp = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+          const raw = await crypto.subtle.exportKey("raw", kp.publicKey);
+          const hex = Array.from(new Uint8Array(raw)).map(b => b.toString(16).padStart(2, "0")).join("");
+          return { keyPair: kp, publicKeyHex: hex };
+        },
+        async sha256(d) {
+          const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(d));
+          return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, "0")).join("");
+        },
+        async encrypt(text, key) {
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const ck = await crypto.subtle.importKey("raw", new TextEncoder().encode(key.padEnd(32, "0").slice(0, 32)), "AES-GCM", false, ["encrypt"]);
+          const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, ck, new TextEncoder().encode(text));
+          return {
+            iv: Array.from(iv).map(b => b.toString(16).padStart(2, "0")).join(""),
+            ciphertext: Array.from(new Uint8Array(ct)).map(b => b.toString(16).padStart(2, "0")).join(""),
+          };
+        },
+        genInvite() {
+          const b = crypto.getRandomValues(new Uint8Array(16));
+          const c = Array.from(b).map(b => b.toString(16).padStart(2, "0")).join("");
+          return `GL-${c.slice(0, 8)}-${c.slice(8, 16)}-${c.slice(16, 24)}-${c.slice(24, 32)}`.toUpperCase();
+        },
+      };
+
+      // ==================== BLOCKCHAIN ====================
+      class Chain {
+        constructor() { this.blocks = []; }
+        async add(sender, content, type = "text", meta = {}) {
+          const prev = this.blocks.length ? this.blocks[this.blocks.length - 1].hash : "0".repeat(64);
+          const ts = Date.now();
+          const data = JSON.stringify({ sender, content, type, ts, meta });
+          const hash = await CryptoEngine.sha256(prev + data + ts);
+          const block = { index: this.blocks.length, ts, sender, content, type, meta, prevHash: prev, hash, nonce: Math.floor(Math.random() * 999999) };
+          this.blocks.push(block);
+          return block;
+        }
+        async verify() {
+          for (let i = 1; i < this.blocks.length; i++) {
+            if (this.blocks[i].prevHash !== this.blocks[i - 1].hash) return false;
+          }
+          return true;
+        }
+        export() { return JSON.stringify(this.blocks, null, 2); }
+      }
+
+      // ==================== SVG ICONS ====================
+      const I = ({ t, s = 20, c }) => {
+        const p = { width: s, height: s, display: "inline-block", verticalAlign: "middle" };
+        const m = {
+          ghost: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M12 2C7.58 2 4 5.58 4 10v10.5c0 .83 1 1.5 1.5 1.5s1-.67 1.5-1.5c.5-.83 1-1.5 1.5-1.5s1 .67 1.5 1.5c.5.83 1 1.5 1.5 1.5s1-.67 1.5-1.5c.5-.83 1-1.5 1.5-1.5s1 .67 1.5 1.5c.5.83 1 1.5 1.5 1.5s1.5-.67 1.5-1.5V10c0-4.42-3.58-8-8-8z"/><circle cx="9" cy="10" r="1.5" fill={c || "currentColor"}/><circle cx="15" cy="10" r="1.5" fill={c || "currentColor"}/></svg>,
+          send: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>,
+          lock: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
+          link: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>,
+          chat: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>,
+          file: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>,
+          phone: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>,
+          video: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><polygon points="23,7 16,12 23,17"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>,
+          screen: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>,
+          shield: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4" strokeWidth="2"/></svg>,
+          chain: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="1" y="4" width="8" height="7" rx="1"/><rect x="15" y="13" width="8" height="7" rx="1"/><path d="M9 8h6v8H9"/></svg>,
+          copy: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>,
+          users: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
+          plus: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+          settings: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+          x: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+          mic: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg>,
+          micOff: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 005.12 2.12M15 9.34V4a3 3 0 00-5.94-.6"/><path d="M17 16.95A7 7 0 015 12v-2m14 0v2c0 .28-.02.56-.05.83M12 19v4M8 23h8"/></svg>,
+          vidOff: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M16 16v1a2 2 0 01-2 2H3a2 2 0 01-2-2V7a2 2 0 012-2h2m5.66 0H14a2 2 0 012 2v3.34l1 1L23 7v10"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
+          dl: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>,
+          ul: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>,
+          check: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "#00ffa3"} strokeWidth="2"><path d="M20 6L9 17l-5-5"/></svg>,
+          reply: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><polyline points="9,17 4,12 9,7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>,
+          trash: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>,
+          recover: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M12 22C6.48 22 2 17.52 2 12S6.48 2 12 2c4.23 0 7.85 2.46 9.58 6"/><path d="M17 8h4V4"/><path d="M12 7v5l3 3"/></svg>,
+          word: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M7 10v4M10 10l2 4 2-4M17 10v4"/></svg>,
+          timer: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>,
+          image: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>,
+          pin: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/></svg>,
+          search: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+          moon: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>,
+          zap: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><polygon points="13,2 3,14 12,14 11,22 21,10 12,10"/></svg>,
+          globe: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>,
+          key: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>,
+          export: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17,8 12,3 7,8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+          emoji: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>,
+          info: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
+          alarm: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3L2 6M22 6l-3-3"/></svg>,
+          eye: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>,
+          eyeOff: <svg style={p} viewBox="0 0 24 24" fill="none" stroke={c || "currentColor"} strokeWidth="1.5"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
+        };
+        return m[t] || null;
+      };
+
+      // ==================== FILE TYPE HELPERS ====================
+      const fileIcons = { pdf: "#ff4444", doc: "#4488ff", zip: "#ffaa00", png: "#00cc88", jpg: "#00cc88", mp4: "#b347ff", py: "#3776ab", js: "#f7df1e", json: "#6a6a7a", txt: "#8a8a9a" };
+      const getExt = (n) => n.split(".").pop().toLowerCase();
+      const fmtSize = (b) => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
+      const fmtTime = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const fmtDate = (ts) => new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+      const fmtCallT = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+      // ==================== MAIN APP ====================
+      function GhostLink() {
+        // Core state
+        const [view, setView] = useState("splash");
+        const [identity, setIdentity] = useState(null);
+        const [displayName, setDisplayName] = useState("");
+        const [activeTab, setActiveTab] = useState("chat");
+        const [activeConvo, setActiveConvo] = useState(null);
+        const [msgInput, setMsgInput] = useState("");
+        const [chain] = useState(new Chain());
+        const [messages, setMessages] = useState({});
+        const [chainValid, setChainValid] = useState(true);
+        const [searchQuery, setSearchQuery] = useState("");
+        const [showSearch, setShowSearch] = useState(false);
+
+        // Modals
+        const [showInvite, setShowInvite] = useState(false);
+        const [inviteCode, setInviteCode] = useState("");
+        const [joinCode, setJoinCode] = useState("");
+        const [inviteTab, setInviteTab] = useState("create");
+        const [copied, setCopied] = useState(false);
+        const [showBlockInfo, setShowBlockInfo] = useState(null);
+        const [showChainExplorer, setShowChainExplorer] = useState(false);
+        const [showSettings, setShowSettings] = useState(false);
+        const [showPeerInfo, setShowPeerInfo] = useState(false);
+
+        // Call state
+        const [callActive, setCallActive] = useState(false);
+        const [callType, setCallType] = useState(null);
+        const [micOn, setMicOn] = useState(true);
+        const [camOn, setCamOn] = useState(true);
+        const [callTimer, setCallTimer] = useState(0);
+        const [screenSharing, setScreenSharing] = useState(false);
+
+        // File transfer
+        const [files, setFiles] = useState([]);
+        const [dragOver, setDragOver] = useState(false);
+        const [uploadProgress, setUploadProgress] = useState({});
+
+        // Msg features
+        const [replyTo, setReplyTo] = useState(null);
+        const [selfDestruct, setSelfDestruct] = useState(0);
+        const [msgContext, setMsgContext] = useState(null);
+        const [pinnedMsgs, setPinnedMsgs] = useState([]);
+        const [typing, setTyping] = useState(false);
+
+        // Settings
+        const [settings, setSettings] = useState({
+          notifications: true,
+          sounds: true,
+          readReceipts: false,
+          autoDestruct: 0,
+          theme: "phantom",
+          fontSize: 13,
+          encLevel: "AES-256-GCM",
+          p2pRelay: "WebRTC",
+          exportFormat: "json",
+        });
+
+        // Recovery & extras
+        const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+        const [showRecovery, setShowRecovery] = useState(false);
+        const [seedPhrase, setSeedPhrase] = useState(null);
+        const [recoveryStep, setRecoveryStep] = useState("view"); // view | verify | restore
+        const [verifyInput, setVerifyInput] = useState("");
+        const [verifyWords, setVerifyWords] = useState(["", "", ""]); // words #3, #7, #11
+        const [verifyResult, setVerifyResult] = useState(null); // null | "ok" | "fail"
+
+        // Refs
+        const chatEndRef = useRef(null);
+        const timerRef = useRef(null);
+        const fileInputRef = useRef(null);
+
+        // Demo peers
+        const [peers] = useState([
+          { id: 1, name: "Alex Chen", status: "online", pubKey: "04a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5", lastSeen: "now", avatar: "AC", color: "#1a3a2a", unread: 2 },
+          { id: 2, name: "Sarah Kim", status: "online", pubKey: "04d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8", lastSeen: "now", avatar: "SK", color: "#2a1a3a", unread: 0 },
+          { id: 3, name: "Dev Team", status: "group", pubKey: "multi-sig-composite-key", lastSeen: "5 peers", avatar: "DT", color: "#1a2a3a", isGroup: true, unread: 5 },
+          { id: 4, name: "Maya Patel", status: "offline", pubKey: "04f8e9d0c1b2a3948576a7b8c9d0e1f2", lastSeen: "2h ago", avatar: "MP", color: "#3a2a1a", unread: 0 },
+        ]);
+
+        // Call history
+        const callHistory = useMemo(() => [
+          { id: 1, peer: "Alex Chen", avatar: "AC", color: "#1a3a2a", type: "voice", dir: "out", duration: 342, ts: Date.now() - 3600000, status: "completed" },
+          { id: 2, peer: "Sarah Kim", avatar: "SK", color: "#2a1a3a", type: "video", dir: "in", duration: 0, ts: Date.now() - 86400000, status: "missed" },
+          { id: 3, peer: "Dev Team", avatar: "DT", color: "#1a2a3a", type: "voice", dir: "in", duration: 1823, ts: Date.now() - 172800000, status: "completed" },
+          { id: 4, peer: "Maya Patel", avatar: "MP", color: "#3a2a1a", type: "video", dir: "out", duration: 0, ts: Date.now() - 259200000, status: "missed" },
+        ], []);
+
+        // Demo files
+        const demoFiles = useMemo(() => [
+          { name: "api-schema-v3.json", size: 24800, from: "Alex Chen", ts: Date.now() - 3600000, hash: "a7f3b2...", chunks: 4 },
+          { name: "deployment-keys.zip", size: 1258000, from: "Sarah Kim", ts: Date.now() - 7200000, hash: "c9d0e1...", chunks: 12, encrypted: true },
+          { name: "architecture-diagram.png", size: 487000, from: "You", ts: Date.now() - 1800000, hash: "f2a3b4...", chunks: 8 },
+          { name: "sprint-notes.pdf", size: 156000, from: "Dev Team", ts: Date.now() - 10800000, hash: "b8c9d0...", chunks: 3 },
+        ], []);
+
+        // ==================== EFFECTS ====================
+        useEffect(() => {
+          if (view === "splash") { const t = setTimeout(() => setView("setup"), 2800); return () => clearTimeout(t); }
+        }, [view]);
+
+        useEffect(() => {
+          chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, [messages, activeConvo]);
+
+        useEffect(() => {
+          if (!showEmojiPicker) return;
+          const close = () => setShowEmojiPicker(false);
+          document.addEventListener("click", close);
+          return () => document.removeEventListener("click", close);
+        }, [showEmojiPicker]);
+
+        useEffect(() => {
+          if (callActive) {
+            timerRef.current = setInterval(() => setCallTimer(t => t + 1), 1000);
+            return () => clearInterval(timerRef.current);
+          } else { setCallTimer(0); }
+        }, [callActive]);
+
+        // ==================== ACTIONS ====================
+        const setupIdentity = async () => {
+          if (!displayName.trim()) return;
+          const { keyPair, publicKeyHex } = await CryptoEngine.generateKeyPair();
+          const fp = (await CryptoEngine.sha256(publicKeyHex)).slice(0, 16).toUpperCase();
+          setIdentity({ keyPair, publicKeyHex, fingerprint: fp, name: displayName.trim() });
+          setView("main");
+        };
+
+        const getConvoMsgs = () => messages[activeConvo] || [];
+
+        const sendMessage = async (content, type = "text", meta = {}) => {
+          if (!content?.trim() && type === "text") return;
+          if (replyTo) meta.replyTo = { index: replyTo.index, sender: replyTo.sender, preview: replyTo.content?.slice(0, 60) };
+          if (selfDestruct > 0) meta.selfDestruct = selfDestruct;
+          const block = await chain.add(identity.name, content.trim(), type, meta);
+          block.encrypted = await CryptoEngine.encrypt(content.trim(), identity.fingerprint);
+          setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), block] }));
+          setMsgInput("");
+          setReplyTo(null);
+          setChainValid(await chain.verify());
+
+          if (meta.selfDestruct) {
+            setTimeout(() => {
+              setMessages(prev => {
+                const convo = (prev[activeConvo] || []).map(m => m.index === block.index ? { ...m, destroyed: true } : m);
+                return { ...prev, [activeConvo]: convo };
+              });
+            }, meta.selfDestruct * 1000);
+          }
+
+          setTyping(true);
+          setTimeout(async () => {
+            setTyping(false);
+            const replies = [
+              "Got it. Checking the codebase now.",
+              "Acknowledged. Will push the fix within the hour.",
+              "Chain verified on my end. All blocks intact.",
+              "Pulling the latest. Stand by.",
+              "Roger. Encrypted channel is stable.",
+              "Nice catch. Reviewing and will circle back.",
+              "Pushed to staging. Check when ready.",
+              "Merged. Pipeline running now.",
+            ];
+            const reply = replies[Math.floor(Math.random() * replies.length)];
+            const peer = peers.find(p => p.id === activeConvo);
+            const rb = await chain.add(peer?.name || "Peer", reply, "text", {});
+            rb.encrypted = await CryptoEngine.encrypt(reply, identity.fingerprint);
+            setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), rb] }));
+          }, 1200 + Math.random() * 2000);
+        };
+
+        const sendFile = async (fileName, fileSize) => {
+          const id = Date.now();
+          setUploadProgress(p => ({ ...p, [id]: 0 }));
+          const chunks = Math.ceil(fileSize / 65536);
+          for (let i = 0; i <= chunks; i++) {
+            await new Promise(r => setTimeout(r, 200));
+            setUploadProgress(p => ({ ...p, [id]: Math.min(((i + 1) / chunks) * 100, 100) }));
+          }
+          await sendMessage(fileName, "file", { fileSize, chunks, hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
+          setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
+        };
+
+        const handleFileDrop = (e) => {
+          e.preventDefault();
+          setDragOver(false);
+          const f = e.dataTransfer?.files;
+          if (f?.length) Array.from(f).forEach(file => sendFile(file.name, file.size));
+        };
+
+        const pinMsg = (msg) => {
+          setPinnedMsgs(prev => prev.find(m => m.index === msg.index) ? prev.filter(m => m.index !== msg.index) : [...prev, msg]);
+          setMsgContext(null);
+        };
+
+        const copyMsg = (msg) => { navigator.clipboard?.writeText(msg.content); setMsgContext(null); };
+
+        const exportChat = () => {
+          const data = chain.export();
+          const blob = new Blob([data], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = `ghostlink-export-${Date.now()}.json`;
+          a.click(); URL.revokeObjectURL(url);
+        };
+
+        const generateSeedPhrase = () => {
+          const arr = new Uint32Array(12);
+          crypto.getRandomValues(arr);
+          return Array.from(arr).map(n => BIP39_WORDS[n % BIP39_WORDS.length]);
+        };
+
+        const openRecovery = () => {
+          if (!seedPhrase) setSeedPhrase(generateSeedPhrase());
+          setRecoveryStep("view");
+          setVerifyInput("");
+          setVerifyWords(["", "", ""]);
+          setVerifyResult(null);
+          setShowRecovery(true);
+        };
+
+        const wipeAll = () => {
+          if (!confirm("Wipe all messages and reset chain? This cannot be undone.")) return;
+          setMessages({});
+          chain.blocks = [];
+          setChainValid(true);
+          setPinnedMsgs([]);
+          setActiveConvo(null);
+          setShowSettings(false);
+        };
+
+        const startCall = (type) => { setCallType(type); setCallActive(true); setMicOn(true); setCamOn(type === "video"); setScreenSharing(false); };
+        const endCall = () => { setCallActive(false); setCallType(null); setScreenSharing(false); clearInterval(timerRef.current); };
+        const genInvite = () => { setInviteCode(CryptoEngine.genInvite()); setShowInvite(true); setInviteTab("create"); };
+        const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+
+        const themes = {
+          phantom: { bg: "#0a0a0f", bg2: "#08080d", bg3: "#0c0c13", accent: "#00ffa3", accent2: "#00d4ff", accent3: "#b347ff" },
+          crimson: { bg: "#0f0a0a", bg2: "#0d0808", bg3: "#130c0c", accent: "#ff4466", accent2: "#ff8844", accent3: "#ffcc00" },
+          arctic: { bg: "#0a0d0f", bg2: "#080b0d", bg3: "#0c1013", accent: "#44ddff", accent2: "#8899ff", accent3: "#cc88ff" },
+          void: { bg: "#050508", bg2: "#030305", bg3: "#080810", accent: "#8866ff", accent2: "#ff66aa", accent3: "#44ffcc" },
+        };
+        const th = themes[settings.theme] || themes.phantom;
+
+        // ==================== GLOBAL STYLES ====================
+        const globalCSS = `
+          @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+          ::-webkit-scrollbar { width: 4px; }
+          ::-webkit-scrollbar-track { background: transparent; }
+          ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 4px; }
+          @keyframes ghostFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+          @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+          @keyframes fadeInScale { from { opacity:0; transform: scale(0.95); } to { opacity:1; transform: scale(1); } }
+          @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+          @keyframes ripple { 0% { transform:scale(1); opacity:0.3; } 100% { transform:scale(3); opacity:0; } }
+          @keyframes progress { from { width:0; } to { width:100%; } }
+          @keyframes shake { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-4px); } 75% { transform:translateX(4px); } }
+          @keyframes typing { 0%,60%,100% { opacity:0.3; transform:translateY(0); } 30% { opacity:1; transform:translateY(-4px); } }
+          @keyframes scanline { 0% { top:-100%; } 100% { top:200%; } }
+          * { box-sizing: border-box; }
+          input:focus, textarea:focus { outline: none; }
+        `;
+
+        // Tag helper
+        const Tag = ({ color, children, icon }) => (
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 8px", borderRadius: 6, background: `${color}15`, color, fontSize: 10, fontWeight: 600, letterSpacing: 0.5 }}>
+            {icon && <I t={icon} s={10} c={color} />}{children}
+          </span>
+        );
+
+        // Button helper
+        const Btn = ({ children, onClick, style, ghost, small, accent, ...rest }) => (
+          <button onClick={onClick} style={{
+            background: ghost ? "transparent" : accent ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
+            border: ghost ? `1px solid rgba(255,255,255,0.08)` : accent ? "none" : "1px solid rgba(255,255,255,0.06)",
+            borderRadius: small ? 8 : 10, padding: small ? "6px 10px" : "10px 16px",
+            color: accent ? "#000" : ghost ? "#8a8a9a" : "#c0c0c8", cursor: "pointer",
+            fontFamily: "'JetBrains Mono', monospace", fontSize: small ? 11 : 12, fontWeight: 600,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            transition: "all 0.2s ease", letterSpacing: 0.5, ...style,
+          }} {...rest}>{children}</button>
+        );
+
+        // ==================== SPLASH ====================
+        if (view === "splash") return (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: `radial-gradient(ellipse at center, ${th.bg} 0%, #010409 70%)`, position: "relative", overflow: "hidden", fontFamily: "'JetBrains Mono', monospace" }}>
+            <style>{globalCSS}</style>
+            {[15, 30, 45, 60, 75, 85].map((t, i) => <div key={i} style={{ position: "absolute", width: "100%", height: 1, top: `${t}%`, background: `linear-gradient(90deg, transparent, ${th.accent}15, transparent)` }} />)}
+            <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20 }}><I t="ghost" s={80} c={th.accent} /></div>
+            <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>GHOSTLINK</div>
+            <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase" }}>Zero Trust · Zero Trace · Zero Servers</div>
+            <div style={{ marginTop: 40, display: "flex", gap: 5 }}>
+              {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 0.25}s` }} />)}
+            </div>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", overflow: "hidden" }}>
+              <div style={{ position: "absolute", width: "100%", height: "30%", background: `linear-gradient(transparent, ${th.accent}05, transparent)`, animation: "scanline 4s linear infinite" }} />
+            </div>
+          </div>
+        );
+
+        // ==================== SETUP ====================
+        if (view === "setup") return (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: th.bg, padding: 24, fontFamily: "'JetBrains Mono', monospace", color: "#e0e0e8" }}>
+            <style>{globalCSS}</style>
+            <div style={{ background: `linear-gradient(145deg, #111118, #0d0d14)`, border: `1px solid ${th.accent}18`, borderRadius: 20, padding: "40px 36px", maxWidth: 460, width: "100%", animation: "fadeInScale 0.5s ease" }}>
+              <div style={{ textAlign: "center", marginBottom: 28 }}>
+                <div style={{ color: th.accent, marginBottom: 14 }}><I t="ghost" s={52} c={th.accent} /></div>
+                <h2 style={{ fontSize: 26, fontWeight: 800, margin: 0, letterSpacing: 3, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>GHOSTLINK</h2>
+                <p style={{ fontSize: 11, color: "#5a5a6a", marginTop: 6, lineHeight: 1.6 }}>
+                  Your private key never leaves this device. All communication is peer-to-peer, end-to-end encrypted, and blockchain-verified.
+                </p>
+              </div>
+
+              <div style={{ background: `${th.accent}06`, border: `1px solid ${th.accent}12`, borderRadius: 12, padding: 14, marginBottom: 20 }}>
+                {[
+                  { icon: "shield", label: "AES-256-GCM + ECDH P-256 Encryption", color: th.accent },
+                  { icon: "chain", label: "SHA-256 Blockchain Message Integrity", color: th.accent2 },
+                  { icon: "lock", label: "P2P Direct · Zero Servers · Zero Metadata", color: th.accent3 },
+                  { icon: "timer", label: "Self-Destructing Messages", color: "#ff8844" },
+                  { icon: "file", label: "Chunked Encrypted File Transfer", color: "#44aaff" },
+                ].map((f, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+                    <I t={f.icon} s={15} c={f.color} />
+                    <span style={{ fontSize: 11, color: "#7a7a8a" }}>{f.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ marginBottom: 6 }}>
+                <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>Display Name</label>
+                <input value={displayName} onChange={e => setDisplayName(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && setupIdentity()}
+                  placeholder="Enter your alias..."
+                  style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "inherit" }} />
+              </div>
+              <div style={{ fontSize: 9, color: "#3a3a4a", marginBottom: 20, paddingLeft: 2 }}>This name is visible only to connected peers</div>
+
+              <button onClick={setupIdentity} disabled={!displayName.trim()} style={{
+                width: "100%", background: displayName.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
+                border: "none", borderRadius: 12, padding: "14px 0", color: displayName.trim() ? "#000" : "#3a3a4a",
+                fontSize: 13, fontWeight: 700, cursor: displayName.trim() ? "pointer" : "default", fontFamily: "inherit",
+                letterSpacing: 1.5, transition: "all 0.3s ease", boxShadow: displayName.trim() ? `0 0 30px ${th.accent}30` : "none",
+              }}>
+                GENERATE IDENTITY
+              </button>
+            </div>
+          </div>
+        );
+
+        // ==================== CALL OVERLAY ====================
+        if (callActive) {
+          const peer = peers.find(p => p.id === activeConvo);
+          return (
+            <div style={{ position: "fixed", inset: 0, background: `radial-gradient(ellipse at center, ${th.bg} 0%, #010409 80%)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 200, fontFamily: "'JetBrains Mono', monospace", color: "#e0e0e8" }}>
+              <style>{globalCSS}</style>
+              {[1, 2, 3].map(i => <div key={i} style={{ position: "absolute", width: 180 + i * 90, height: 180 + i * 90, borderRadius: "50%", border: `1px solid ${th.accent}${Math.round(15 / i).toString(16)}`, animation: `ripple ${3 + i}s ease-out infinite`, animationDelay: `${i * 0.5}s` }} />)}
+
+              <div style={{ width: 88, height: 88, borderRadius: 22, background: `linear-gradient(135deg, ${peer?.color || "#1a3a2a"}, ${peer?.color || "#1a3a2a"}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, marginBottom: 16, border: `2px solid ${th.accent}33` }}>{peer?.avatar || "?"}</div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>{peer?.name || "Unknown"}</div>
+              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                <Tag color={th.accent} icon="lock">E2E ENCRYPTED</Tag>
+                <Tag color={th.accent2}>{callType === "video" ? "VIDEO" : callType === "screen" ? "SCREEN SHARE" : "VOICE"}</Tag>
+              </div>
+              <div style={{ fontSize: 32, fontWeight: 300, color: th.accent, marginBottom: 40, letterSpacing: 6, fontFamily: "'Space Grotesk', sans-serif" }}>{fmtCallT(callTimer)}</div>
+
+              {(callType === "video" || screenSharing) && (
+                <div style={{ width: "85%", maxWidth: 640, aspectRatio: "16/9", background: "rgba(255,255,255,0.02)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 36, position: "relative", overflow: "hidden" }}>
+                  <div style={{ color: "#2a2a3a", fontSize: 12 }}>{screenSharing ? "Screen sharing active..." : "Encrypted video feed"}</div>
+                  <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, transparent 60%, ${th.bg}88)` }} />
+                  {callType === "video" && (
+                    <div style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, background: "rgba(0,0,0,0.5)", borderRadius: 10, border: `1px solid ${th.accent}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#4a5568" }}>You</div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 16 }}>
+                {[
+                  { icon: micOn ? "mic" : "micOff", bg: micOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => setMicOn(!micOn) },
+                  ...(callType === "video" ? [{ icon: camOn ? "video" : "vidOff", bg: camOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => setCamOn(!camOn) }] : []),
+                  { icon: "screen", bg: screenSharing ? th.accent + "33" : "rgba(255,255,255,0.08)", action: () => setScreenSharing(!screenSharing) },
+                  { icon: "phone", bg: "#ff3344", action: endCall },
+                ].map((b, i) => (
+                  <button key={i} onClick={b.action} style={{ width: 56, height: 56, borderRadius: "50%", border: "none", background: b.bg, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", boxShadow: `0 0 20px ${b.bg}33` }}>
+                    <I t={b.icon} s={22} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        }
+
+        // ==================== MAIN VIEW ====================
+        const activePeer = peers.find(p => p.id === activeConvo);
+        const convoMsgs = getConvoMsgs();
+        const filteredMsgs = searchQuery ? convoMsgs.filter(m => m.content?.toLowerCase().includes(searchQuery.toLowerCase())) : convoMsgs;
+
+        return (
+          <div style={{ width: "100%", height: "100vh", background: th.bg, color: "#e0e0e8", fontFamily: "'JetBrains Mono', monospace", overflow: "hidden", position: "relative", display: "flex" }}>
+            <style>{globalCSS}</style>
+
+            {/* ══════ SIDEBAR ══════ */}
+            <div style={{ width: 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
+              <div style={{ color: th.accent, marginBottom: 16, cursor: "pointer" }}><I t="ghost" s={28} c={th.accent} /></div>
+              {[
+                { id: "chat", icon: "chat", label: "Chats" },
+                { id: "files", icon: "file", label: "Files" },
+                { id: "calls", icon: "phone", label: "Calls" },
+                { id: "chain", icon: "chain", label: "Chain" },
+              ].map(tab => (
+                <button key={tab.id} title={tab.label} onClick={() => { setActiveTab(tab.id); if (tab.id === "chain") setShowChainExplorer(true); if (tab.id !== "chat" && tab.id !== "calls") setActiveConvo(null); }} style={{
+                  width: 44, height: 44, borderRadius: 12, border: "none",
+                  background: activeTab === tab.id ? `${th.accent}18` : "transparent",
+                  color: activeTab === tab.id ? th.accent : "#4a5568", cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", position: "relative",
+                }}>
+                  <I t={tab.icon} s={19} c={activeTab === tab.id ? th.accent : undefined} />
+                </button>
+              ))}
+              <div style={{ flex: 1 }} />
+              <button title="Recovery" onClick={openRecovery} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <I t="recover" s={18} />
+              </button>
+              <button title="Settings" onClick={() => setShowSettings(true)} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <I t="settings" s={18} />
+              </button>
+              <div title={identity?.name} style={{ width: 38, height: 38, borderRadius: 10, marginBottom: 14, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#000", cursor: "pointer" }}>
+                {identity?.name?.charAt(0)?.toUpperCase() || "?"}
+              </div>
+            </div>
+
+            {/* ══════ PEER LIST / FILES LIST ══════ */}
+            <div style={{ width: 270, background: th.bg3, borderRight: "1px solid rgba(255,255,255,0.04)", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+              <div style={{ padding: "16px 14px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5 }}>{activeTab === "files" ? "FILES" : activeTab === "calls" ? "CALLS" : "PEERS"}</div>
+                  <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{identity ? `${identity.fingerprint.slice(0, 8)}...` : ""}</div>
+                </div>
+                <Btn small ghost onClick={genInvite}><I t="plus" s={13} /> Invite</Btn>
+              </div>
+
+              {activeTab === "calls" ? (
+                <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+                  <div style={{ padding: "6px 14px 4px", fontSize: 9, color: "#3a3a4a", letterSpacing: 1, textTransform: "uppercase" }}>Recent</div>
+                  {callHistory.map((c, i) => {
+                    const isMissed = c.status === "missed";
+                    const color = isMissed ? "#ff4444" : th.accent;
+                    return (
+                      <div key={c.id} style={{ padding: "11px 14px", display: "flex", alignItems: "center", gap: 11, cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,0.03)", transition: "background 0.15s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${c.color}, ${c.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{c.avatar}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>{c.peer}</div>
+                          <div style={{ fontSize: 9.5, color: isMissed ? "#ff4444" : "#4a5568", display: "flex", alignItems: "center", gap: 5 }}>
+                            <I t={c.type === "video" ? "video" : "phone"} s={10} c={color} />
+                            <span>{isMissed ? "Missed" : (c.dir === "out" ? "Outgoing" : "Incoming")} · {fmtDate(c.ts)}</span>
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                          {!isMissed && <span style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace" }}>{fmtCallT(c.duration)}</span>}
+                          <button onClick={() => { const p = peers.find(p => p.name === c.peer); if (p) setActiveConvo(p.id); startCall(c.type); }} style={{ background: `${th.accent}12`, border: "none", borderRadius: 6, padding: "3px 7px", color: th.accent, cursor: "pointer", fontSize: 9, fontWeight: 600, fontFamily: "inherit" }}>
+                            Call
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {callHistory.length === 0 && <div style={{ textAlign: "center", padding: 40, fontSize: 11, color: "#2a2a3a" }}>No call history yet</div>}
+                </div>
+              ) : activeTab === "files" ? (
+                <div style={{ flex: 1, overflowY: "auto", padding: 10 }}>
+                  {demoFiles.map((f, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both", cursor: "pointer" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 8, background: `${fileIcons[getExt(f.name)] || "#6a6a7a"}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <I t="file" s={16} c={fileIcons[getExt(f.name)] || "#6a6a7a"} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                        <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{fmtSize(f.size)} · {f.from} · {f.chunks} chunks</div>
+                      </div>
+                      {f.encrypted && <I t="lock" s={12} c={th.accent} />}
+                    </div>
+                  ))}
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>All files are chunked and encrypted P2P</div>
+                </div>
+              ) : (
+                <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+                  {peers.map(peer => (
+                    <div key={peer.id} onClick={() => setActiveConvo(peer.id)} style={{
+                      padding: "11px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11,
+                      background: activeConvo === peer.id ? `${th.accent}08` : "transparent",
+                      borderLeft: activeConvo === peer.id ? `2px solid ${th.accent}` : "2px solid transparent",
+                      transition: "all 0.15s ease",
+                    }}>
+                      <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${peer.color}, ${peer.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0, position: "relative" }}>
+                        {peer.avatar}
+                        <div style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: peer.status === "online" ? th.accent : peer.status === "group" ? th.accent2 : "#4a5568", border: `2px solid ${th.bg3}`, boxShadow: peer.status === "online" ? `0 0 6px ${th.accent}` : "none" }} />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                          <span>{peer.name}</span>
+                          {peer.unread > 0 && <span style={{ width: 18, height: 18, borderRadius: "50%", background: th.accent, color: "#000", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{peer.unread}</span>}
+                        </div>
+                        <div style={{ fontSize: 9.5, color: "#4a5568", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {peer.isGroup ? `${peer.lastSeen} connected` : peer.status === "online" ? "Online · Encrypted" : peer.lastSeen}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 8, color: "#1a1a2a", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                <I t="key" s={9} c="#2a2a3a" /> {identity?.fingerprint || "..."}
+              </div>
+            </div>
+
+            {/* ══════ MAIN CONTENT AREA ══════ */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", background: th.bg, minWidth: 0, position: "relative" }}
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleFileDrop}>
+
+              {!activeConvo ? (
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }}>
+                  <div style={{ opacity: 0.15 }}><I t="ghost" s={64} c={th.accent} /></div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#1a1a2a", letterSpacing: 2 }}>SELECT A PEER</div>
+                  <div style={{ fontSize: 11, color: "#1a1a2a" }}>All channels are end-to-end encrypted and P2P direct</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <Tag color={th.accent} icon="shield">AES-256</Tag>
+                    <Tag color={th.accent2} icon="chain">BLOCKCHAIN</Tag>
+                    <Tag color={th.accent3} icon="lock">ZERO TRUST</Tag>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* ── CHAT HEADER ── */}
+                  <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, backdropFilter: "blur(12px)", flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 11, cursor: "pointer" }} onClick={() => setShowPeerInfo(true)}>
+                      <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${activePeer?.color}, ${activePeer?.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{activePeer?.avatar}</div>
+                      <div>
+                        <div style={{ fontSize: 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+                          {activePeer?.name}
+                          <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>
+                        </div>
+                        <div style={{ fontSize: 9.5, color: "#4a5568" }}>{convoMsgs.length} blocks · E2E encrypted · P2P</div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      {[
+                        { icon: "search", action: () => setShowSearch(!showSearch) },
+                        { icon: "phone", action: () => startCall("voice") },
+                        { icon: "video", action: () => startCall("video") },
+                        { icon: "screen", action: () => startCall("screen") },
+                        { icon: "export", action: exportChat },
+                      ].map((b, i) => (
+                        <button key={i} onClick={b.action} style={{ width: 34, height: 34, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}
+                          onMouseEnter={e => { e.currentTarget.style.background = `${th.accent}15`; e.currentTarget.style.color = th.accent; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; e.currentTarget.style.color = "#5a5a6a"; }}>
+                          <I t={b.icon} s={15} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Search bar */}
+                  {showSearch && (
+                    <div style={{ padding: "8px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", gap: 8, alignItems: "center", animation: "fadeIn 0.2s ease" }}>
+                      <I t="search" s={14} c="#4a5568" />
+                      <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search messages..." autoFocus
+                        style={{ flex: 1, background: "transparent", border: "none", color: "#e0e0e8", fontSize: 12, fontFamily: "inherit" }} />
+                      <button onClick={() => { setShowSearch(false); setSearchQuery(""); }} style={{ background: "none", border: "none", color: "#4a5568", cursor: "pointer" }}><I t="x" s={14} /></button>
+                    </div>
+                  )}
+
+                  {/* Pinned messages bar */}
+                  {pinnedMsgs.length > 0 && (
+                    <div style={{ padding: "6px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: 8, background: `${th.accent}06`, fontSize: 11 }}>
+                      <I t="pin" s={12} c={th.accent} />
+                      <span style={{ color: "#6a6a7a" }}>{pinnedMsgs.length} pinned</span>
+                      <span style={{ color: "#4a5568" }}>—</span>
+                      <span style={{ color: "#8a8a9a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{pinnedMsgs[pinnedMsgs.length - 1]?.content?.slice(0, 50)}</span>
+                    </div>
+                  )}
+
+                  {/* ── MESSAGES ── */}
+                  <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+                    {dragOver && (
+                      <div style={{ position: "absolute", inset: 0, background: `${th.bg}dd`, border: `2px dashed ${th.accent}44`, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10, zIndex: 50, margin: 8 }}>
+                        <I t="ul" s={40} c={th.accent} />
+                        <div style={{ fontSize: 14, fontWeight: 600, color: th.accent }}>Drop files to encrypt & send</div>
+                        <div style={{ fontSize: 10, color: "#4a5568" }}>Files will be chunked and encrypted P2P</div>
+                      </div>
+                    )}
+
+                    {filteredMsgs.length === 0 && !searchQuery && (
+                      <div style={{ textAlign: "center", padding: 50, color: "#2a2a3a" }}>
+                        <I t="shield" s={36} c="#1a1a2a" />
+                        <div style={{ marginTop: 14, fontSize: 13, fontWeight: 600 }}>Encrypted channel established</div>
+                        <div style={{ marginTop: 4, fontSize: 10 }}>Messages are blockchain-chained and P2P encrypted</div>
+                        <div style={{ marginTop: 12, display: "flex", gap: 6, justifyContent: "center" }}>
+                          <Tag color={th.accent}>ECDH P-256</Tag>
+                          <Tag color={th.accent2}>AES-256-GCM</Tag>
+                          <Tag color={th.accent3}>SHA-256</Tag>
+                        </div>
+                      </div>
+                    )}
+
+                    {filteredMsgs.map((msg, i) => {
+                      const isMe = msg.sender === identity?.name;
+                      if (msg.destroyed) return (
+                        <div key={i} style={{ alignSelf: isMe ? "flex-end" : "flex-start", padding: "8px 14px", borderRadius: 12, background: "rgba(255,68,68,0.06)", border: "1px dashed rgba(255,68,68,0.15)", fontSize: 11, color: "#ff444488", fontStyle: "italic", display: "flex", alignItems: "center", gap: 6 }}>
+                          <I t="timer" s={12} c="#ff444488" /> Message self-destructed
+                        </div>
+                      );
+                      return (
+                        <div key={i} style={{ animation: "fadeIn 0.25s ease", animationFillMode: "both", animationDelay: `${Math.min(i, 10) * 0.02}s`, alignSelf: isMe ? "flex-end" : "flex-start", maxWidth: "72%", position: "relative" }}
+                          onContextMenu={e => { e.preventDefault(); setMsgContext(msg); }}>
+
+                          {msg.meta?.replyTo && (
+                            <div style={{ fontSize: 10, color: "#4a5568", padding: "4px 10px", borderLeft: `2px solid ${th.accent2}`, marginBottom: 3, marginLeft: isMe ? "auto" : 0, marginRight: isMe ? 0 : "auto", maxWidth: "80%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              <span style={{ color: th.accent2 }}>{msg.meta.replyTo.sender}:</span> {msg.meta.replyTo.preview}
+                            </div>
+                          )}
+
+                          <div onClick={() => setShowBlockInfo(msg)} style={{
+                            padding: msg.type === "file" ? "10px 14px" : "9px 14px",
+                            borderRadius: isMe ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                            background: isMe ? `linear-gradient(135deg, ${th.accent}14, ${th.accent2}0a)` : "rgba(255,255,255,0.03)",
+                            border: isMe ? `1px solid ${th.accent}18` : "1px solid rgba(255,255,255,0.05)",
+                            cursor: "pointer", transition: "all 0.15s ease",
+                          }}>
+                            {msg.type === "file" ? (
+                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 8, background: `${th.accent}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                  <I t="file" s={16} c={th.accent} />
+                                </div>
+                                <div>
+                                  <div style={{ fontSize: 12, fontWeight: 600 }}>{msg.content}</div>
+                                  <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{msg.meta?.chunks} chunks · {fmtSize(msg.meta?.fileSize || 0)} · <span style={{ color: th.accent }}>Encrypted</span></div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: settings.fontSize, lineHeight: 1.55, color: "#d0d0d8" }}>{msg.content}</div>
+                            )}
+                            <div style={{ fontSize: 9.5, color: "#3a3a4a", marginTop: 4, display: "flex", alignItems: "center", gap: 5, justifyContent: isMe ? "flex-end" : "flex-start" }}>
+                              <span>{fmtTime(msg.ts)}</span>
+                              <span style={{ color: th.accent, fontSize: 4 }}>●</span>
+                              <span>#{msg.index}</span>
+                              <span style={{ color: th.accent, fontSize: 8, fontFamily: "monospace" }}>{msg.hash?.slice(0, 8)}</span>
+                              {msg.meta?.selfDestruct && <I t="timer" s={9} c="#ff8844" />}
+                              {pinnedMsgs.find(m => m.index === msg.index) && <I t="pin" s={9} c={th.accent2} />}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {typing && (
+                      <div style={{ alignSelf: "flex-start", padding: "10px 16px", borderRadius: "14px 14px 14px 4px", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 4, alignItems: "center" }}>
+                        {[0, 1, 2].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "typing 1.2s ease-in-out infinite", animationDelay: `${i * 0.2}s` }} />)}
+                      </div>
+                    )}
+
+                    {Object.entries(uploadProgress).map(([id, pct]) => (
+                      <div key={id} style={{ alignSelf: "flex-end", maxWidth: "72%", padding: "10px 14px", borderRadius: "14px 14px 4px 14px", background: `${th.accent}0a`, border: `1px solid ${th.accent}18` }}>
+                        <div style={{ fontSize: 11, color: "#8a8a9a", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                          <I t="ul" s={12} c={th.accent} /> Encrypting & sending... {Math.round(pct)}%
+                        </div>
+                        <div style={{ width: "100%", height: 3, background: "rgba(255,255,255,0.06)", borderRadius: 2, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: `linear-gradient(90deg, ${th.accent}, ${th.accent2})`, borderRadius: 2, transition: "width 0.2s ease" }} />
+                        </div>
+                      </div>
+                    ))}
+
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Reply preview */}
+                  {replyTo && (
+                    <div style={{ padding: "8px 18px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: 10, background: `${th.accent2}08`, animation: "fadeIn 0.15s ease" }}>
+                      <I t="reply" s={14} c={th.accent2} />
+                      <div style={{ flex: 1, fontSize: 11, color: "#6a6a7a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <span style={{ color: th.accent2 }}>{replyTo.sender}:</span> {replyTo.content?.slice(0, 80)}
+                      </div>
+                      <button onClick={() => setReplyTo(null)} style={{ background: "none", border: "none", color: "#4a5568", cursor: "pointer" }}><I t="x" s={14} /></button>
+                    </div>
+                  )}
+
+                  {/* ── INPUT BAR ── */}
+                  {showEmojiPicker && (
+                    <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 64, left: 14, background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 10, display: "flex", flexWrap: "wrap", gap: 4, width: 260, zIndex: 50, animation: "fadeInScale 0.15s ease", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
+                      {EMOJIS.map((em, i) => (
+                        <button key={i} onClick={() => { setMsgInput(p => p + em); setShowEmojiPicker(false); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: 3, borderRadius: 6, lineHeight: 1, transition: "background 0.1s" }}
+                          onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.08)"}
+                          onMouseLeave={e => e.currentTarget.style.background = "none"}>
+                          {em}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: 8, background: `${th.bg}ee`, flexShrink: 0 }}>
+                    <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) sendFile(e.target.files[0].name, e.target.files[0].size); }} />
+                    <button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <I t="file" s={15} />
+                    </button>
+                    <button onClick={e => { e.stopPropagation(); setShowEmojiPicker(p => !p); }} style={{ width: 36, height: 36, borderRadius: 8, border: "none", background: showEmojiPicker ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: showEmojiPicker ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <I t="emoji" s={15} />
+                    </button>
+
+                    <button onClick={() => setSelfDestruct(selfDestruct === 0 ? 30 : selfDestruct === 30 ? 60 : selfDestruct === 60 ? 300 : 0)} title={selfDestruct ? `Self-destruct: ${selfDestruct}s` : "Self-destruct off"} style={{
+                      width: 36, height: 36, borderRadius: 8, border: "none",
+                      background: selfDestruct ? `${th.accent3}15` : "rgba(255,255,255,0.03)",
+                      color: selfDestruct ? th.accent3 : "#4a5568", cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative",
+                    }}>
+                      <I t="timer" s={15} c={selfDestruct ? th.accent3 : undefined} />
+                      {selfDestruct > 0 && <span style={{ position: "absolute", top: 2, right: 2, fontSize: 7, color: th.accent3, fontWeight: 700 }}>{selfDestruct}s</span>}
+                    </button>
+
+                    <input value={msgInput} onChange={e => setMsgInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), sendMessage(msgInput))}
+                      placeholder={selfDestruct ? `Self-destruct in ${selfDestruct}s...` : "Type encrypted message..."}
+                      style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: "10px 14px", color: "#e0e0e8", fontSize: 12.5, fontFamily: "inherit" }} />
+                    <button onClick={() => sendMessage(msgInput)} style={{
+                      width: 40, height: 40, borderRadius: 10, border: "none",
+                      background: msgInput.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
+                      color: msgInput.trim() ? "#000" : "#3a3a4a", cursor: msgInput.trim() ? "pointer" : "default",
+                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s ease",
+                    }}>
+                      <I t="send" s={16} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* ══════ MESSAGE CONTEXT MENU ══════ */}
+            {msgContext && (
+              <div style={{ position: "fixed", inset: 0, zIndex: 150 }} onClick={() => setMsgContext(null)}>
+                <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: 6, minWidth: 180, animation: "fadeInScale 0.15s ease", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+                  {[
+                    { icon: "reply", label: "Reply", action: () => { setReplyTo(msgContext); setMsgContext(null); } },
+                    { icon: "pin", label: pinnedMsgs.find(m => m.index === msgContext.index) ? "Unpin" : "Pin", action: () => pinMsg(msgContext) },
+                    { icon: "copy", label: "Copy", action: () => copyMsg(msgContext) },
+                    { icon: "chain", label: "View Block", action: () => { setShowBlockInfo(msgContext); setMsgContext(null); } },
+                  ].map((item, i) => (
+                    <button key={i} onClick={item.action} style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 14px", border: "none", borderRadius: 8, background: "transparent", color: "#c0c0c8", cursor: "pointer", fontFamily: "inherit", fontSize: 12, textAlign: "left", transition: "background 0.1s" }}
+                      onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <I t={item.icon} s={14} c="#6a6a7a" />{item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ══════ BLOCK INFO MODAL ══════ */}
+            {showBlockInfo && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowBlockInfo(null)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 540, width: "100%", animation: "fadeInScale 0.2s ease", maxHeight: "85vh", overflowY: "auto" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="chain" s={20} c={th.accent} />
+                      <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5 }}>BLOCK #{showBlockInfo.index}</span>
+                    </div>
+                    <button onClick={() => setShowBlockInfo(null)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                  </div>
+                  {[
+                    { label: "Current Hash", value: showBlockInfo.hash, color: th.accent },
+                    { label: "Previous Hash", value: showBlockInfo.prevHash, color: th.accent2 },
+                    { label: "Nonce", value: String(showBlockInfo.nonce), color: th.accent3 },
+                    { label: "Sender", value: showBlockInfo.sender, color: "#e0e0e8" },
+                    { label: "Type", value: showBlockInfo.type?.toUpperCase(), color: "#e0e0e8" },
+                    { label: "Timestamp", value: new Date(showBlockInfo.ts).toISOString(), color: "#e0e0e8" },
+                  ].map((f, i) => (
+                    <div key={i} style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 9, color: "#4a5568", marginBottom: 4, letterSpacing: 1.5, textTransform: "uppercase" }}>{f.label}</div>
+                      <div style={{ fontFamily: "monospace", fontSize: 11, color: f.color, wordBreak: "break-all", lineHeight: 1.7, background: `${f.color}08`, padding: "8px 10px", borderRadius: 8 }}>{f.value}</div>
+                    </div>
+                  ))}
+                  {showBlockInfo.encrypted && (
+                    <div>
+                      <div style={{ fontSize: 9, color: "#4a5568", marginBottom: 4, letterSpacing: 1.5, textTransform: "uppercase" }}>Encrypted Payload (AES-256-GCM)</div>
+                      <div style={{ fontFamily: "monospace", fontSize: 9, color: "#ff8844", wordBreak: "break-all", lineHeight: 1.7, background: "rgba(255,136,68,0.05)", padding: "8px 10px", borderRadius: 8 }}>
+                        IV: {showBlockInfo.encrypted.iv}<br />CT: {showBlockInfo.encrypted.ciphertext?.slice(0, 100)}...
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ marginTop: 16, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <Tag color={th.accent} icon="check">VERIFIED</Tag>
+                    <Tag color={th.accent2} icon="lock">E2E ENCRYPTED</Tag>
+                    <Tag color={th.accent3} icon="zap">P2P DIRECT</Tag>
+                    {showBlockInfo.meta?.selfDestruct && <Tag color="#ff8844" icon="timer">SELF-DESTRUCT {showBlockInfo.meta.selfDestruct}s</Tag>}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ══════ CHAIN EXPLORER ══════ */}
+            {showChainExplorer && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 580, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                    <div>
+                      <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
+                        <I t="chain" s={20} c={th.accent} /> CHAIN EXPLORER
+                      </div>
+                      <div style={{ fontSize: 10, color: "#4a5568", marginTop: 4 }}>
+                        {chain.blocks.length} blocks · {chainValid ? "Chain valid" : "Chain broken"} · SHA-256 linked
+                      </div>
+                    </div>
+                    <button onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                  </div>
+                  {chain.blocks.length === 0 ? (
+                    <div style={{ textAlign: "center", padding: 50, color: "#2a2a3a", fontSize: 12 }}>No blocks yet. Send a message to start the chain.</div>
+                  ) : chain.blocks.map((b, i) => (
+                    <div key={i} style={{ background: "rgba(255,255,255,0.02)", border: `1px solid ${i % 2 === 0 ? th.accent : th.accent2}15`, borderRadius: 10, padding: 14, marginBottom: 6, borderLeft: `3px solid ${i % 2 === 0 ? th.accent : th.accent2}`, animation: "fadeIn 0.2s ease", animationDelay: `${i * 0.03}s`, animationFillMode: "both" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: i % 2 === 0 ? th.accent : th.accent2 }}>Block #{b.index}</span>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <Tag color="#4a5568">{b.type}</Tag>
+                          <span style={{ fontSize: 10, color: "#4a5568" }}>{fmtTime(b.ts)}</span>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#7a7a8a", marginBottom: 5 }}>{b.sender}: {b.content?.slice(0, 70)}{b.content?.length > 70 ? "..." : ""}</div>
+                      <div style={{ fontSize: 8.5, color: "#2a2a3a", fontFamily: "monospace" }}>{b.hash}</div>
+                      {i < chain.blocks.length - 1 && <div style={{ textAlign: "center", color: "#1a1a2a", fontSize: 14, marginTop: 4 }}>↓</div>}
+                    </div>
+                  ))}
+                  {chain.blocks.length > 0 && (
+                    <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+                      <Btn small ghost onClick={exportChat}><I t="dl" s={13} /> Export Chain</Btn>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ══════ INVITE MODAL ══════ */}
+            {showInvite && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowInvite(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 460, width: "100%", animation: "fadeInScale 0.2s ease" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                    <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="link" s={20} c={th.accent} /> PEER CONNECTION
+                    </span>
+                    <button onClick={() => setShowInvite(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 3 }}>
+                    {["create", "join"].map(t => (
+                      <button key={t} onClick={() => setInviteTab(t)} style={{
+                        flex: 1, padding: "9px 0", borderRadius: 8, border: "none",
+                        background: inviteTab === t ? `${th.accent}15` : "transparent",
+                        color: inviteTab === t ? th.accent : "#5a5a6a", cursor: "pointer",
+                        fontFamily: "inherit", fontSize: 11, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase",
+                      }}>{t === "create" ? "Create Invite" : "Join Channel"}</button>
+                    ))}
+                  </div>
+
+                  {inviteTab === "create" ? (
+                    <>
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Share this one-time invite code via a secure out-of-band channel. The code expires after first use.</p>
+                      <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
+                        <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700 }}>{inviteCode}</div>
+                      </div>
+                      <Btn accent style={{ width: "100%" }} onClick={copyInvite}>
+                        <I t={copied ? "check" : "copy"} s={15} c="#000" /> {copied ? "COPIED TO CLIPBOARD" : "COPY INVITE CODE"}
+                      </Btn>
+                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
+                    </>
+                  ) : (
+                    <>
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code from your peer to establish an encrypted P2P connection.</p>
+                      <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GL-XXXXXXXX-XXXXXXXX-..."
+                        style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "monospace", marginBottom: 14, letterSpacing: 1 }} />
+                      <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setJoinCode(""); }}>
+                        <I t="link" s={15} c="#000" /> CONNECT TO PEER
+                      </Btn>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ══════ PEER INFO MODAL ══════ */}
+            {showPeerInfo && activePeer && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowPeerInfo(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 420, width: "100%", animation: "fadeInScale 0.2s ease", textAlign: "center" }}>
+                  <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg, ${activePeer.color}, ${activePeer.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, margin: "0 auto 14px", border: `2px solid ${th.accent}25` }}>{activePeer.avatar}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{activePeer.name}</div>
+                  <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 16 }}>
+                    <Tag color={activePeer.status === "online" ? th.accent : "#4a5568"}>{activePeer.status?.toUpperCase()}</Tag>
+                    <Tag color={th.accent2} icon="lock">E2E ENCRYPTED</Tag>
+                  </div>
+                  <div style={{ textAlign: "left", background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 14 }}>
+                    {[
+                      { label: "Public Key", value: activePeer.pubKey },
+                      { label: "Connection", value: "WebRTC P2P Direct" },
+                      { label: "Encryption", value: "ECDH + AES-256-GCM" },
+                      { label: "Messages", value: `${convoMsgs.length} blocks` },
+                      { label: "Chain Status", value: chainValid ? "Valid" : "Broken" },
+                    ].map((f, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < 4 ? "1px solid rgba(255,255,255,0.04)" : "none" }}>
+                        <span style={{ fontSize: 11, color: "#5a5a6a" }}>{f.label}</span>
+                        <span style={{ fontSize: 11, color: "#a0a0a8", fontFamily: "monospace" }}>{f.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={() => setShowPeerInfo(false)} style={{ marginTop: 16, width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 10, color: "#8a8a9a", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>Close</button>
+                </div>
+              </div>
+            )}
+
+            {/* ══════ SETTINGS MODAL ══════ */}
+            {showSettings && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowSettings(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 500, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+                    <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="settings" s={20} c={th.accent} /> SETTINGS
+                    </span>
+                    <button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                  </div>
+
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Identity</div>
+                    <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 14 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                        <div style={{ width: 40, height: 40, borderRadius: 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#000" }}>{identity?.name?.charAt(0)?.toUpperCase()}</div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>{identity?.name}</div>
+                          <div style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace" }}>FP: {identity?.fingerprint}</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 9, color: "#3a3a4a", fontFamily: "monospace", wordBreak: "break-all", background: "rgba(255,255,255,0.02)", padding: 8, borderRadius: 6 }}>
+                        PUB: {identity?.publicKeyHex?.slice(0, 48)}...
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Theme</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {Object.entries(themes).map(([key, t]) => (
+                        <button key={key} onClick={() => setSettings(s => ({ ...s, theme: key }))} style={{
+                          padding: 12, borderRadius: 10, border: settings.theme === key ? `2px solid ${t.accent}` : "1px solid rgba(255,255,255,0.06)",
+                          background: t.bg, cursor: "pointer", textAlign: "left",
+                        }}>
+                          <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                            {[t.accent, t.accent2, t.accent3].map((c, i) => <div key={i} style={{ width: 12, height: 12, borderRadius: 3, background: c }} />)}
+                          </div>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: t.accent, textTransform: "capitalize" }}>{key}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Security</div>
+                    <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 2 }}>
+                      {[
+                        { label: "Encryption", value: settings.encLevel, icon: "shield" },
+                        { label: "Connection", value: settings.p2pRelay, icon: "globe" },
+                        { label: "Key Exchange", value: "ECDH P-256", icon: "key" },
+                        { label: "Hash Algorithm", value: "SHA-256", icon: "chain" },
+                      ].map((item, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: i < 3 ? "1px solid rgba(255,255,255,0.03)" : "none" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <I t={item.icon} s={14} c="#5a5a6a" />
+                            <span style={{ fontSize: 12, color: "#8a8a9a" }}>{item.label}</span>
+                          </div>
+                          <Tag color={th.accent}>{item.value}</Tag>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Preferences</div>
+                    <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 2 }}>
+                      {[
+                        { label: "Notifications", key: "notifications" },
+                        { label: "Sounds", key: "sounds" },
+                        { label: "Read Receipts", key: "readReceipts" },
+                      ].map((item, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: i < 2 ? "1px solid rgba(255,255,255,0.03)" : "none" }}>
+                          <span style={{ fontSize: 12, color: "#8a8a9a" }}>{item.label}</span>
+                          <button onClick={() => setSettings(s => ({ ...s, [item.key]: !s[item.key] }))} style={{
+                            width: 40, height: 22, borderRadius: 11, border: "none",
+                            background: settings[item.key] ? th.accent : "rgba(255,255,255,0.08)",
+                            cursor: "pointer", position: "relative", transition: "all 0.2s ease",
+                          }}>
+                            <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: settings[item.key] ? 21 : 3, transition: "all 0.2s ease" }} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Font Size: {settings.fontSize}px</div>
+                    <input type="range" min={11} max={18} value={settings.fontSize} onChange={e => setSettings(s => ({ ...s, fontSize: parseInt(e.target.value) }))}
+                      style={{ width: "100%", accentColor: th.accent }} />
+                  </div>
+
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <Btn small ghost onClick={exportChat} style={{ flex: 1 }}><I t="dl" s={13} /> Export Data</Btn>
+                    <Btn small ghost onClick={() => { setShowSettings(false); openRecovery(); }} style={{ flex: 1 }}><I t="recover" s={13} /> Backup ID</Btn>
+                  </div>
+                  <Btn small ghost onClick={wipeAll} style={{ width: "100%", borderColor: "rgba(255,68,68,0.2)", color: "#ff4444" }}><I t="trash" s={13} c="#ff4444" /> Wipe All Data</Btn>
+
+                  <div style={{ marginTop: 16, textAlign: "center", fontSize: 9, color: "#2a2a3a" }}>
+                    GhostLink v2.0 · Zero Trust · Zero Trace · Built with love
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ══════ RECOVERY MODAL ══════ */}
+            {showRecovery && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowRecovery(false)}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: 20, padding: 28, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="recover" s={20} c={th.accent} />
+                      <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5 }}>IDENTITY RECOVERY</span>
+                    </div>
+                    <button onClick={() => setShowRecovery(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                  </div>
+
+                  {/* Layer badges */}
+                  <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>
+                    {[
+                      { label: "L1 · Seed Phrase", color: th.accent },
+                      { label: "L2 · Shamir Shares", color: th.accent2 },
+                      { label: "L3 · P2P Recovery", color: th.accent3 },
+                    ].map((l, i) => <Tag key={i} color={l.color}>{l.label}</Tag>)}
+                  </div>
+
+                  {/* Tab row */}
+                  <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 3 }}>
+                    {["view", "verify", "restore"].map(t => (
+                      <button key={t} onClick={() => setRecoveryStep(t)} style={{
+                        flex: 1, padding: "8px 0", borderRadius: 8, border: "none",
+                        background: recoveryStep === t ? `${th.accent}15` : "transparent",
+                        color: recoveryStep === t ? th.accent : "#5a5a6a",
+                        cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase",
+                      }}>{t === "view" ? "Backup" : t === "verify" ? "Verify" : "Restore"}</button>
+                    ))}
+                  </div>
+
+                  {recoveryStep === "view" && (
+                    <>
+                      <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 16, lineHeight: 1.7 }}>
+                        Your <span style={{ color: th.accent }}>12-word seed phrase</span> is the master key to your identity. Write it down and store it offline. Anyone with these words can restore your GhostLink identity.
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 18 }}>
+                        {(seedPhrase || []).map((word, i) => (
+                          <div key={i} style={{ background: `${th.accent}08`, border: `1px solid ${th.accent}15`, borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 8, color: "#3a3a4a", fontFamily: "monospace", minWidth: 14 }}>{String(i + 1).padStart(2, "0")}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: th.accent, letterSpacing: 0.5 }}>{word}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background: "rgba(255,136,68,0.06)", border: "1px solid rgba(255,136,68,0.15)", borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 10, color: "#ff8844", lineHeight: 1.6 }}>
+                        ⚠ Never share this phrase digitally. Store offline only. GhostLink staff will never ask for your seed phrase.
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Btn small ghost onClick={() => navigator.clipboard?.writeText((seedPhrase || []).join(" "))} style={{ flex: 1 }}><I t="copy" s={13} /> Copy Phrase</Btn>
+                        <Btn small ghost onClick={() => { setSeedPhrase(generateSeedPhrase()); }} style={{ flex: 1 }}><I t="recover" s={13} /> Regenerate</Btn>
+                      </div>
+                      <div style={{ marginTop: 16, fontSize: 10, color: "#3a3a4a", lineHeight: 1.6 }}>
+                        <strong style={{ color: "#5a5a6a" }}>Layer 2 — Shamir's Secret Sharing:</strong> Your key is split into 5 shares (3-of-5 threshold). Shares are distributed to trusted peers in your network. You never need to share all shares with any one person.
+                      </div>
+                    </>
+                  )}
+
+                  {recoveryStep === "verify" && (
+                    <>
+                      <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 16, lineHeight: 1.7 }}>
+                        Prove you've saved your seed phrase by entering words <span style={{ color: th.accent }}>3, 7, and 11</span> below.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                        {[2, 6, 10].map((idx, pos) => {
+                          const correct = verifyResult !== null && verifyWords[pos].trim().toLowerCase() === (seedPhrase || [])[idx];
+                          const wrong = verifyResult === "fail" && verifyWords[pos].trim().toLowerCase() !== (seedPhrase || [])[idx];
+                          return (
+                            <div key={idx} style={{ flex: 1 }}>
+                              <label style={{ fontSize: 9, color: "#4a5568", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4, display: "block" }}>Word #{idx + 1}</label>
+                              <input value={verifyWords[pos]} onChange={e => { setVerifyResult(null); setVerifyWords(w => w.map((v, i) => i === pos ? e.target.value : v)); }} placeholder={`word ${idx + 1}`}
+                                style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: `1px solid ${correct ? th.accent : wrong ? "#ff4444" : "rgba(255,255,255,0.08)"}`, borderRadius: 8, padding: "10px 12px", color: correct ? th.accent : wrong ? "#ff4444" : "#e0e0e8", fontSize: 12, fontFamily: "'JetBrains Mono', monospace" }} />
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {verifyResult === "ok" && (
+                        <div style={{ padding: "10px 14px", borderRadius: 8, background: `${th.accent}10`, border: `1px solid ${th.accent}25`, fontSize: 11, color: th.accent, marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                          <I t="check" s={14} c={th.accent} /> Backup verified! Your seed phrase is saved correctly.
+                        </div>
+                      )}
+                      {verifyResult === "fail" && (
+                        <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(255,68,68,0.08)", border: "1px solid rgba(255,68,68,0.2)", fontSize: 11, color: "#ff4444", marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                          <I t="x" s={14} c="#ff4444" /> One or more words are incorrect. Check your backup.
+                        </div>
+                      )}
+                      <Btn accent style={{ width: "100%" }} onClick={() => {
+                        const checks = [2, 6, 10].map((idx, pos) => verifyWords[pos].trim().toLowerCase() === (seedPhrase || [])[idx]);
+                        setVerifyResult(checks.every(Boolean) ? "ok" : "fail");
+                      }}>
+                        <I t="shield" s={15} c="#000" /> VERIFY BACKUP
+                      </Btn>
+                    </>
+                  )}
+
+                  {recoveryStep === "restore" && (
+                    <>
+                      <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 16, lineHeight: 1.7 }}>
+                        Enter your 12-word seed phrase to restore your GhostLink identity on this device.
+                      </div>
+                      <textarea value={verifyInput} onChange={e => setVerifyInput(e.target.value)} placeholder="word1 word2 word3 ... word12"
+                        rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", resize: "none", marginBottom: 12 }} />
+                      <div style={{ fontSize: 10, color: "#3a3a4a", marginBottom: 16, lineHeight: 1.6 }}>
+                        <strong style={{ color: "#5a5a6a" }}>Layer 3 — P2P Recovery:</strong> If you're missing shares, GhostLink will automatically request Shamir fragments from your trusted peers once you enter a valid seed phrase.
+                      </div>
+                      <Btn accent style={{ width: "100%" }} onClick={() => {
+                        const words = verifyInput.trim().split(/\s+/);
+                        if (words.length !== 12) { alert("Please enter exactly 12 words."); return; }
+                        setSeedPhrase(words);
+                        setRecoveryStep("view");
+                        alert("Identity restored from seed phrase. Requesting peer fragments...");
+                      }}>
+                        <I t="recover" s={15} c="#000" /> RESTORE IDENTITY
+                      </Btn>
+                    </>
+                  )}
+
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<GhostLink />);
+    </script>
+  </body>
+</html>
