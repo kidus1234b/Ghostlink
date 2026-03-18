@@ -51,7 +51,68 @@
           const c = Array.from(b).map(b => b.toString(16).padStart(2, "0")).join("");
           return `GL-${c.slice(0, 8)}-${c.slice(8, 16)}-${c.slice(16, 24)}-${c.slice(24, 32)}`.toUpperCase();
         },
+        async deriveKeyFromSeed(words) {
+          const enc = new TextEncoder();
+          const km = await crypto.subtle.importKey("raw", enc.encode(words.join(" ")), "PBKDF2", false, ["deriveKey"]);
+          return crypto.subtle.deriveKey(
+            { name: "PBKDF2", salt: enc.encode("ghostlink-v2-salt"), iterations: 100000, hash: "SHA-256" },
+            km, { name: "AES-GCM", length: 256 }, false, ["wrapKey", "unwrapKey"]
+          );
+        },
+        async wrapPrivKey(privKey, wrapKey) {
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const wrapped = await crypto.subtle.wrapKey("pkcs8", privKey, wrapKey, { name: "AES-GCM", iv });
+          return {
+            iv: [...iv].map(b => b.toString(16).padStart(2,"0")).join(""),
+            data: [...new Uint8Array(wrapped)].map(b => b.toString(16).padStart(2,"0")).join("")
+          };
+        },
+        async unwrapPrivKey(w, wrapKey) {
+          const iv = new Uint8Array(w.iv.match(/.{2}/g).map(b => parseInt(b,16)));
+          const data = new Uint8Array(w.data.match(/.{2}/g).map(b => parseInt(b,16)));
+          return crypto.subtle.unwrapKey("pkcs8", data, wrapKey, { name: "AES-GCM", iv }, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+        },
       };
+
+      // ==================== SHAMIR SECRET SHARING (GF-256) ====================
+      const ShamirSSS = (() => {
+        const PRIME = 0x11b;
+        const LOG = new Uint8Array(256), EXP = new Uint8Array(512);
+        let x = 1;
+        for (let i = 0; i < 255; i++) {
+          EXP[i] = EXP[i+255] = x; LOG[x] = i;
+          x = (x << 1) ^ (x & 128 ? PRIME : 0);
+        }
+        const mul = (a,b) => (!a||!b) ? 0 : EXP[LOG[a]+LOG[b]];
+        const div = (a,b) => !a ? 0 : EXP[(LOG[a]-LOG[b]+255)%255];
+        const eval_ = (c,x) => { let r=0; for (let i=c.length-1;i>=0;i--) r=mul(r,x)^c[i]; return r; };
+        return {
+          split(secret, n, k) {
+            const shares = Array.from({length:n},(_,i)=>({x:i+1, y:new Uint8Array(secret.length)}));
+            for (let i=0;i<secret.length;i++) {
+              const c = new Uint8Array(k); c[0]=secret[i];
+              for (let j=1;j<k;j++) c[j]=crypto.getRandomValues(new Uint8Array(1))[0];
+              shares.forEach(s=>{ s.y[i]=eval_(Array.from(c),s.x); });
+            }
+            return shares;
+          },
+          combine(shares) {
+            const len=shares[0].y.length, out=new Uint8Array(len);
+            for (let i=0;i<len;i++) {
+              let s=0;
+              for (let j=0;j<shares.length;j++) {
+                let n=shares[j].y[i], d=1;
+                for (let m=0;m<shares.length;m++) {
+                  if (m!==j) { n=mul(n,shares[m].x); d=mul(d,shares[j].x^shares[m].x); }
+                }
+                s^=div(n,d);
+              }
+              out[i]=s;
+            }
+            return out;
+          }
+        };
+      })();
 
       // ==================== BLOCKCHAIN ====================
       class Chain {
@@ -130,6 +191,108 @@
       const fmtDate = (ts) => new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
       const fmtCallT = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
+      // ==================== RECOVERY HELPERS ====================
+
+      // Build the full data blob that gets Shamir-split
+      async function buildBackupBlob(identity, masterKey, appState) {
+        const wrappedPrivKey = await CryptoEngine.wrapPrivKey(identity.keyPair.privateKey, masterKey);
+        const blob = {
+          version: 1,
+          timestamp: Date.now(),
+          name: identity.name,
+          pubKeyHex: identity.publicKeyHex,
+          fingerprint: identity.fingerprint,
+          wrappedPrivKey,
+          messages: appState.messages || {},
+          contacts: appState.contacts || [],
+          settings: appState.settings || {},
+          chain: appState.chain || [],
+          files: appState.files || [],
+        };
+        return JSON.stringify(blob);
+      }
+
+      // Split a blob string into 7 Shamir fragments (threshold: 3)
+      // Fragment encoding: first byte = x-coordinate, rest = y-values (self-describing)
+      function generateBackupFragments(blobStr) {
+        const dataBytes = new TextEncoder().encode(blobStr);
+        const shares = ShamirSSS.split(dataBytes, 7, 3);
+        const fragments = shares.map((share) => {
+          const encoded = [share.x, ...share.y].map(b => b.toString(16).padStart(2,'0')).join('');
+          return {
+            id: share.x,
+            label: `Fragment ${share.x} of 7`,
+            data: encoded,
+            check: encoded.slice(0, 8),
+            distributed: false,
+            peerName: '',
+          };
+        });
+        localStorage.setItem('gl_fragment_meta', JSON.stringify(
+          fragments.map(f => ({ id: f.id, check: f.check, distributed: f.distributed, peerName: f.peerName }))
+        ));
+        return fragments;
+      }
+
+      // Mark a fragment as distributed to a named peer
+      function markFragmentDistributed(fragmentId, peerName) {
+        const meta = JSON.parse(localStorage.getItem('gl_fragment_meta') || '[]');
+        const frag = meta.find(f => f.id === fragmentId);
+        if (frag) { frag.distributed = true; frag.peerName = peerName; }
+        localStorage.setItem('gl_fragment_meta', JSON.stringify(meta));
+        return meta;
+      }
+
+      // Get current distribution status
+      function getFragmentStatus() {
+        const meta = JSON.parse(localStorage.getItem('gl_fragment_meta') || '[]');
+        const distributed = meta.filter(f => f.distributed).length;
+        return { total: 7, threshold: 3, distributed, safe: distributed >= 3, fragments: meta };
+      }
+
+      // Combine ≥3 fragment hex strings and unwrap identity using master key
+      async function combineAndRestore(masterKey, fragmentHexArray) {
+        if (fragmentHexArray.length < 3) return { success: false, error: `Need at least 3 fragments, got ${fragmentHexArray.length}` };
+        let shares;
+        try {
+          shares = fragmentHexArray.map(hex => {
+            const bytes = hex.trim().match(/.{2}/g).map(b => parseInt(b, 16));
+            return { x: bytes[0], y: new Uint8Array(bytes.slice(1)) };
+          });
+        } catch (e) { return { success: false, error: 'Invalid fragment format' }; }
+
+        let blob;
+        try {
+          const reconstructed = ShamirSSS.combine(shares);
+          blob = JSON.parse(new TextDecoder().decode(reconstructed));
+        } catch (e) { return { success: false, error: 'Fragment reconstruction failed — wrong or corrupted fragments' }; }
+
+        let privKey;
+        try {
+          privKey = await CryptoEngine.unwrapPrivKey(blob.wrappedPrivKey, masterKey);
+        } catch (e) { return { success: false, error: 'Key unwrap failed — wrong seed phrase' }; }
+
+        const pubKeyBytes = new Uint8Array(blob.pubKeyHex.match(/.{2}/g).map(b => parseInt(b,16)));
+        const pubKey = await crypto.subtle.importKey('raw', pubKeyBytes, { name: 'ECDH', namedCurve: 'P-256' }, true, []);
+
+        const identity = {
+          keyPair: { privateKey: privKey, publicKey: pubKey },
+          publicKeyHex: blob.pubKeyHex,
+          fingerprint: blob.fingerprint,
+          name: blob.name,
+        };
+
+        // Restore app state to localStorage
+        if (blob.messages) localStorage.setItem('gl_messages', JSON.stringify(blob.messages));
+        if (blob.settings) localStorage.setItem('gl_settings', JSON.stringify(blob.settings));
+        if (blob.chain) localStorage.setItem('gl_chain', JSON.stringify(blob.chain));
+        localStorage.setItem('gl_identity', JSON.stringify({
+          name: blob.name, pubKeyHex: blob.pubKeyHex, fingerprint: blob.fingerprint, wrappedPrivKey: blob.wrappedPrivKey
+        }));
+
+        return { success: true, identity, restored: { messages: !!blob.messages, settings: !!blob.settings, chain: !!blob.chain } };
+      }
+
       // ==================== MAIN APP ====================
       function GhostLink() {
         // Core state
@@ -197,6 +360,14 @@
         const [verifyInput, setVerifyInput] = useState("");
         const [verifyWords, setVerifyWords] = useState(["", "", ""]); // words #3, #7, #11
         const [verifyResult, setVerifyResult] = useState(null); // null | "ok" | "fail"
+        const [shamirFragments, setShamirFragments] = useState(null);
+        const [setupStep, setSetupStep] = useState("name"); // "name" | "seed"
+        const [pendingSeed, setPendingSeed] = useState(null);
+        const [restoreStatus, setRestoreStatus] = useState(null); // null|"loading"|"ok"|"error"|"wrongseed"|"noloc"
+        const [restoreStep, setRestoreStep] = useState("seed"); // "seed" | "fragments"
+        const [masterKeyTemp, setMasterKeyTemp] = useState(null);
+        const [fragmentInputs, setFragmentInputs] = useState(["", "", ""]);
+        const [combineStatus, setCombineStatus] = useState(null);
 
         // Refs
         const chatEndRef = useRef(null);
@@ -229,7 +400,23 @@
 
         // ==================== EFFECTS ====================
         useEffect(() => {
-          if (view === "splash") { const t = setTimeout(() => setView("setup"), 2800); return () => clearTimeout(t); }
+          try {
+            const saved = localStorage.getItem("gl_identity");
+            if (saved) {
+              const d = JSON.parse(saved);
+              setIdentity({ publicKeyHex: d.pubKeyHex || d.publicKeyHex, fingerprint: d.fingerprint, name: d.name, wrappedPrivKey: d.wrappedPrivKey || d.wrappedKey });
+              setDisplayName(d.name);
+              if (d.shamirFragments) setShamirFragments(d.shamirFragments);
+            }
+          } catch {}
+        }, []);
+
+        useEffect(() => {
+          if (view === "splash") {
+            const hasIdentity = !!localStorage.getItem("gl_identity");
+            const t = setTimeout(() => setView(hasIdentity ? "main" : "setup"), 2800);
+            return () => clearTimeout(t);
+          }
         }, [view]);
 
         useEffect(() => {
@@ -251,12 +438,74 @@
         }, [callActive]);
 
         // ==================== ACTIONS ====================
-        const setupIdentity = async () => {
+        const initSetup = () => {
           if (!displayName.trim()) return;
+          const seed = generateSeedPhrase();
+          setPendingSeed(seed);
+          setSeedPhrase(seed);
+          setSetupStep("seed");
+        };
+
+        const setupIdentity = async () => {
+          const seed = pendingSeed;
+          if (!seed) return;
           const { keyPair, publicKeyHex } = await CryptoEngine.generateKeyPair();
           const fp = (await CryptoEngine.sha256(publicKeyHex)).slice(0, 16).toUpperCase();
-          setIdentity({ keyPair, publicKeyHex, fingerprint: fp, name: displayName.trim() });
+          const masterKey = await CryptoEngine.deriveKeyFromSeed(seed);
+          const identityObj = { keyPair, publicKeyHex, fingerprint: fp, name: displayName.trim() };
+          const blobStr = await buildBackupBlob(identityObj, masterKey, { messages: {}, contacts: [], settings: {}, chain: [], files: [] });
+          const fragments = generateBackupFragments(blobStr);
+          const blobParsed = JSON.parse(blobStr);
+          localStorage.setItem("gl_identity", JSON.stringify({
+            name: blobParsed.name, pubKeyHex: blobParsed.pubKeyHex, fingerprint: blobParsed.fingerprint, wrappedPrivKey: blobParsed.wrappedPrivKey
+          }));
+          setShamirFragments(fragments);
+          setIdentity(identityObj);
           setView("main");
+        };
+
+        // Step 1: validate seed + derive key, try localStorage first, else advance to fragments
+        const validateAndDeriveKey = async () => {
+          const words = verifyInput.trim().split(/\s+/);
+          if (words.length !== 12) { setRestoreStatus("error"); return; }
+          setRestoreStatus("loading");
+          try {
+            const masterKey = await CryptoEngine.deriveKeyFromSeed(words);
+            const saved = localStorage.getItem("gl_identity");
+            if (saved) {
+              const d = JSON.parse(saved);
+              const wk = d.wrappedPrivKey || d.wrappedKey; // backward compat
+              try {
+                const privKey = await CryptoEngine.unwrapPrivKey(wk, masterKey);
+                setSeedPhrase(words);
+                const fragMeta = localStorage.getItem("gl_fragment_meta");
+                // Reconstruct fragment objects from metadata (no data, just display info)
+                setIdentity({ keyPair: { privateKey: privKey }, publicKeyHex: d.pubKeyHex || d.publicKeyHex, fingerprint: d.fingerprint, name: d.name });
+                setRestoreStatus("ok");
+                setTimeout(() => { setShowRecovery(false); setView("main"); }, 1500);
+                return;
+              } catch { /* wrong seed for this localStorage — fall through to fragments */ }
+            }
+            // No localStorage or wrong seed — need fragments
+            setMasterKeyTemp(masterKey);
+            setRestoreStep("fragments");
+            setRestoreStatus(null);
+          } catch { setRestoreStatus("wrongseed"); }
+        };
+
+        // Step 2: combine ≥3 fragments + finalize restore
+        const combineAndRestoreIdentity = async () => {
+          const validFrags = fragmentInputs.map(f => f.trim()).filter(f => f.length > 10);
+          if (validFrags.length < 3) { setCombineStatus("need3"); return; }
+          setCombineStatus("loading");
+          try {
+            const result = await combineAndRestore(masterKeyTemp, validFrags);
+            if (!result.success) { setCombineStatus(result.error); return; }
+            setSeedPhrase(verifyInput.trim().split(/\s+/));
+            setIdentity(result.identity);
+            setCombineStatus("ok");
+            setTimeout(() => { setShowRecovery(false); setView("main"); }, 1500);
+          } catch (e) { setCombineStatus("error"); }
         };
 
         const getConvoMsgs = () => messages[activeConvo] || [];
@@ -349,6 +598,11 @@
           setVerifyInput("");
           setVerifyWords(["", "", ""]);
           setVerifyResult(null);
+          setRestoreStep("seed");
+          setRestoreStatus(null);
+          setCombineStatus(null);
+          setFragmentInputs(["", "", ""]);
+          setMasterKeyTemp(null);
           setShowRecovery(true);
         };
 
@@ -459,23 +713,54 @@
                 ))}
               </div>
 
-              <div style={{ marginBottom: 6 }}>
-                <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>Display Name</label>
-                <input value={displayName} onChange={e => setDisplayName(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && setupIdentity()}
-                  placeholder="Enter your alias..."
-                  style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "inherit" }} />
-              </div>
-              <div style={{ fontSize: 9, color: "#3a3a4a", marginBottom: 20, paddingLeft: 2 }}>This name is visible only to connected peers</div>
-
-              <button onClick={setupIdentity} disabled={!displayName.trim()} style={{
-                width: "100%", background: displayName.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
-                border: "none", borderRadius: 12, padding: "14px 0", color: displayName.trim() ? "#000" : "#3a3a4a",
-                fontSize: 13, fontWeight: 700, cursor: displayName.trim() ? "pointer" : "default", fontFamily: "inherit",
-                letterSpacing: 1.5, transition: "all 0.3s ease", boxShadow: displayName.trim() ? `0 0 30px ${th.accent}30` : "none",
-              }}>
-                GENERATE IDENTITY
-              </button>
+              {setupStep === "name" ? (
+                <>
+                  <div style={{ marginBottom: 6 }}>
+                    <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>Display Name</label>
+                    <input value={displayName} onChange={e => setDisplayName(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && initSetup()}
+                      placeholder="Enter your alias..."
+                      style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "inherit" }} />
+                  </div>
+                  <div style={{ fontSize: 9, color: "#3a3a4a", marginBottom: 20, paddingLeft: 2 }}>This name is visible only to connected peers</div>
+                  <button onClick={initSetup} disabled={!displayName.trim()} style={{
+                    width: "100%", background: displayName.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
+                    border: "none", borderRadius: 12, padding: "14px 0", color: displayName.trim() ? "#000" : "#3a3a4a",
+                    fontSize: 13, fontWeight: 700, cursor: displayName.trim() ? "pointer" : "default", fontFamily: "inherit",
+                    letterSpacing: 1.5, transition: "all 0.3s ease", boxShadow: displayName.trim() ? `0 0 30px ${th.accent}30` : "none",
+                  }}>
+                    GENERATE IDENTITY
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.7 }}>
+                    Write down your <span style={{ color: th.accent }}>12-word seed phrase</span> and store it offline. This is the <strong style={{ color: "#e0e0e8" }}>only way</strong> to recover your identity on a new device.
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 14 }}>
+                    {(pendingSeed || []).map((word, i) => (
+                      <div key={i} style={{ background: `${th.accent}08`, border: `1px solid ${th.accent}18`, borderRadius: 8, padding: "7px 10px", display: "flex", alignItems: "center", gap: 7 }}>
+                        <span style={{ fontSize: 8, color: "#3a3a4a", fontFamily: "monospace", minWidth: 14 }}>{String(i+1).padStart(2,"0")}</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: th.accent, letterSpacing: 0.5 }}>{word}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ background: "rgba(255,136,68,0.06)", border: "1px solid rgba(255,136,68,0.2)", borderRadius: 8, padding: "10px 12px", marginBottom: 16, fontSize: 10, color: "#ff8844", lineHeight: 1.6 }}>
+                    ⚠ Never store this digitally. Write it on paper. Anyone with these words can access your identity.
+                  </div>
+                  <button onClick={setupIdentity} style={{
+                    width: "100%", background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`,
+                    border: "none", borderRadius: 12, padding: "14px 0", color: "#000",
+                    fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    letterSpacing: 1.5, transition: "all 0.3s ease", boxShadow: `0 0 30px ${th.accent}30`,
+                  }}>
+                    I'VE WRITTEN IT DOWN — ACTIVATE
+                  </button>
+                  <button onClick={() => setSetupStep("name")} style={{ marginTop: 8, width: "100%", background: "transparent", border: "none", color: "#4a5568", cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: 6 }}>
+                    ← Back
+                  </button>
+                </>
+              )}
             </div>
           </div>
         );
@@ -1206,8 +1491,42 @@
                         <Btn small ghost onClick={() => { setSeedPhrase(generateSeedPhrase()); }} style={{ flex: 1 }}><I t="recover" s={13} /> Regenerate</Btn>
                       </div>
                       <div style={{ marginTop: 16, fontSize: 10, color: "#3a3a4a", lineHeight: 1.6 }}>
-                        <strong style={{ color: "#5a5a6a" }}>Layer 2 — Shamir's Secret Sharing:</strong> Your key is split into 5 shares (3-of-5 threshold). Shares are distributed to trusted peers in your network. You never need to share all shares with any one person.
+                        <strong style={{ color: "#5a5a6a" }}>Layer 2 — Shamir's Secret Sharing:</strong> Your wrapped key is split into 5 fragments (3-of-5 threshold). Distribute fragments to trusted peers — no single peer can reconstruct your key.
                       </div>
+                      {shamirFragments ? (() => {
+                        const status = getFragmentStatus();
+                        return (
+                          <div style={{ marginTop: 14 }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                              <div style={{ fontSize: 9, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase" }}>7 Shamir Fragments · 3-of-7 threshold</div>
+                              <span style={{ fontSize: 9, color: status.safe ? th.accent : "#ff8844", fontWeight: 700 }}>{status.distributed}/{status.total} distributed {status.safe ? "✓" : "(need 3+)"}</span>
+                            </div>
+                            {shamirFragments.map((f) => (
+                              <div key={f.id} style={{ background: f.distributed ? `${th.accent}06` : `${th.accent2}06`, border: `1px solid ${f.distributed ? th.accent : th.accent2}14`, borderRadius: 8, padding: "8px 10px", marginBottom: 5, display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: f.distributed ? th.accent : th.accent2, minWidth: 20 }}>#{f.id}</span>
+                                <span style={{ fontSize: 8, fontFamily: "monospace", color: "#3a3a4a", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.check}…</span>
+                                {f.distributed && <span style={{ fontSize: 8, color: th.accent }}>{f.peerName}</span>}
+                                <button onClick={() => navigator.clipboard?.writeText(f.data)} style={{ background: `${th.accent2}15`, border: "none", borderRadius: 6, padding: "4px 8px", color: th.accent2, cursor: "pointer", fontSize: 9, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>COPY</button>
+                                {!f.distributed && (
+                                  <button onClick={() => {
+                                    const name = prompt("Who are you giving this fragment to?");
+                                    if (name) {
+                                      const updated = markFragmentDistributed(f.id, name);
+                                      setShamirFragments(frags => frags.map(frag => {
+                                        const meta = updated.find(m => m.id === frag.id);
+                                        return meta ? { ...frag, distributed: meta.distributed, peerName: meta.peerName } : frag;
+                                      }));
+                                    }
+                                  }} style={{ background: "rgba(255,255,255,0.04)", border: "none", borderRadius: 6, padding: "4px 8px", color: "#5a5a6a", cursor: "pointer", fontSize: 9, fontFamily: "inherit", flexShrink: 0 }}>GIVE</button>
+                                )}
+                              </div>
+                            ))}
+                            <div style={{ fontSize: 9, color: "#3a3a4a", marginTop: 6 }}>Any 3 fragments reconstruct your key. Distribute to different trusted peers.</div>
+                          </div>
+                        );
+                      })() : (
+                        <div style={{ marginTop: 12, fontSize: 9, color: "#3a3a4a" }}>Fragments generated at setup. Re-enter your seed phrase in Restore tab to regenerate.</div>
+                      )}
                     </>
                   )}
 
@@ -1250,23 +1569,43 @@
 
                   {recoveryStep === "restore" && (
                     <>
-                      <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 16, lineHeight: 1.7 }}>
-                        Enter your 12-word seed phrase to restore your GhostLink identity on this device.
-                      </div>
-                      <textarea value={verifyInput} onChange={e => setVerifyInput(e.target.value)} placeholder="word1 word2 word3 ... word12"
-                        rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", resize: "none", marginBottom: 12 }} />
-                      <div style={{ fontSize: 10, color: "#3a3a4a", marginBottom: 16, lineHeight: 1.6 }}>
-                        <strong style={{ color: "#5a5a6a" }}>Layer 3 — P2P Recovery:</strong> If you're missing shares, GhostLink will automatically request Shamir fragments from your trusted peers once you enter a valid seed phrase.
-                      </div>
-                      <Btn accent style={{ width: "100%" }} onClick={() => {
-                        const words = verifyInput.trim().split(/\s+/);
-                        if (words.length !== 12) { alert("Please enter exactly 12 words."); return; }
-                        setSeedPhrase(words);
-                        setRecoveryStep("view");
-                        alert("Identity restored from seed phrase. Requesting peer fragments...");
-                      }}>
-                        <I t="recover" s={15} c="#000" /> RESTORE IDENTITY
-                      </Btn>
+                      {restoreStep === "seed" ? (
+                        <>
+                          <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.7 }}>
+                            <strong style={{ color: "#8a8a9a" }}>Step 1 of 2</strong> — Enter your 12-word seed phrase. If this device has a saved identity, restore completes here. Otherwise you'll paste fragments.
+                          </div>
+                          <textarea value={verifyInput} onChange={e => { setVerifyInput(e.target.value); setRestoreStatus(null); }} placeholder="word1 word2 word3 ... word12"
+                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: `1px solid ${restoreStatus === "error" || restoreStatus === "wrongseed" ? "#ff4444" : restoreStatus === "ok" ? th.accent : "rgba(255,255,255,0.08)"}`, borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", resize: "none", marginBottom: 10 }} />
+                          {restoreStatus === "loading" && <div style={{ padding: "9px 12px", borderRadius: 8, background: `${th.accent2}10`, border: `1px solid ${th.accent2}25`, fontSize: 10, color: th.accent2, marginBottom: 10 }}>Deriving key via PBKDF2 · 100,000 iterations…</div>}
+                          {restoreStatus === "ok" && <div style={{ padding: "9px 12px", borderRadius: 8, background: `${th.accent}10`, border: `1px solid ${th.accent}25`, fontSize: 10, color: th.accent, marginBottom: 10 }}>Identity restored. Redirecting…</div>}
+                          {restoreStatus === "error" && <div style={{ padding: "9px 12px", borderRadius: 8, background: "rgba(255,68,68,0.08)", border: "1px solid rgba(255,68,68,0.2)", fontSize: 10, color: "#ff4444", marginBottom: 10 }}>Enter exactly 12 words.</div>}
+                          {restoreStatus === "wrongseed" && <div style={{ padding: "9px 12px", borderRadius: 8, background: "rgba(255,68,68,0.08)", border: "1px solid rgba(255,68,68,0.2)", fontSize: 10, color: "#ff4444", marginBottom: 10 }}>Wrong seed phrase — decryption failed.</div>}
+                          <Btn accent style={{ width: "100%" }} onClick={validateAndDeriveKey} disabled={restoreStatus === "loading" || restoreStatus === "ok"}>
+                            <I t="key" s={15} c="#000" /> DERIVE KEY & CHECK DEVICE
+                          </Btn>
+                        </>
+                      ) : (
+                        <>
+                          <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.7 }}>
+                            <strong style={{ color: "#8a8a9a" }}>Step 2 of 2</strong> — No saved identity found. Paste at least 3 Shamir fragments from your trusted peers.
+                          </div>
+                          {[0,1,2].map(i => (
+                            <div key={i} style={{ marginBottom: 8 }}>
+                              <label style={{ fontSize: 9, color: "#4a5568", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4, display: "block" }}>Fragment {i+1}</label>
+                              <textarea value={fragmentInputs[i]} onChange={e => setFragmentInputs(fi => fi.map((v,j) => j===i ? e.target.value : v))} placeholder="Paste hex fragment data..."
+                                rows={2} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "8px 10px", color: "#e0e0e8", fontSize: 10, fontFamily: "'JetBrains Mono', monospace", resize: "none" }} />
+                            </div>
+                          ))}
+                          {combineStatus === "need3" && <div style={{ padding: "9px 12px", borderRadius: 8, background: "rgba(255,68,68,0.08)", border: "1px solid rgba(255,68,68,0.2)", fontSize: 10, color: "#ff4444", marginBottom: 8 }}>Need at least 3 non-empty fragments.</div>}
+                          {combineStatus === "loading" && <div style={{ padding: "9px 12px", borderRadius: 8, background: `${th.accent2}10`, border: `1px solid ${th.accent2}25`, fontSize: 10, color: th.accent2, marginBottom: 8 }}>Combining fragments via Shamir GF-256…</div>}
+                          {combineStatus === "ok" && <div style={{ padding: "9px 12px", borderRadius: 8, background: `${th.accent}10`, border: `1px solid ${th.accent}25`, fontSize: 10, color: th.accent, marginBottom: 8 }}>Reconstructed. Restoring identity…</div>}
+                          {combineStatus && combineStatus !== "need3" && combineStatus !== "loading" && combineStatus !== "ok" && <div style={{ padding: "9px 12px", borderRadius: 8, background: "rgba(255,68,68,0.08)", border: "1px solid rgba(255,68,68,0.2)", fontSize: 10, color: "#ff4444", marginBottom: 8 }}>{combineStatus}</div>}
+                          <Btn accent style={{ width: "100%", marginBottom: 8 }} onClick={combineAndRestoreIdentity} disabled={combineStatus === "loading" || combineStatus === "ok"}>
+                            <I t="recover" s={15} c="#000" /> COMBINE & RESTORE
+                          </Btn>
+                          <button onClick={() => { setRestoreStep("seed"); setCombineStatus(null); setFragmentInputs(["","",""]); }} style={{ width: "100%", background: "transparent", border: "none", color: "#4a5568", cursor: "pointer", fontFamily: "inherit", fontSize: 11 }}>← Back to seed entry</button>
+                        </>
+                      )}
                     </>
                   )}
 
