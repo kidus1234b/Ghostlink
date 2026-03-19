@@ -6,6 +6,12 @@
     <title>GhostLink v2</title>
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="src/crypto/signal-protocol.js"></script>
+    <script src="src/p2p/webrtc-manager.js"></script>
+    <script src="src/p2p/file-transfer.js"></script>
+    <script src="src/p2p/media-handler.js"></script>
+    <script src="src/utils/offline-queue.js"></script>
+    <script src="src/utils/qr-invite.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -369,6 +375,36 @@
         const [fragmentInputs, setFragmentInputs] = useState(["", "", ""]);
         const [combineStatus, setCombineStatus] = useState(null);
 
+        // P2P & WebRTC
+        const [peerManager, setPeerManager] = useState(null);
+        const [signalingConnected, setSignalingConnected] = useState(false);
+        const [connectionStates, setConnectionStates] = useState({});
+        const [remoteStreams, setRemoteStreams] = useState({});
+        const [localStream, setLocalStream] = useState(null);
+
+        // Signal Protocol
+        const [sessionManager, setSessionManager] = useState(null);
+        const [groupKeyManager, setGroupKeyManager] = useState(null);
+
+        // File Transfer
+        const [fileTransferManager, setFileTransferManager] = useState(null);
+        const [activeTransfers, setActiveTransfers] = useState({});
+
+        // Media Handler
+        const [mediaHandler, setMediaHandler] = useState(null);
+        const [incomingCall, setIncomingCall] = useState(null);
+
+        // Offline Queue
+        const [offlineQueue, setOfflineQueue] = useState(null);
+        const [pendingMessages, setPendingMessages] = useState({});
+
+        // QR Invite
+        const [qrInviteData, setQrInviteData] = useState(null);
+        const [showQRScanner, setShowQRScanner] = useState(false);
+        const [qrScanResult, setQrScanResult] = useState(null);
+        const qrVideoRef = useRef(null);
+        const qrScannerRef = useRef(null);
+
         // Refs
         const chatEndRef = useRef(null);
         const timerRef = useRef(null);
@@ -450,6 +486,134 @@
           window.addEventListener("resize", onResize);
           return () => window.removeEventListener("resize", onResize);
         }, []);
+
+        // Initialize P2P systems when identity is ready
+        useEffect(() => {
+          if (!identity || peerManager) return;
+
+          const SIGNALING_URL = window.location.hostname === 'localhost'
+            ? 'ws://localhost:3001'
+            : (window.GHOSTLINK_SIGNAL_URL || 'ws://localhost:3001');
+
+          // Initialize Signal Protocol session manager
+          const initSignalProtocol = async () => {
+            if (typeof GhostLinkSignal !== 'undefined') {
+              const sm = new GhostLinkSignal.SessionManager();
+              setSessionManager(sm);
+              const gk = new GhostLinkSignal.GroupKeyAgreement(sm);
+              setGroupKeyManager(gk);
+            }
+          };
+
+          // Initialize WebRTC peer manager
+          const initP2P = async () => {
+            if (typeof RTCPeerManager !== 'undefined') {
+              const pm = new RTCPeerManager(SIGNALING_URL, {
+                id: identity.fingerprint,
+                name: identity.name,
+                publicKey: identity.publicKeyHex
+              });
+
+              pm.on('signaling-connected', () => setSignalingConnected(true));
+              pm.on('signaling-disconnected', () => setSignalingConnected(false));
+              pm.on('peer-connected', ({ peerId, peerInfo }) => {
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+              });
+              pm.on('peer-disconnected', ({ peerId }) => {
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+              });
+              pm.on('message', async ({ peerId, data }) => {
+                try {
+                  const msg = JSON.parse(data);
+                  if (msg.type === 'chat') {
+                    const block = await chain.add(msg.sender, msg.content, msg.msgType || 'text', msg.meta || {});
+                    block.encrypted = { iv: msg.iv, ciphertext: msg.ciphertext };
+                    setMessages(prev => ({
+                      ...prev,
+                      [peerId]: [...(prev[peerId] || []), block]
+                    }));
+                  }
+                } catch (e) { console.error('Message parse error:', e); }
+              });
+              pm.on('connection-state-change', ({ peerId, state }) => {
+                setConnectionStates(prev => ({ ...prev, [peerId]: state }));
+              });
+
+              // Initialize file transfer
+              if (typeof FileTransfer !== 'undefined') {
+                const ft = new FileTransfer(pm, CryptoEngine);
+                ft.on('progress', ({ transferId, peerId, progress }) => {
+                  setActiveTransfers(prev => ({ ...prev, [transferId]: { peerId, progress } }));
+                });
+                ft.on('complete', ({ transferId, peerId, file }) => {
+                  setActiveTransfers(prev => { const n = { ...prev }; delete n[transferId]; return n; });
+                });
+                setFileTransferManager(ft);
+              }
+
+              // Initialize media handler
+              if (typeof MediaHandler !== 'undefined') {
+                const mh = new MediaHandler(pm);
+                mh.on('incoming-call', ({ peerId, callType: ct }) => {
+                  setIncomingCall({ peerId, callType: ct });
+                });
+                mh.on('remote-stream', ({ peerId, stream }) => {
+                  setRemoteStreams(prev => ({ ...prev, [peerId]: stream }));
+                });
+                mh.on('local-stream', ({ stream }) => {
+                  setLocalStream(stream);
+                });
+                mh.on('call-ended', () => {
+                  setCallActive(false);
+                  setCallType(null);
+                  setLocalStream(null);
+                  setRemoteStreams({});
+                  setIncomingCall(null);
+                });
+                setMediaHandler(mh);
+              }
+
+              await pm.connect();
+              setPeerManager(pm);
+            }
+          };
+
+          // Initialize offline queue
+          const initOfflineQueue = async () => {
+            if (typeof OfflineQueue !== 'undefined') {
+              const oq = new OfflineQueue(SIGNALING_URL.replace('ws', 'http').replace('3001', '3000'));
+              oq.on('message-delivered', ({ peerId, messageId }) => {
+                setPendingMessages(prev => {
+                  const n = { ...prev };
+                  if (n[peerId]) n[peerId] = n[peerId].filter(m => m.id !== messageId);
+                  return n;
+                });
+              });
+              setOfflineQueue(oq);
+            }
+          };
+
+          // Initialize QR invite
+          const initQR = async () => {
+            if (typeof QRInvite !== 'undefined') {
+              const qi = new QRInvite({
+                publicKey: identity.publicKeyHex,
+                name: identity.name,
+                fingerprint: identity.fingerprint
+              });
+              setQrInviteData(qi);
+            }
+          };
+
+          initSignalProtocol();
+          initP2P();
+          initOfflineQueue();
+          initQR();
+
+          return () => {
+            if (peerManager) peerManager.leaveRoom();
+          };
+        }, [identity]);
 
         // ==================== ACTIONS ====================
         const initSetup = () => {
@@ -544,30 +708,80 @@
             }, meta.selfDestruct * 1000);
           }
 
-          setTyping(true);
-          setTimeout(async () => {
-            setTyping(false);
-            const replies = [
-              "Got it. Checking the codebase now.",
-              "Acknowledged. Will push the fix within the hour.",
-              "Chain verified on my end. All blocks intact.",
-              "Pulling the latest. Stand by.",
-              "Roger. Encrypted channel is stable.",
-              "Nice catch. Reviewing and will circle back.",
-              "Pushed to staging. Check when ready.",
-              "Merged. Pipeline running now.",
-            ];
-            const reply = replies[Math.floor(Math.random() * replies.length)];
-            const peer = peers.find(p => p.id === activeConvo);
-            const rb = await chain.add(peer?.name || "Peer", reply, "text", {});
-            rb.encrypted = await CryptoEngine.encrypt(reply, identity.fingerprint);
-            setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), rb] }));
-          }, 1200 + Math.random() * 2000);
+          // Send via P2P if connected
+          const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+          if (peerManager && connectionStates[peerId] === 'connected') {
+            try {
+              const msgPayload = JSON.stringify({
+                type: 'chat',
+                sender: identity.name,
+                content: content.trim(),
+                msgType: type,
+                meta,
+                iv: block.encrypted.iv,
+                ciphertext: block.encrypted.ciphertext,
+                blockHash: block.hash
+              });
+              await peerManager.sendMessage(peerId, msgPayload);
+            } catch (e) {
+              console.error('P2P send failed, queuing:', e);
+              if (offlineQueue) {
+                await offlineQueue.queueMessage(peerId, block.encrypted);
+              }
+            }
+          } else if (offlineQueue) {
+            // Peer offline — queue for later delivery
+            await offlineQueue.queueMessage(peerId, block.encrypted);
+            setPendingMessages(prev => ({
+              ...prev,
+              [peerId]: [...(prev[peerId] || []), { id: block.hash, encrypted: block.encrypted }]
+            }));
+          }
+
+          // Simulated reply (keep for demo when no real peers)
+          if (!peerManager || !signalingConnected) {
+            setTyping(true);
+            setTimeout(async () => {
+              setTyping(false);
+              const replies = [
+                "Got it. Checking the codebase now.",
+                "Acknowledged. Will push the fix within the hour.",
+                "Chain verified on my end. All blocks intact.",
+                "Pulling the latest. Stand by.",
+                "Roger. Encrypted channel is stable.",
+                "Nice catch. Reviewing and will circle back.",
+                "Pushed to staging. Check when ready.",
+                "Merged. Pipeline running now.",
+              ];
+              const reply = replies[Math.floor(Math.random() * replies.length)];
+              const peer = peers.find(p => p.id === activeConvo);
+              const rb = await chain.add(peer?.name || "Peer", reply, "text", {});
+              rb.encrypted = await CryptoEngine.encrypt(reply, identity.fingerprint);
+              setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), rb] }));
+            }, 1200 + Math.random() * 2000);
+          }
         };
 
-        const sendFile = async (fileName, fileSize) => {
+        const sendFile = async (fileName, fileSize, fileObj) => {
           const id = Date.now();
           setUploadProgress(p => ({ ...p, [id]: 0 }));
+
+          const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+
+          // Real P2P file transfer if available
+          if (fileTransferManager && fileObj && connectionStates[peerId] === 'connected') {
+            try {
+              fileTransferManager.on('progress', ({ transferId, progress }) => {
+                if (transferId === id) setUploadProgress(p => ({ ...p, [id]: progress }));
+              });
+              await fileTransferManager.sendFile(peerId, fileObj);
+              await sendMessage(fileName, "file", { fileSize, chunks: Math.ceil(fileSize / 65536), hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
+              setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
+              return;
+            } catch (e) { console.error('P2P file transfer failed:', e); }
+          }
+
+          // Fallback: simulated transfer
           const chunks = Math.ceil(fileSize / 65536);
           for (let i = 0; i <= chunks; i++) {
             await new Promise(r => setTimeout(r, 200));
@@ -581,7 +795,7 @@
           e.preventDefault();
           setDragOver(false);
           const f = e.dataTransfer?.files;
-          if (f?.length) Array.from(f).forEach(file => sendFile(file.name, file.size));
+          if (f?.length) Array.from(f).forEach(file => sendFile(file.name, file.size, file));
         };
 
         const pinMsg = (msg) => {
@@ -630,9 +844,79 @@
           setShowSettings(false);
         };
 
-        const startCall = (type) => { setCallType(type); setCallActive(true); setMicOn(true); setCamOn(type === "video"); setScreenSharing(false); };
-        const endCall = () => { setCallActive(false); setCallType(null); setScreenSharing(false); clearInterval(timerRef.current); };
-        const genInvite = () => { setInviteCode(CryptoEngine.genInvite()); setShowInvite(true); setInviteTab("create"); };
+        const startCall = async (type) => {
+          setCallType(type);
+          setCallActive(true);
+          setMicOn(true);
+          setCamOn(type === "video");
+          setScreenSharing(false);
+
+          if (mediaHandler && activeConvo) {
+            const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+            try {
+              if (type === "voice") await mediaHandler.startVoiceCall(peerId);
+              else if (type === "video") await mediaHandler.startVideoCall(peerId);
+              else if (type === "screen") await mediaHandler.startScreenShare(peerId);
+            } catch (e) { console.error('Call start failed:', e); }
+          }
+        };
+
+        const endCall = async () => {
+          if (mediaHandler && activeConvo) {
+            const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+            try { await mediaHandler.endCall(peerId); } catch (e) {}
+          }
+          setCallActive(false);
+          setCallType(null);
+          setScreenSharing(false);
+          setLocalStream(null);
+          setRemoteStreams({});
+          clearInterval(timerRef.current);
+        };
+
+        const answerIncomingCall = async (withVideo) => {
+          if (!incomingCall || !mediaHandler) return;
+          setCallActive(true);
+          setCallType(withVideo ? 'video' : 'voice');
+          setMicOn(true);
+          setCamOn(withVideo);
+          try {
+            await mediaHandler.answerCall(incomingCall.peerId, withVideo);
+          } catch (e) { console.error('Answer failed:', e); }
+          setIncomingCall(null);
+        };
+
+        const rejectIncomingCall = async () => {
+          if (mediaHandler && incomingCall) {
+            try { await mediaHandler.endCall(incomingCall.peerId); } catch (e) {}
+          }
+          setIncomingCall(null);
+        };
+
+        const toggleMicReal = () => {
+          if (mediaHandler) mediaHandler.toggleMic();
+          setMicOn(prev => !prev);
+        };
+
+        const toggleCamReal = () => {
+          if (mediaHandler) mediaHandler.toggleCamera();
+          setCamOn(prev => !prev);
+        };
+
+        const genInvite = async () => {
+          const code = CryptoEngine.genInvite();
+          setInviteCode(code);
+          setShowInvite(true);
+          setInviteTab("create");
+
+          // Generate QR code SVG if available
+          if (qrInviteData) {
+            try {
+              const svg = qrInviteData.generateQRCodeSVG(200);
+              setQrInviteData(prev => ({ ...prev, qrSvg: svg, code }));
+            } catch (e) { console.error('QR generation failed:', e); }
+          }
+        };
         const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
         const themes = {
@@ -803,19 +1087,23 @@
               <div style={{ fontSize: 32, fontWeight: 300, color: th.accent, marginBottom: 40, letterSpacing: 6, fontFamily: "'Space Grotesk', sans-serif" }}>{fmtCallT(callTimer)}</div>
 
               {(callType === "video" || screenSharing) && (
-                <div style={{ width: "85%", maxWidth: 640, aspectRatio: "16/9", background: "rgba(255,255,255,0.02)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 36, position: "relative", overflow: "hidden" }}>
-                  <div style={{ color: "#2a2a3a", fontSize: 12 }}>{screenSharing ? "Screen sharing active..." : "Encrypted video feed"}</div>
-                  <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, transparent 60%, ${th.bg}88)` }} />
-                  {callType === "video" && (
-                    <div style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, background: "rgba(0,0,0,0.5)", borderRadius: 10, border: `1px solid ${th.accent}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#4a5568" }}>You</div>
+                <div style={{ width: "100%", maxWidth: 480, aspectRatio: "16/9", background: "#111", borderRadius: 12, overflow: "hidden", position: "relative", marginBottom: 36 }}>
+                  {Object.values(remoteStreams).map((stream, i) => (
+                    <video key={i} autoPlay playsInline ref={el => { if (el && stream) el.srcObject = stream; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ))}
+                  {localStream && (
+                    <video autoPlay playsInline muted ref={el => { if (el && localStream) el.srcObject = localStream; }} style={{ position: "absolute", bottom: 8, right: 8, width: 120, height: 90, borderRadius: 8, objectFit: "cover", border: `2px solid ${th.accent}` }} />
+                  )}
+                  {!Object.keys(remoteStreams).length && (
+                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: 13 }}>Waiting for peer video...</div>
                   )}
                 </div>
               )}
 
               <div style={{ display: "flex", gap: 16 }}>
                 {[
-                  { icon: micOn ? "mic" : "micOff", bg: micOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => setMicOn(!micOn) },
-                  ...(callType === "video" ? [{ icon: camOn ? "video" : "vidOff", bg: camOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => setCamOn(!camOn) }] : []),
+                  { icon: micOn ? "mic" : "micOff", bg: micOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleMicReal() },
+                  ...(callType === "video" ? [{ icon: camOn ? "video" : "vidOff", bg: camOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleCamReal() }] : []),
                   { icon: "screen", bg: screenSharing ? th.accent + "33" : "rgba(255,255,255,0.08)", action: () => setScreenSharing(!screenSharing) },
                   { icon: "phone", bg: "#ff3344", action: endCall },
                 ].map((b, i) => (
@@ -840,6 +1128,7 @@
             {/* ══════ SIDEBAR ══════ */}
             <div style={{ width: isTablet ? 52 : 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
               <div style={{ color: th.accent, marginBottom: 16, cursor: "pointer" }}><I t="ghost" s={28} c={th.accent} /></div>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingConnected ? "#00cc66" : "#ff4444", margin: "4px auto", boxShadow: signalingConnected ? "0 0 8px #00cc6688" : "0 0 8px #ff444488" }} title={signalingConnected ? "Connected to signaling" : "Offline"} />
               {[
                 { id: "chat", icon: "chat", label: "Chats" },
                 { id: "files", icon: "file", label: "Files" },
@@ -858,6 +1147,9 @@
               <div style={{ flex: 1 }} />
               <button title="Recovery" onClick={openRecovery} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <I t="recover" s={18} />
+              </button>
+              <button onClick={() => setShowQRScanner(true)} style={{ width: 36, height: 36, borderRadius: 10, background: showQRScanner ? `${th.accent}22` : "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Scan QR Code">
+                <I t="search" s={18} c={showQRScanner ? th.accent : "#4a5568"} />
               </button>
               <button title="Settings" onClick={() => setShowSettings(true)} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <I t="settings" s={18} />
@@ -1204,7 +1496,7 @@
                     </div>
                   )}
                   <div style={{ padding: isMobile ? "8px 10px" : "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, background: `${th.bg}ee`, flexShrink: 0 }}>
-                    <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) sendFile(e.target.files[0].name, e.target.files[0].size); }} />
+                    <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) sendFile(e.target.files[0].name, e.target.files[0].size, e.target.files[0]); }} />
                     <button onClick={() => fileInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <I t="file" s={15} />
                     </button>
@@ -1375,6 +1667,9 @@
                         <I t={copied ? "check" : "copy"} s={15} c="#000" /> {copied ? "COPIED TO CLIPBOARD" : "COPY INVITE CODE"}
                       </Btn>
                       <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
+                      {qrInviteData?.qrSvg && (
+                        <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrInviteData.qrSvg }} />
+                      )}
                     </>
                   ) : (
                     <>
@@ -1383,6 +1678,9 @@
                         style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "monospace", marginBottom: 14, letterSpacing: 1 }} />
                       <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setJoinCode(""); }}>
                         <I t="link" s={15} c="#000" /> CONNECT TO PEER
+                      </Btn>
+                      <Btn ghost small onClick={() => { setShowInvite(false); setShowQRScanner(true); }} style={{ width: "100%", marginTop: 8 }}>
+                        <I t="search" s={14} /> Scan QR Code
                       </Btn>
                     </>
                   )}
@@ -1697,6 +1995,69 @@
                     </>
                   )}
 
+                </div>
+              </div>
+            )}
+
+            {/* QR Scanner Modal */}
+            {showQRScanner && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", zIndex: 9999, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace" }}>
+                <div style={{ background: th.bg2, borderRadius: 16, padding: 24, width: isMobile ? "95%" : 400, border: `1px solid ${th.accent}22` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                    <span style={{ color: "#fff", fontSize: 16, fontWeight: 700 }}>Scan QR Invite</span>
+                    <button onClick={() => { setShowQRScanner(false); if (qrScannerRef.current) qrScannerRef.current.stopScanning(); }} style={{ background: "none", border: "none", color: "#8a8a9a", cursor: "pointer", fontSize: 20 }}>&#x2715;</button>
+                  </div>
+                  <div style={{ position: "relative", width: "100%", paddingBottom: "100%", background: "#000", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+                    <video ref={qrVideoRef} autoPlay playsInline muted style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+                    <div style={{ position: "absolute", inset: "10%", border: `2px solid ${th.accent}88`, borderRadius: 12 }} />
+                    <div style={{ position: "absolute", left: "10%", right: "10%", height: 2, background: th.accent, animation: "scanline 2s linear infinite", opacity: 0.7 }} />
+                  </div>
+                  {qrScanResult && (
+                    <div style={{ padding: 12, background: `${th.accent}15`, borderRadius: 8, color: th.accent, fontSize: 12, textAlign: "center" }}>
+                      Invite found: {qrScanResult.code || qrScanResult}
+                    </div>
+                  )}
+                  <Btn accent onClick={async () => {
+                    if (typeof QRScanner !== 'undefined' && qrVideoRef.current) {
+                      const scanner = new QRScanner();
+                      qrScannerRef.current = scanner;
+                      scanner.on('scan', async (data) => {
+                        try {
+                          const invite = QRInvite.parseInvite(data);
+                          setQrScanResult(invite);
+                          scanner.stopScanning();
+                          if (peerManager && invite.c) {
+                            await peerManager.joinRoom(invite.c);
+                          }
+                          setTimeout(() => setShowQRScanner(false), 2000);
+                        } catch (e) { setQrScanResult('Invalid QR code'); }
+                      });
+                      await scanner.startScanning(qrVideoRef.current);
+                    }
+                  }} style={{ width: "100%", marginTop: 8 }}>
+                    <I t="search" s={14} c="#000" /> Start Scanning
+                  </Btn>
+                </div>
+              </div>
+            )}
+
+            {/* Incoming Call Overlay */}
+            {incomingCall && !callActive && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 9998, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace" }}>
+                <div style={{ textAlign: "center" }}>
+                  <div style={{ width: 80, height: 80, borderRadius: "50%", background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", animation: "pulse 1.5s ease-in-out infinite" }}>
+                    <I t={incomingCall.callType === 'video' ? 'video' : 'phone'} s={36} c="#000" />
+                  </div>
+                  <div style={{ color: "#fff", fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Incoming {incomingCall.callType} call</div>
+                  <div style={{ color: "#8a8a9a", fontSize: 13, marginBottom: 32 }}>{incomingCall.peerId}</div>
+                  <div style={{ display: "flex", gap: 24, justifyContent: "center" }}>
+                    <button onClick={rejectIncomingCall} style={{ width: 60, height: 60, borderRadius: "50%", background: "#ff4444", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <I t="phone" s={24} c="#fff" />
+                    </button>
+                    <button onClick={() => answerIncomingCall(incomingCall.callType === 'video')} style={{ width: 60, height: 60, borderRadius: "50%", background: "#00cc66", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <I t="phone" s={24} c="#fff" />
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
