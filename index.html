@@ -299,8 +299,45 @@
         return { success: true, identity, restored: { messages: !!blob.messages, settings: !!blob.settings, chain: !!blob.chain } };
       }
 
+      // ==================== ERROR BOUNDARY ====================
+      class ErrorBoundary extends React.Component {
+        constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+        static getDerivedStateFromError(error) { return { hasError: true, error }; }
+        render() {
+          if (this.state.hasError) {
+            return React.createElement('div', {
+              style: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", padding: 20, textAlign: 'center' }
+            },
+              React.createElement('div', { style: { fontSize: 48, marginBottom: 16 } }, '\u26A0'),
+              React.createElement('div', { style: { fontSize: 18, fontWeight: 700, marginBottom: 8 } }, 'GhostLink Error'),
+              React.createElement('div', { style: { fontSize: 12, color: '#8a8a9a', maxWidth: 400 } }, this.state.error?.message || 'An unexpected error occurred'),
+              React.createElement('button', {
+                onClick: () => { this.setState({ hasError: false, error: null }); },
+                style: { marginTop: 20, padding: '10px 20px', background: '#ff4466', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontFamily: "'JetBrains Mono', monospace" }
+              }, 'Reload App')
+            );
+          }
+          return this.props.children;
+        }
+      }
+
       // ==================== MAIN APP ====================
       function GhostLink() {
+        // WebCrypto check
+        if (!crypto?.subtle) {
+          return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center', padding: 20 }}>
+            <div><div style={{ fontSize: 24, marginBottom: 8 }}>WebCrypto Required</div><div style={{ fontSize: 13, color: '#8a8a9a' }}>Your browser doesn't support the Web Crypto API. Use a modern browser with HTTPS.</div></div>
+          </div>;
+        }
+
+        // Toast notification system
+        const [toasts, setToasts] = useState([]);
+        const addToast = (message, type = 'info') => {
+          const id = Date.now();
+          setToasts(prev => [...prev.slice(-4), { id, message, type }]);
+          setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+        };
+
         // Core state
         const [view, setView] = useState("splash");
         const [identity, setIdentity] = useState(null);
@@ -415,7 +452,7 @@
         const [isTablet, setIsTablet] = useState(window.innerWidth >= 768 && window.innerWidth < 1024);
 
         // Demo peers
-        const [peers] = useState([
+        const [peers, setPeers] = useState([
           { id: 1, name: "Alex Chen", status: "online", pubKey: "04a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5", lastSeen: "now", avatar: "AC", color: "#1a3a2a", unread: 2 },
           { id: 2, name: "Sarah Kim", status: "online", pubKey: "04d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8", lastSeen: "now", avatar: "SK", color: "#2a1a3a", unread: 0 },
           { id: 3, name: "Dev Team", status: "group", pubKey: "multi-sig-composite-key", lastSeen: "5 peers", avatar: "DT", color: "#1a2a3a", isGroup: true, unread: 5 },
@@ -514,13 +551,32 @@
                 publicKey: identity.publicKeyHex
               });
 
-              pm.on('signaling-connected', () => setSignalingConnected(true));
-              pm.on('signaling-disconnected', () => setSignalingConnected(false));
+              pm.on('signaling-connected', () => { setSignalingConnected(true); addToast('Connected to signaling server', 'success'); });
+              pm.on('signaling-disconnected', () => { setSignalingConnected(false); addToast('Disconnected from server', 'error'); });
               pm.on('peer-connected', ({ peerId, peerInfo }) => {
                 setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+                setPeers(prev => {
+                  if (prev.find(p => p.fingerprint === peerId || p.id === peerId)) return prev;
+                  return [...prev, {
+                    id: peerId,
+                    name: peerInfo?.name || 'Unknown Peer',
+                    status: 'online',
+                    pubKey: peerInfo?.publicKey || '',
+                    lastSeen: 'now',
+                    avatar: (peerInfo?.name || 'UP').slice(0, 2).toUpperCase(),
+                    color: '#1a2a3a',
+                    unread: 0,
+                    fingerprint: peerId,
+                    isReal: true
+                  }];
+                });
+                addToast(`${peerInfo?.name || 'Peer'} connected`, 'success');
               });
               pm.on('peer-disconnected', ({ peerId }) => {
                 setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+                setPeers(prev => prev.map(p =>
+                  (p.fingerprint === peerId || p.id === peerId) ? { ...p, status: 'offline' } : p
+                ));
               });
               pm.on('message', async ({ peerId, data }) => {
                 try {
@@ -690,6 +746,7 @@
 
         const sendMessage = async (content, type = "text", meta = {}) => {
           if (!content?.trim() && type === "text") return;
+          try {
           if (replyTo) meta.replyTo = { index: replyTo.index, sender: replyTo.sender, preview: replyTo.content?.slice(0, 60) };
           if (selfDestruct > 0) meta.selfDestruct = selfDestruct;
           const block = await chain.add(identity.name, content.trim(), type, meta);
@@ -760,9 +817,11 @@
               setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), rb] }));
             }, 1200 + Math.random() * 2000);
           }
+          } catch (e) { console.error('sendMessage error:', e); addToast(e.message || 'Failed to send message', 'error'); }
         };
 
         const sendFile = async (fileName, fileSize, fileObj) => {
+          try {
           const id = Date.now();
           setUploadProgress(p => ({ ...p, [id]: 0 }));
 
@@ -778,7 +837,7 @@
               await sendMessage(fileName, "file", { fileSize, chunks: Math.ceil(fileSize / 65536), hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
               setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
               return;
-            } catch (e) { console.error('P2P file transfer failed:', e); }
+            } catch (e) { console.error('P2P file transfer failed:', e); addToast('File transfer failed: ' + e.message, 'error'); }
           }
 
           // Fallback: simulated transfer
@@ -789,6 +848,7 @@
           }
           await sendMessage(fileName, "file", { fileSize, chunks, hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
           setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
+          } catch (e) { console.error('sendFile error:', e); addToast(e.message || 'Failed to send file', 'error'); }
         };
 
         const handleFileDrop = (e) => {
@@ -845,20 +905,20 @@
         };
 
         const startCall = async (type) => {
-          setCallType(type);
-          setCallActive(true);
-          setMicOn(true);
-          setCamOn(type === "video");
-          setScreenSharing(false);
+          try {
+            setCallType(type);
+            setCallActive(true);
+            setMicOn(true);
+            setCamOn(type === "video");
+            setScreenSharing(false);
 
-          if (mediaHandler && activeConvo) {
-            const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-            try {
+            if (mediaHandler && activeConvo) {
+              const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
               if (type === "voice") await mediaHandler.startVoiceCall(peerId);
               else if (type === "video") await mediaHandler.startVideoCall(peerId);
               else if (type === "screen") await mediaHandler.startScreenShare(peerId);
-            } catch (e) { console.error('Call start failed:', e); }
-          }
+            }
+          } catch (e) { console.error('Call start failed:', e); addToast('Call failed: ' + e.message, 'error'); setCallActive(false); setCallType(null); }
         };
 
         const endCall = async () => {
@@ -918,6 +978,22 @@
           }
         };
         const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+
+        const joinPeer = async (code) => {
+          if (!code || !code.startsWith('GL-')) { addToast('Invalid invite code. Must start with GL-', 'error'); return; }
+          try {
+            if (peerManager) {
+              await peerManager.joinRoom(code);
+              addToast('Connecting to peer...', 'info');
+            } else {
+              addToast('P2P not initialized yet', 'error');
+            }
+            setShowInvite(false);
+          } catch (e) {
+            console.error('Join failed:', e);
+            addToast('Join failed: ' + e.message, 'error');
+          }
+        };
 
         const themes = {
           phantom: { bg: "#0a0a0f", bg2: "#08080d", bg3: "#0c0c13", accent: "#00ffa3", accent2: "#00d4ff", accent3: "#b347ff" },
@@ -1105,7 +1181,7 @@
                   { icon: micOn ? "mic" : "micOff", bg: micOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleMicReal() },
                   ...(callType === "video" ? [{ icon: camOn ? "video" : "vidOff", bg: camOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleCamReal() }] : []),
                   { icon: "screen", bg: screenSharing ? th.accent + "33" : "rgba(255,255,255,0.08)", action: () => setScreenSharing(!screenSharing) },
-                  { icon: "phone", bg: "#ff3344", action: endCall },
+                  { icon: "phone", bg: "#ff3344", action: () => endCall() },
                 ].map((b, i) => (
                   <button key={i} onClick={b.action} style={{ width: 56, height: 56, borderRadius: "50%", border: "none", background: b.bg, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", boxShadow: `0 0 20px ${b.bg}33` }}>
                     <I t={b.icon} s={22} />
@@ -1124,6 +1200,24 @@
         return (
           <div style={{ width: "100%", height: "100vh", background: th.bg, color: "#e0e0e8", fontFamily: "'JetBrains Mono', monospace", overflow: "hidden", position: "relative", display: "flex" }}>
             <style>{globalCSS}</style>
+
+            {/* ══════ TOAST NOTIFICATIONS ══════ */}
+            {toasts.length > 0 && (
+              <div style={{ position: 'fixed', top: 12, right: 12, zIndex: 99999, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {toasts.map(t => (
+                  <div key={t.id} style={{
+                    padding: '10px 16px', borderRadius: 10, fontSize: 12, fontWeight: 500,
+                    fontFamily: "'JetBrains Mono', monospace", animation: 'fadeIn 0.3s ease',
+                    background: t.type === 'error' ? '#ff444422' : t.type === 'success' ? '#00ffa322' : '#ffffff11',
+                    color: t.type === 'error' ? '#ff4466' : t.type === 'success' ? '#00ffa3' : '#c0c0c8',
+                    border: `1px solid ${t.type === 'error' ? '#ff444433' : t.type === 'success' ? '#00ffa333' : '#ffffff15'}`,
+                    maxWidth: 320, backdropFilter: 'blur(12px)'
+                  }}>
+                    {t.message}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* ══════ SIDEBAR ══════ */}
             <div style={{ width: isTablet ? 52 : 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
@@ -1676,7 +1770,7 @@
                       <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code from your peer to establish an encrypted P2P connection.</p>
                       <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GL-XXXXXXXX-XXXXXXXX-..."
                         style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "monospace", marginBottom: 14, letterSpacing: 1 }} />
-                      <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setJoinCode(""); }}>
+                      <Btn accent style={{ width: "100%" }} onClick={() => { joinPeer(joinCode); setJoinCode(""); }}>
                         <I t="link" s={15} c="#000" /> CONNECT TO PEER
                       </Btn>
                       <Btn ghost small onClick={() => { setShowInvite(false); setShowQRScanner(true); }} style={{ width: "100%", marginTop: 8 }}>
@@ -2066,7 +2160,7 @@
       }
 
       const root = ReactDOM.createRoot(document.getElementById("root"));
-      root.render(<GhostLink />);
+      root.render(React.createElement(ErrorBoundary, null, React.createElement(GhostLink)));
     </script>
   </body>
 </html>

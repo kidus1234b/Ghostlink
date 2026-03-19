@@ -15,7 +15,10 @@
  */
 
 const crypto = globalThis.crypto;
-const subtle = crypto.subtle;
+const subtle = crypto?.subtle;
+if (!subtle) {
+  console.warn('GhostLink Signal Protocol: WebCrypto not available');
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility helpers
@@ -473,6 +476,9 @@ class DoubleRatchet {
     this.skippedKeys = new Map();
     /** Initialised flag */
     this._initialised = false;
+    /** Async mutex locks to prevent concurrent encrypt/decrypt race conditions */
+    this._encryptLock = Promise.resolve();
+    this._decryptLock = Promise.resolve();
   }
 
   /**
@@ -547,28 +553,36 @@ class DoubleRatchet {
    * @returns {Promise<{header: {dh: string, pn: number, n: number}, ciphertext: ArrayBuffer, nonce: ArrayBuffer}>}
    */
   async encrypt(plaintext) {
-    if (!this._initialised) throw new Error('Ratchet not initialised — call init() first');
-    if (!this.sendChainKey) throw new Error('No sending chain key — ratchet not ready');
+    let resolve;
+    const prev = this._encryptLock;
+    this._encryptLock = new Promise(r => { resolve = r; });
+    await prev;
+    try {
+      if (!this._initialised) throw new Error('Ratchet not initialised — call init() first');
+      if (!this.sendChainKey) throw new Error('No sending chain key — ratchet not ready');
 
-    // Advance sending chain
-    const { messageKey, chainKey } = await this.ratchetStep(this.sendChainKey);
-    this.sendChainKey = chainKey;
+      // Advance sending chain
+      const { messageKey, chainKey } = await this.ratchetStep(this.sendChainKey);
+      this.sendChainKey = chainKey;
 
-    const dhPub = await this.getPublicKey();
-    const header = {
-      dh: bufToHex(dhPub),
-      pn: this.prevSendN,
-      n: this.sendN,
-    };
+      const dhPub = await this.getPublicKey();
+      const header = {
+        dh: bufToHex(dhPub),
+        pn: this.prevSendN,
+        n: this.sendN,
+      };
 
-    // Use header as AAD for AEAD
-    const aad = encode(JSON.stringify(header));
-    const encKey = await deriveMessageEncryptionKey(messageKey);
-    const { ciphertext, nonce } = await aesEncrypt(encKey, encode(plaintext), aad);
+      // Use header as AAD for AEAD
+      const aad = encode(JSON.stringify(header));
+      const encKey = await deriveMessageEncryptionKey(messageKey);
+      const { ciphertext, nonce } = await aesEncrypt(encKey, encode(plaintext), aad);
 
-    this.sendN++;
+      this.sendN++;
 
-    return { header, ciphertext, nonce };
+      return { header, ciphertext, nonce };
+    } finally {
+      resolve();
+    }
   }
 
   /**
@@ -580,43 +594,51 @@ class DoubleRatchet {
    * @returns {Promise<string>} decrypted plaintext
    */
   async decrypt(header, ciphertext, nonce) {
-    if (!this._initialised) throw new Error('Ratchet not initialised — call init() first');
+    let resolve;
+    const prev = this._decryptLock;
+    this._decryptLock = new Promise(r => { resolve = r; });
+    await prev;
+    try {
+      if (!this._initialised) throw new Error('Ratchet not initialised — call init() first');
 
-    // 1. Try skipped message keys
-    const skId = skippedKeyId(header.dh, header.n);
-    if (this.skippedKeys.has(skId)) {
-      const mk = this.skippedKeys.get(skId);
-      this.skippedKeys.delete(skId); // forward secrecy: delete after use
-      return this._decryptWithKey(mk, header, ciphertext, nonce);
-    }
-
-    // 2. Check if header.dh is a new ratchet key
-    const theirPubHex = header.dh;
-    let currentRemoteHex = null;
-    if (this.dhRemotePublic) {
-      const remotePub = await exportPublicKey(this.dhRemotePublic);
-      currentRemoteHex = bufToHex(remotePub);
-    }
-
-    if (currentRemoteHex !== theirPubHex) {
-      // New ratchet key — skip any remaining messages from the old chain
-      if (this.recvChainKey) {
-        await this._skipMessages(currentRemoteHex, header.pn);
+      // 1. Try skipped message keys
+      const skId = skippedKeyId(header.dh, header.n);
+      if (this.skippedKeys.has(skId)) {
+        const mk = this.skippedKeys.get(skId);
+        this.skippedKeys.delete(skId); // forward secrecy: delete after use
+        return this._decryptWithKey(mk, header, ciphertext, nonce);
       }
-      // Perform DH ratchet
-      const theirPub = await importECDHPublicKey(hexToBuf(theirPubHex));
-      await this.dhRatchet(theirPub);
+
+      // 2. Check if header.dh is a new ratchet key
+      const theirPubHex = header.dh;
+      let currentRemoteHex = null;
+      if (this.dhRemotePublic) {
+        const remotePub = await exportPublicKey(this.dhRemotePublic);
+        currentRemoteHex = bufToHex(remotePub);
+      }
+
+      if (currentRemoteHex !== theirPubHex) {
+        // New ratchet key — skip any remaining messages from the old chain
+        if (this.recvChainKey) {
+          await this._skipMessages(currentRemoteHex, header.pn);
+        }
+        // Perform DH ratchet
+        const theirPub = await importECDHPublicKey(hexToBuf(theirPubHex));
+        await this.dhRatchet(theirPub);
+      }
+
+      // 3. Skip ahead in the current receiving chain if needed
+      await this._skipMessages(theirPubHex, header.n);
+
+      // 4. Advance receiving chain one step
+      const { messageKey, chainKey } = await this.ratchetStep(this.recvChainKey);
+      this.recvChainKey = chainKey;
+      this.recvN++;
+
+      return this._decryptWithKey(messageKey, header, ciphertext, nonce);
+    } finally {
+      resolve();
     }
-
-    // 3. Skip ahead in the current receiving chain if needed
-    await this._skipMessages(theirPubHex, header.n);
-
-    // 4. Advance receiving chain one step
-    const { messageKey, chainKey } = await this.ratchetStep(this.recvChainKey);
-    this.recvChainKey = chainKey;
-    this.recvN++;
-
-    return this._decryptWithKey(messageKey, header, ciphertext, nonce);
   }
 
   /**
@@ -872,6 +894,18 @@ class SessionManager {
       signingPrivate: bufToHex(
         await exportPrivateKey(this.x3dh.identitySigningKey.privateKey)
       ),
+      signedPreKey: this.x3dh.signedPreKey ? {
+        id: this.x3dh.signedPreKey.id,
+        publicKey: bufToHex(await crypto.subtle.exportKey('raw', this.x3dh.signedPreKey.keyPair.publicKey)),
+        privateKey: bufToHex(await crypto.subtle.exportKey('pkcs8', this.x3dh.signedPreKey.keyPair.privateKey)),
+        signature: bufToHex(this.x3dh.signedPreKey.signature),
+      } : null,
+      oneTimePreKeys: await Promise.all((this.x3dh.oneTimePreKeys || []).map(async opk => ({
+        id: opk.id,
+        publicKey: bufToHex(await crypto.subtle.exportKey('raw', opk.keyPair.publicKey)),
+        privateKey: bufToHex(await crypto.subtle.exportKey('pkcs8', opk.keyPair.privateKey)),
+      }))),
+      preKeyIdCounter: this.x3dh._preKeyIdCounter,
     };
   }
 
@@ -893,6 +927,28 @@ class SessionManager {
 
       this._keysReady = true;
     }
+
+    // Restore signed pre-key
+    if (data.signedPreKey) {
+      const spkPub = await importECDHPublicKey(hexToBuf(data.signedPreKey.publicKey));
+      const spkPriv = await importECDHPrivateKey(hexToBuf(data.signedPreKey.privateKey));
+      this.x3dh.signedPreKey = {
+        id: data.signedPreKey.id,
+        keyPair: { publicKey: spkPub, privateKey: spkPriv },
+        signature: hexToBuf(data.signedPreKey.signature),
+      };
+    }
+    // Restore one-time pre-keys
+    if (data.oneTimePreKeys) {
+      this.x3dh.oneTimePreKeys = await Promise.all(data.oneTimePreKeys.map(async opk => ({
+        id: opk.id,
+        keyPair: {
+          publicKey: await importECDHPublicKey(hexToBuf(opk.publicKey)),
+          privateKey: await importECDHPrivateKey(hexToBuf(opk.privateKey)),
+        }
+      })));
+    }
+    if (data.preKeyIdCounter) this.x3dh._preKeyIdCounter = data.preKeyIdCounter;
 
     // Restore sessions
     if (data.sessions) {
@@ -943,6 +999,8 @@ class GroupKeyAgreement {
      * }>
      */
     this.groups = new Map();
+    /** Per-group async mutex locks to prevent concurrent encrypt race conditions */
+    this._groupLocks = new Map();
   }
 
   /**
@@ -1065,29 +1123,38 @@ class GroupKeyAgreement {
    * @returns {Promise<{iteration: number, ciphertext: ArrayBuffer, nonce: ArrayBuffer, signature: ArrayBuffer}>}
    */
   async encryptGroupMessage(groupId, plaintext) {
-    const group = this.groups.get(groupId);
-    if (!group || !group.ownSenderKey) {
-      throw new Error('No sender key for group');
+    if (!this._groupLocks.has(groupId)) this._groupLocks.set(groupId, Promise.resolve());
+    let resolve;
+    const prev = this._groupLocks.get(groupId);
+    this._groupLocks.set(groupId, new Promise(r => { resolve = r; }));
+    await prev;
+    try {
+      const group = this.groups.get(groupId);
+      if (!group || !group.ownSenderKey) {
+        throw new Error('No sender key for group');
+      }
+
+      const sk = group.ownSenderKey;
+
+      // Derive message key from current chain key
+      const { messageKey, chainKey } = await KDF_CK(sk.chainKey);
+      const iteration = sk.iteration;
+
+      // Advance chain
+      sk.chainKey = chainKey;
+      sk.iteration++;
+
+      // Encrypt
+      const encKey = await deriveMessageEncryptionKey(messageKey);
+      const { ciphertext, nonce } = await aesEncrypt(encKey, encode(plaintext));
+
+      // Sign the ciphertext for authentication
+      const signature = await ecdsaSign(sk.signingKey.privateKey, ciphertext);
+
+      return { iteration, ciphertext, nonce, signature };
+    } finally {
+      resolve();
     }
-
-    const sk = group.ownSenderKey;
-
-    // Derive message key from current chain key
-    const { messageKey, chainKey } = await KDF_CK(sk.chainKey);
-    const iteration = sk.iteration;
-
-    // Advance chain
-    sk.chainKey = chainKey;
-    sk.iteration++;
-
-    // Encrypt
-    const encKey = await deriveMessageEncryptionKey(messageKey);
-    const { ciphertext, nonce } = await aesEncrypt(encKey, encode(plaintext));
-
-    // Sign the ciphertext for authentication
-    const signature = await ecdsaSign(sk.signingKey.privateKey, ciphertext);
-
-    return { iteration, ciphertext, nonce, signature };
   }
 
   /**
@@ -1113,19 +1180,38 @@ class GroupKeyAgreement {
     let currentIteration = sk.iteration;
 
     if (message.iteration < currentIteration) {
-      throw new Error('Message iteration is in the past — possible replay');
+      // Check if we stored a skipped key for this iteration
+      const skippedKeyId = `${groupId}:${senderId}:${message.iteration}`;
+      const skippedKey = this._skippedGroupKeys?.get(skippedKeyId);
+      if (!skippedKey) throw new Error('Message too old or already decrypted (possible replay)');
+      this._skippedGroupKeys.delete(skippedKeyId);
+      // Decrypt with the skipped key
+      const encKey = await deriveMessageEncryptionKey(skippedKey);
+      const pt = await aesDecrypt(encKey, message.ciphertext, message.nonce);
+      return decode(pt);
     }
 
-    // Advance the chain to reach the message's iteration
+    // Advance the chain to reach the message's iteration, storing skipped keys
+    if (!this._skippedGroupKeys) this._skippedGroupKeys = new Map();
     let messageKey;
-    while (currentIteration <= message.iteration) {
-      const result = await KDF_CK(currentChainKey);
-      if (currentIteration === message.iteration) {
-        messageKey = result.messageKey;
-      }
-      currentChainKey = result.chainKey;
+    while (currentIteration < message.iteration) {
+      const { chainKey: nextChain, messageKey: mk } = await KDF_CK(currentChainKey);
+      const keyId = `${groupId}:${senderId}:${currentIteration}`;
+      this._skippedGroupKeys.set(keyId, mk);
+      currentChainKey = nextChain;
       currentIteration++;
+      // Limit stored keys
+      if (this._skippedGroupKeys.size > 500) {
+        const oldest = this._skippedGroupKeys.keys().next().value;
+        this._skippedGroupKeys.delete(oldest);
+      }
     }
+
+    // Derive the message key for the target iteration
+    const result = await KDF_CK(currentChainKey);
+    messageKey = result.messageKey;
+    currentChainKey = result.chainKey;
+    currentIteration++;
 
     // Update stored state
     sk.chainKey = currentChainKey;
@@ -1188,7 +1274,7 @@ class GroupKeyAgreement {
 // Exports
 // ─────────────────────────────────────────────────────────────────────────────
 
-export { X3DH, DoubleRatchet, SessionManager, GroupKeyAgreement };
+// (globalThis assignment below handles non-module usage)
 
 // Also attach to globalThis for non-module usage (e.g., text/babel script tags)
 if (typeof globalThis !== 'undefined') {

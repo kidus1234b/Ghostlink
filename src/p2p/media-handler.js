@@ -115,7 +115,7 @@ class EventEmitter {
  * media.on('remote-stream', (peerId, stream) => attachToVideo(stream));
  * await media.startVoiceCall(peerId);
  */
-export class MediaHandler extends EventEmitter {
+class MediaHandler extends EventEmitter {
   /**
    * @param {import('./webrtc-manager.js').RTCPeerManager} peerManager
    */
@@ -605,4 +605,4 @@ export class MediaHandler extends EventEmitter {
   }
 }
 
-export default MediaHandler;
+window.MediaHandler = MediaHandler;

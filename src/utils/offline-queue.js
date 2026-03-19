@@ -566,5 +566,4 @@ class OfflineQueue {
   }
 }
 
-export { OfflineQueue };
-export default OfflineQueue;
+window.OfflineQueue = OfflineQueue;
