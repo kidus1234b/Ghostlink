@@ -114,7 +114,7 @@ class EventEmitter {
  * ft.on('complete', (id, file) => saveFile(file));
  * await ft.sendFile(peerId, fileInput.files[0]);
  */
-export class FileTransfer extends EventEmitter {
+class FileTransfer extends EventEmitter {
   /**
    * @param {import('./webrtc-manager.js').RTCPeerManager} peerManager
    * @param {{ sharedKeyForPeer: (peerId: string) => CryptoKey }|null} [cryptoEngine]
@@ -634,4 +634,4 @@ export class FileTransfer extends EventEmitter {
   }
 }
 
-export default FileTransfer;
+window.FileTransfer = FileTransfer;

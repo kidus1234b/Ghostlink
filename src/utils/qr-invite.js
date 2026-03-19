@@ -1438,5 +1438,8 @@ function decodeQRFromImageData(imageData) {
 // EXPORTS
 // ═══════════════════════════════════════════════════════════════════════
 
-export { QRInvite, QRScanner, qrEncode, matrixToSVG, decodeQRFromImageData };
-export default QRInvite;
+window.QRInvite = QRInvite;
+window.QRScanner = QRScanner;
+window.qrEncode = qrEncode;
+window.matrixToSVG = matrixToSVG;
+window.decodeQRFromImageData = decodeQRFromImageData;

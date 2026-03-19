@@ -216,6 +216,11 @@ app.get('/health', (_req, res) => {
 });
 
 app.post('/turn-credentials', (_req, res) => {
+  // Validate TURN secret exists before generating credentials
+  if (!TURN_SECRET || TURN_SECRET === 'ghostlink-turn-secret-change-me') {
+    log('error', 'TURN secret not configured');
+    return res.status(503).json({ error: 'TURN credentials not configured' });
+  }
   try {
     const credentials = generateTurnCredentials();
     res.json(credentials);
@@ -227,6 +232,12 @@ app.post('/turn-credentials', (_req, res) => {
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
+});
+
+// Express error-handling middleware
+app.use((err, req, res, next) => {
+  console.error('Express error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 const httpServer = http.createServer(app);
@@ -400,9 +411,22 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Peer ID validation — prevent impersonation
+    if (msg.from && msg.from !== peerId) {
+      send(ws, { type: 'error', message: 'Peer ID mismatch — impersonation rejected' });
+      return;
+    }
+
     const { to, type } = msg;
     if (!to || typeof to !== 'string') {
       send(ws, { type: 'error', message: 'Missing target peerId' });
+      return;
+    }
+
+    // Room access control — target must be in the same room
+    const targetRoom = peerToRoom.get(to);
+    if (targetRoom !== currentRoom) {
+      send(ws, { type: 'error', message: 'Target peer not in your room' });
       return;
     }
 
@@ -448,6 +472,12 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // Peer ID validation — prevent impersonation
+    if (msg.from && msg.from !== peerId) {
+      send(ws, { type: 'error', message: 'Peer ID mismatch — impersonation rejected' });
+      return;
+    }
+
     const { to, encrypted } = msg;
     if (!to || typeof to !== 'string') {
       send(ws, { type: 'error', message: 'Missing target peerId' });
@@ -455,6 +485,13 @@ wss.on('connection', (ws, req) => {
     }
     if (!encrypted || typeof encrypted !== 'object') {
       send(ws, { type: 'error', message: 'Missing encrypted payload' });
+      return;
+    }
+
+    // Room access control — only relay to peers in the same room (or queue for offline peers who were in the room)
+    const targetRoom = peerToRoom.get(to);
+    if (targetRoom && targetRoom !== currentRoom) {
+      send(ws, { type: 'error', message: 'Target peer not in your room' });
       return;
     }
 

@@ -126,7 +126,7 @@ class PeerSession {
  * mgr.on('message', (peerId, msg) => console.log(msg));
  * await mgr.sendMessage(peerId, { text: 'hello' });
  */
-export class RTCPeerManager extends EventEmitter {
+class RTCPeerManager extends EventEmitter {
   /**
    * @param {string} signalingUrl  WebSocket URL of the signaling server.
    * @param {{ publicKey: CryptoKey, privateKey: CryptoKey, peerId: string }} identity
@@ -989,4 +989,5 @@ export class RTCPeerManager extends EventEmitter {
   }
 }
 
-export default RTCPeerManager;
+window.RTCPeerManager = RTCPeerManager;
+window.EventEmitter = EventEmitter;
