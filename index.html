@@ -541,10 +541,16 @@
           const initP2P = async () => {
             if (typeof RTCPeerManager !== 'undefined') {
               const pm = new RTCPeerManager(SIGNALING_URL, {
+                peerId: identity.fingerprint,
                 id: identity.fingerprint,
                 name: identity.name,
-                publicKey: identity.publicKeyHex
+                publicKey: identity.publicKeyHex,
+                publicKeyHex: identity.publicKeyHex,
+                keyPair: identity.keyPair || null
               });
+
+              // Set peerManager IMMEDIATELY so joinRoom works even if later setup fails
+              setPeerManager(pm);
 
               pm.on('signaling-connected', () => { setSignalingConnected(true); addToast('Connected to signaling server', 'success'); });
               pm.on('signaling-disconnected', () => { setSignalingConnected(false); addToast('Disconnected from server', 'error'); });
@@ -681,8 +687,17 @@
                 setMediaHandler(mh);
               }
 
-              await pm.connect();
-              setPeerManager(pm);
+              // peerManager already set right after constructor
+              try {
+                await pm.connect();
+              } catch (connectErr) {
+                console.warn('[GhostLink] Signaling connect failed (will auto-reconnect):', connectErr.message);
+                addToast('Signaling server unreachable — will retry', 'error');
+              }
+            } else {
+              // RTCPeerManager script not loaded yet — retry after a delay
+              console.warn('[GhostLink] RTCPeerManager not available yet, retrying in 500ms...');
+              setTimeout(initP2P, 500);
             }
           };
 
@@ -705,10 +720,12 @@
           const initQR = async () => {
             if (typeof QRInvite !== 'undefined') {
               const qi = new QRInvite({
-                publicKey: identity.publicKeyHex,
+                publicKeyHex: identity.publicKeyHex,
                 name: identity.name,
-                fingerprint: identity.fingerprint
+                fingerprint: identity.fingerprint,
+                keyPair: identity.keyPair || null
               });
+              qrInviteRef.current = qi;
               setQrInviteData(qi);
             }
           };
@@ -980,16 +997,49 @@
         };
 
         const endCall = async () => {
-          if (mediaHandler && activeConvo) {
-            const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-            try { await mediaHandler.endCall(peerId); } catch (e) {}
+          const peer = peers.find(p => p.id === activeConvo);
+          const duration = callTimer;
+          const ct = callType;
+
+          // Stop media tracks first to free hardware immediately
+          if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
           }
+          Object.values(remoteStreams).forEach(stream => {
+            if (stream && stream.getTracks) stream.getTracks().forEach(track => track.stop());
+          });
+
+          // End via media handler
+          if (mediaHandler && activeConvo) {
+            const peerId = peer?.fingerprint || String(activeConvo);
+            try { await mediaHandler.endCall(peerId); } catch (e) { console.warn('endCall media cleanup:', e); }
+          }
+
+          // Reset all call state
           setCallActive(false);
           setCallType(null);
           setScreenSharing(false);
+          setMicOn(true);
+          setCamOn(true);
           setLocalStream(null);
           setRemoteStreams({});
+          setCallTimer(0);
           clearInterval(timerRef.current);
+
+          // Add to call history
+          if (peer && duration > 0) {
+            setCallHistory(prev => [{
+              id: Date.now(),
+              peer: peer.name,
+              type: ct || 'voice',
+              duration,
+              status: 'completed',
+              dir: 'out',
+              ts: Date.now(),
+              avatar: peer.avatar,
+              color: peer.color
+            }, ...prev]);
+          }
         };
 
         const answerIncomingCall = async (withVideo) => {
@@ -1021,18 +1071,31 @@
           setCamOn(prev => !prev);
         };
 
+        // Separate ref to hold QRInvite class instance (don't overwrite with plain object)
+        const qrInviteRef = useRef(null);
+        const [qrSvgMarkup, setQrSvgMarkup] = useState(null);
+
         const genInvite = async () => {
           const code = CryptoEngine.genInvite();
           setInviteCode(code);
           setShowInvite(true);
           setInviteTab("create");
 
-          // Generate QR code SVG if available
-          if (qrInviteData) {
+          // Generate QR code SVG if QRInvite class is available
+          const qrInstance = qrInviteRef.current || qrInviteData;
+          if (qrInstance && typeof qrInstance.generateQRCodeSVG === 'function') {
             try {
-              const svg = qrInviteData.generateQRCodeSVG(200);
-              setQrInviteData(prev => ({ ...prev, qrSvg: svg, code }));
+              const svg = await qrInstance.generateQRCodeSVG(200);
+              setQrSvgMarkup(svg);
             } catch (e) { console.error('QR generation failed:', e); }
+          } else if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+            // Fallback: use raw QR encode functions directly
+            try {
+              const qrData = JSON.stringify({ c: code, n: identity?.name || '', p: identity?.publicKeyHex || '', t: Date.now() });
+              const { matrix } = qrEncode(qrData);
+              const svg = matrixToSVG(matrix, matrix.length, 200);
+              setQrSvgMarkup(svg);
+            } catch (e) { console.error('QR fallback generation failed:', e); }
           }
         };
         const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
@@ -1043,8 +1106,24 @@
             if (peerManager) {
               await peerManager.joinRoom(code);
               addToast('Connecting to peer...', 'info');
+            } else if (typeof RTCPeerManager !== 'undefined' && identity) {
+              // peerManager not set yet — create one on the fly as fallback
+              const SIG_URL = window.GHOSTLINK_SIGNAL_URL
+                || (window.location.hostname === 'localhost' ? 'ws://localhost:3001' : `ws://${window.location.hostname}:3001`);
+              const pm = new RTCPeerManager(SIG_URL, {
+                peerId: identity.fingerprint,
+                id: identity.fingerprint,
+                name: identity.name,
+                publicKey: identity.publicKeyHex,
+                publicKeyHex: identity.publicKeyHex,
+                keyPair: identity.keyPair || null
+              });
+              setPeerManager(pm);
+              try { await pm.connect(); } catch (e) { console.warn('[GhostLink] Signaling connect failed:', e.message); }
+              await pm.joinRoom(code);
+              addToast('Connecting to peer...', 'info');
             } else {
-              addToast('P2P not initialized yet', 'error');
+              addToast('P2P not initialized — check your connection and try again', 'error');
             }
             setShowInvite(false);
           } catch (e) {
@@ -1830,8 +1909,8 @@
                         <I t={copied ? "check" : "copy"} s={15} c="#000" /> {copied ? "COPIED TO CLIPBOARD" : "COPY INVITE CODE"}
                       </Btn>
                       <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
-                      {qrInviteData?.qrSvg && (
-                        <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrInviteData.qrSvg }} />
+                      {qrSvgMarkup && (
+                        <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrSvgMarkup }} />
                       )}
                     </>
                   ) : (

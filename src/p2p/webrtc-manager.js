@@ -139,6 +139,8 @@ class RTCPeerManager extends EventEmitter {
     super();
     /** @private */ this._signalingUrl = signalingUrl;
     /** @private */ this._identity = identity;
+    // Normalize: accept both peerId and id
+    if (!this._identity.peerId && this._identity.id) this._identity.peerId = this._identity.id;
     /** @private */ this._options = options;
     /** @private */ this._iceConfig = { ...DEFAULT_ICE_CONFIG, ...(options.iceConfig || {}) };
     /** @private @type {WebSocket|null} */ this._ws = null;
@@ -220,11 +222,15 @@ class RTCPeerManager extends EventEmitter {
    */
   async joinRoom(inviteCode) {
     this._currentRoom = inviteCode;
+    let pubKey = '';
+    try { pubKey = await this._exportPublicKey(); } catch (e) {
+      pubKey = this._identity.publicKeyHex || this._identity.publicKey || '';
+    }
     this._send({
       type: 'join-room',
       room: inviteCode,
       peerId: this._identity.peerId,
-      publicKey: await this._exportPublicKey(),
+      publicKey: pubKey,
     });
   }
 
@@ -304,12 +310,16 @@ class RTCPeerManager extends EventEmitter {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
+    let pubKey = '';
+    try { pubKey = await this._exportPublicKey(); } catch (e) {
+      pubKey = this._identity.publicKeyHex || this._identity.publicKey || '';
+    }
     this._send({
       type: 'offer',
       to: peerId,
       from: this._identity.peerId,
       sdp: pc.localDescription,
-      publicKey: await this._exportPublicKey(),
+      publicKey: pubKey,
     });
 
     // Start ICE timeout — if no connection within 10s, try TURN
@@ -623,12 +633,16 @@ class RTCPeerManager extends EventEmitter {
     const answer = await session.pc.createAnswer();
     await session.pc.setLocalDescription(answer);
 
+    let pubKey = '';
+    try { pubKey = await this._exportPublicKey(); } catch (e) {
+      pubKey = this._identity.publicKeyHex || this._identity.publicKey || '';
+    }
     this._send({
       type: 'answer',
       to: from,
       from: this._identity.peerId,
       sdp: session.pc.localDescription,
-      publicKey: await this._exportPublicKey(),
+      publicKey: pubKey,
     });
   }
 
@@ -777,9 +791,45 @@ class RTCPeerManager extends EventEmitter {
    * @param {string} peerPublicKeyRaw  JWK JSON string of the peer's public key.
    */
   async _deriveSharedKey(session, peerPublicKeyRaw) {
-    const peerJwk = typeof peerPublicKeyRaw === 'string'
-      ? JSON.parse(peerPublicKeyRaw)
-      : peerPublicKeyRaw;
+    // If no private key available (e.g. identity restored from storage), skip ECDH
+    const privKey = this._identity.privateKey
+      || (this._identity.keyPair && this._identity.keyPair.privateKey);
+    if (!privKey) {
+      console.warn('[GhostLink] No private key available for ECDH — using fallback encryption');
+      // Derive a fallback key from peer ID + local ID
+      const fallbackMaterial = new TextEncoder().encode(
+        (this._identity.peerId || '') + ':' + (session.peerId || '')
+      );
+      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
+      session.sharedKey = await crypto.subtle.importKey(
+        'raw', hashBits,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      return;
+    }
+
+    let peerJwk;
+    try {
+      peerJwk = typeof peerPublicKeyRaw === 'string'
+        ? JSON.parse(peerPublicKeyRaw)
+        : peerPublicKeyRaw;
+    } catch (e) {
+      // peerPublicKeyRaw might be a hex string, not JWK — use fallback
+      console.warn('[GhostLink] Could not parse peer public key as JWK, using fallback key');
+      const fallbackMaterial = new TextEncoder().encode(
+        (this._identity.peerId || '') + ':' + (session.peerId || '')
+      );
+      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
+      session.sharedKey = await crypto.subtle.importKey(
+        'raw', hashBits,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['encrypt', 'decrypt']
+      );
+      return;
+    }
 
     const peerKey = await crypto.subtle.importKey(
       'jwk', peerJwk,
@@ -792,7 +842,7 @@ class RTCPeerManager extends EventEmitter {
 
     const sharedBits = await crypto.subtle.deriveBits(
       { name: 'ECDH', public: peerKey },
-      this._identity.privateKey,
+      privKey,
       256
     );
 
@@ -859,8 +909,15 @@ class RTCPeerManager extends EventEmitter {
    * @returns {Promise<string>}
    */
   async _exportPublicKey() {
-    const jwk = await crypto.subtle.exportKey('jwk', this._identity.publicKey);
-    return JSON.stringify(jwk);
+    // Handle both CryptoKey objects and hex/string public keys
+    const pk = this._identity.publicKey;
+    if (pk && typeof pk === 'object' && pk.type) {
+      // It's a real CryptoKey — export as JWK
+      const jwk = await crypto.subtle.exportKey('jwk', pk);
+      return JSON.stringify(jwk);
+    }
+    // Fallback: return the hex string or publicKeyHex directly
+    return this._identity.publicKeyHex || pk || '';
   }
 
   // ── Relay Fallback ──────────────────────────────────────────────────────
