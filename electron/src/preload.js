@@ -130,6 +130,9 @@ contextBridge.exposeInMainWorld('ghostlink', {
    Intercept native file drops and forward file data to the
    web app through a custom DOM event. */
 
+// Set signaling URL for the web app (Electron loads via file://, hostname is empty)
+window.GHOSTLINK_SIGNAL_URL = 'ws://localhost:3001';
+
 window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('drop', (e) => {
     e.preventDefault();

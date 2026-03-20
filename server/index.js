@@ -1,7 +1,54 @@
 'use strict';
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { WebSocketServer } = require('ws');
+
+// ─── Static File Serving ────────────────────────────────────────────────────
+
+const WEB_ROOT = path.join(__dirname, '..');
+const MIME_TYPES = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+function serveStatic(req, res) {
+  let urlPath = req.url.split('?')[0];
+  if (urlPath === '/') urlPath = '/index.html';
+
+  // Prevent directory traversal
+  const safePath = path.normalize(urlPath).replace(/^(\.\.[\/\\])+/, '');
+  const filePath = path.join(WEB_ROOT, safePath);
+
+  // Must be within WEB_ROOT
+  if (!filePath.startsWith(WEB_ROOT)) {
+    res.writeHead(403);
+    res.end('Forbidden');
+    return;
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(data);
+  });
+}
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -149,8 +196,8 @@ const httpServer = http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  // Serve static web app files
+  serveStatic(req, res);
 });
 
 // ─── WebSocket Signaling Server ──────────────────────────────────────────────
@@ -467,6 +514,10 @@ httpServer.listen(PORT, () => {
     maxPayload: MAX_MSG_BYTES,
     maxRoomSize: MAX_ROOM_SIZE,
   });
+  console.log(`\n  GhostLink Server Ready:`);
+  console.log(`  Web App:    http://localhost:${PORT}`);
+  console.log(`  Signaling:  ws://localhost:${PORT}`);
+  console.log(`  Health:     http://localhost:${PORT}/health\n`);
 });
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
