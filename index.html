@@ -513,7 +513,7 @@
         useEffect(() => {
           if (!identity || peerManager) return;
 
-          const SIGNALING_URL = window.GHOSTLINK_SIGNAL_URL
+          const SIGNALING_URL = window.GHOSTLINK_SIGNAL_URL || window.ghostlink?.signalingUrl
             || (!window.location.hostname || window.location.hostname === 'localhost'
                 ? 'ws://localhost:3001'
                 : `ws://${window.location.hostname}:3001`);
@@ -1110,8 +1110,10 @@
               addToast('Connecting to peer...', 'info');
             } else if (typeof RTCPeerManager !== 'undefined' && identity) {
               // peerManager not set yet — create one on the fly as fallback
-              const SIG_URL = window.GHOSTLINK_SIGNAL_URL
-                || (window.location.hostname === 'localhost' ? 'ws://localhost:3001' : `ws://${window.location.hostname}:3001`);
+              const SIG_URL = window.GHOSTLINK_SIGNAL_URL || window.ghostlink?.signalingUrl
+                || (!window.location.hostname || window.location.hostname === 'localhost'
+                    ? 'ws://localhost:3001'
+                    : `ws://${window.location.hostname}:3001`);
               const pm = new RTCPeerManager(SIG_URL, {
                 peerId: identity.fingerprint,
                 id: identity.fingerprint,
