@@ -80,6 +80,82 @@
         },
       };
 
+      // ==================== MANUAL SIGNALING (serverless WebRTC) ====================
+      const ManualSignaling = {
+        async createOffer(identity) {
+          const pc = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+            ]
+          });
+          const dc = pc.createDataChannel('ghostlink', { ordered: true });
+          const candidates = [];
+          const gatherDone = new Promise(resolve => {
+            pc.onicecandidate = e => { if (e.candidate) candidates.push(e.candidate.toJSON()); else resolve(); };
+            setTimeout(resolve, 6000);
+          });
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await gatherDone;
+          const bundle = {
+            v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
+            i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
+          };
+          return { encoded: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))), pc, dc, bundle };
+        },
+        async processOffer(encodedOffer, identity) {
+          const bundle = JSON.parse(decodeURIComponent(escape(atob(encodedOffer))));
+          const pc = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' },
+              { urls: 'stun:stun1.l.google.com:19302' },
+            ]
+          });
+          const candidates = [];
+          const gatherDone = new Promise(resolve => {
+            pc.onicecandidate = e => { if (e.candidate) candidates.push(e.candidate.toJSON()); else resolve(); };
+            setTimeout(resolve, 6000);
+          });
+          await pc.setRemoteDescription({ type: bundle.t, sdp: bundle.s });
+          for (const c of bundle.i) { try { await pc.addIceCandidate(c); } catch(e) {} }
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await gatherDone;
+          const answerBundle = {
+            v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
+            i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
+          };
+          return { encoded: btoa(unescape(encodeURIComponent(JSON.stringify(answerBundle)))), peerInfo: bundle, pc };
+        },
+        async processAnswer(encodedAnswer, pc) {
+          const bundle = JSON.parse(decodeURIComponent(escape(atob(encodedAnswer))));
+          await pc.setRemoteDescription({ type: bundle.t, sdp: bundle.s });
+          for (const c of bundle.i) { try { await pc.addIceCandidate(c); } catch(e) {} }
+          return bundle;
+        },
+        isManualSignal(str) {
+          if (!str || str.startsWith('GL-')) return false;
+          try { const d = JSON.parse(decodeURIComponent(escape(atob(str)))); return d.v === 2 && d.s && d.t; } catch { return false; }
+        },
+        decode(str) { try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch { return null; } },
+      };
+
+      // ==================== PEER CACHE (localStorage) ====================
+      const PeerCache = {
+        KEY: 'gl_peer_cache',
+        load() { try { return JSON.parse(localStorage.getItem(this.KEY) || '{}'); } catch { return {}; } },
+        save(cache) { localStorage.setItem(this.KEY, JSON.stringify(cache)); },
+        addPeer(peerId, info) {
+          const cache = this.load();
+          cache[peerId] = { ...cache[peerId], ...info, lastSeen: Date.now() };
+          this.save(cache);
+        },
+        getPeer(peerId) { return this.load()[peerId] || null; },
+        removePeer(peerId) { const c = this.load(); delete c[peerId]; this.save(c); },
+        getAllPeers() { return this.load(); },
+      };
+
       // ==================== SHAMIR SECRET SHARING (GF-256) ====================
       const ShamirSSS = (() => {
         const PRIME = 0x11b;
@@ -442,6 +518,19 @@
         const qrVideoRef = useRef(null);
         const qrScannerRef = useRef(null);
 
+        // Hybrid signaling state
+        const [connectionMode, setConnectionMode] = useState(null); // 'P2P Direct' | 'Via Relay' | 'Manual Signal'
+        const [manualSignalStep, setManualSignalStep] = useState('idle'); // idle | creating | offer-ready | waiting-answer | connected | processing-offer | answer-ready
+        const [manualOfferString, setManualOfferString] = useState('');
+        const [manualAnswerString, setManualAnswerString] = useState('');
+        const [manualPeerInput, setManualPeerInput] = useState('');
+        const [manualPeerInfo, setManualPeerInfo] = useState(null);
+        const [autoReconnectStatus, setAutoReconnectStatus] = useState(null); // null | 'trying-cache' | 'trying-relay' | 'waiting' | 'connected'
+        const [signalingAvailable, setSignalingAvailable] = useState(null); // null = unknown, true/false
+        const manualPcRef = useRef(null);
+        const manualDcRef = useRef(null);
+        const manualConnectionsRef = useRef({}); // { peerId: { pc, dc } }
+
         // Refs
         const chatEndRef = useRef(null);
         const timerRef = useRef(null);
@@ -509,14 +598,51 @@
           return () => window.removeEventListener("resize", onResize);
         }, []);
 
+        // Probe a signaling server by hitting its /health endpoint
+        const probeSignaling = async (wsUrl) => {
+          try {
+            const httpUrl = wsUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+            const resp = await fetch(httpUrl + '/health', { signal: AbortSignal.timeout(2000) });
+            const data = await resp.json();
+            const ok = data.status === 'ok';
+            if (ok) setSignalingAvailable(true);
+            return ok;
+          } catch { return false; }
+        };
+
         // Initialize P2P systems when identity is ready
         useEffect(() => {
           if (!identity || peerManager) return;
 
-          const SIGNALING_URL = window.GHOSTLINK_SIGNAL_URL || window.ghostlink?.signalingUrl
-            || (!window.location.hostname || window.location.hostname === 'localhost'
-                ? 'ws://localhost:3001'
-                : `ws://${window.location.hostname}:3001`);
+          // Discover signaling server (async, caches result)
+          let _cachedSignalingUrl = null;
+          const discoverSignaling = async () => {
+            if (_cachedSignalingUrl) return _cachedSignalingUrl;
+            // 1. Explicit override
+            if (window.GHOSTLINK_SIGNAL_URL) { _cachedSignalingUrl = window.GHOSTLINK_SIGNAL_URL; return _cachedSignalingUrl; }
+            // 2. Electron preload provides it
+            if (window.ghostlink?.signalingUrl) { _cachedSignalingUrl = window.ghostlink.signalingUrl; return _cachedSignalingUrl; }
+            // 3. If served by the signaling server, use same host
+            if (window.location.protocol !== 'file:' && window.location.hostname) {
+              const sameHost = `ws://${window.location.hostname}:${window.location.port || 3001}`;
+              if (await probeSignaling(sameHost)) { _cachedSignalingUrl = sameHost; localStorage.setItem('gl_signaling_url', sameHost); return sameHost; }
+              // Try port 3001 explicitly if served on different port
+              if (window.location.port !== '3001') {
+                const port3001 = `ws://${window.location.hostname}:3001`;
+                if (await probeSignaling(port3001)) { _cachedSignalingUrl = port3001; localStorage.setItem('gl_signaling_url', port3001); return port3001; }
+              }
+            }
+            // 4. Try localhost (Electron or standalone server on same machine)
+            const localhost = 'ws://localhost:3001';
+            if (await probeSignaling(localhost)) { _cachedSignalingUrl = localhost; localStorage.setItem('gl_signaling_url', localhost); return localhost; }
+            // 5. Check saved server URL
+            const saved = localStorage.getItem('gl_signaling_url');
+            if (saved && await probeSignaling(saved)) { _cachedSignalingUrl = saved; return saved; }
+            // 6. No server found
+            setSignalingAvailable(false);
+            _cachedSignalingUrl = localhost;
+            return localhost;
+          };
 
           // Initialize Signal Protocol session manager
           const initSignalProtocol = async () => {
@@ -542,6 +668,7 @@
           // Initialize WebRTC peer manager
           const initP2P = async () => {
             if (typeof RTCPeerManager !== 'undefined') {
+              const SIGNALING_URL = await discoverSignaling();
               const pm = new RTCPeerManager(SIGNALING_URL, {
                 peerId: identity.fingerprint,
                 id: identity.fingerprint,
@@ -554,7 +681,7 @@
               // Set peerManager IMMEDIATELY so joinRoom works even if later setup fails
               setPeerManager(pm);
 
-              pm.on('signaling-connected', () => { setSignalingConnected(true); addToast('Connected to signaling server', 'success'); });
+              pm.on('signaling-connected', () => { setSignalingConnected(true); setSignalingAvailable(true); setConnectionMode('Via Relay'); addToast('Connected to signaling server', 'success'); });
               pm.on('signaling-disconnected', () => { setSignalingConnected(false); addToast('Disconnected from server', 'error'); });
               // Generate a deterministic color from a peer ID
               const peerColor = (id) => {
@@ -590,6 +717,14 @@
                     isReal: true
                   }];
                 });
+                // Cache peer info for auto-reconnect
+                PeerCache.addPeer(peerId, {
+                  fingerprint: peerId,
+                  name: peerInfo?.name || `Peer-${peerId.slice(0, 6)}`,
+                  publicKeyHex: peerInfo?.publicKey || '',
+                });
+                if (!connectionMode || connectionMode === 'Via Relay') setConnectionMode('P2P Direct');
+                setAutoReconnectStatus('connected');
                 addToast(`${peerInfo?.name || 'Peer'} connected`, 'success');
               });
               pm.on('peer-disconnected', (peerId) => {
@@ -692,9 +827,52 @@
               // peerManager already set right after constructor
               try {
                 await pm.connect();
+                // Auto-reconnect: rejoin rooms for cached peers
+                const cachedPeers = PeerCache.getAllPeers();
+                const cachedIds = Object.keys(cachedPeers);
+                if (cachedIds.length > 0) {
+                  setAutoReconnectStatus('trying-relay');
+                  for (const pid of cachedIds) {
+                    const cached = cachedPeers[pid];
+                    // Add cached peers to the peer list as offline until they reconnect
+                    setPeers(prev => {
+                      if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
+                      return [...prev, {
+                        id: pid, name: cached.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
+                        pubKey: cached.publicKeyHex || '', lastSeen: cached.lastSeen ? fmtTime(cached.lastSeen) : 'cached',
+                        avatar: (cached.name || 'P').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase(),
+                        color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
+                      }];
+                    });
+                  }
+                }
               } catch (connectErr) {
                 console.warn('[GhostLink] Signaling connect failed (will auto-reconnect):', connectErr.message);
-                addToast('Signaling server unreachable — will retry', 'error');
+                setSignalingAvailable(false);
+                // Auto-reconnect: try direct from cache
+                const cachedPeers = PeerCache.getAllPeers();
+                const cachedIds = Object.keys(cachedPeers);
+                if (cachedIds.length > 0) {
+                  setAutoReconnectStatus('trying-cache');
+                  // Add cached peers as offline
+                  for (const pid of cachedIds) {
+                    const cached = cachedPeers[pid];
+                    setPeers(prev => {
+                      if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
+                      return [...prev, {
+                        id: pid, name: cached.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
+                        pubKey: cached.publicKeyHex || '', lastSeen: 'cached',
+                        avatar: (cached.name || 'P').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase(),
+                        color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
+                      }];
+                    });
+                  }
+                  // After 5s timeout with no connection, show waiting status
+                  setTimeout(() => {
+                    setAutoReconnectStatus(prev => prev === 'connected' ? prev : 'waiting');
+                  }, 5000);
+                }
+                addToast('Signaling server unreachable — use manual signal or wait', 'error');
               }
             } else {
               // RTCPeerManager script not loaded yet — retry after a delay
@@ -706,6 +884,7 @@
           // Initialize offline queue
           const initOfflineQueue = async () => {
             if (typeof OfflineQueue !== 'undefined') {
+              const SIGNALING_URL = await discoverSignaling();
               const oq = new OfflineQueue(SIGNALING_URL.replace('ws', 'http').replace('3001', '3000'));
               oq.on('message-delivered', ({ peerId, messageId }) => {
                 setPendingMessages(prev => {
@@ -836,9 +1015,22 @@
             }, meta.selfDestruct * 1000);
           }
 
-          // Send via P2P if connected
+          // Send via P2P if connected — check manual connections first, then peerManager
           const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-          if (peerManager && connectionStates[peerId] === 'connected') {
+          const manualConn = manualConnectionsRef.current[peerId];
+          if (manualConn?.dc?.readyState === 'open') {
+            try {
+              const msgPayload = JSON.stringify({
+                type: 'chat', sender: identity.name, content: content.trim(),
+                msgType: type, meta, iv: block.encrypted.iv,
+                ciphertext: block.encrypted.ciphertext, blockHash: block.hash
+              });
+              manualConn.dc.send(msgPayload);
+            } catch (e) {
+              console.error('Manual DC send failed:', e);
+              addToast('Send failed on manual channel', 'error');
+            }
+          } else if (peerManager && connectionStates[peerId] === 'connected') {
             try {
               // Try Signal Protocol encryption first, fall back to AES
               let msgPayload;
@@ -1081,7 +1273,12 @@
           const code = CryptoEngine.genInvite();
           setInviteCode(code);
           setShowInvite(true);
-          setInviteTab("create");
+          // Auto-detect: if no signaling available, default to manual tab
+          setInviteTab(signalingAvailable === false ? "manual" : "create");
+          setManualSignalStep('idle');
+          setManualOfferString('');
+          setManualAnswerString('');
+          setManualPeerInput('');
 
           // Generate QR code SVG if QRInvite class is available
           const qrInstance = qrInviteRef.current || qrInviteData;
@@ -1102,8 +1299,145 @@
         };
         const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
 
+        // ==================== MANUAL SIGNALING FUNCTIONS ====================
+        const setupManualDataChannel = (dc, pc, peerId, peerInfo) => {
+          const peerColor = (id) => {
+            const colors = ['#1a3a2a', '#2a1a3a', '#1a2a3a', '#3a2a1a', '#2a3a1a', '#1a3a3a', '#3a1a2a', '#2a2a3a'];
+            let hash = 0;
+            for (let i = 0; i < (id || '').length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i);
+            return colors[Math.abs(hash) % colors.length];
+          };
+          manualConnectionsRef.current[peerId] = { pc, dc };
+          dc.onopen = () => {
+            setConnectionMode('Manual Signal');
+            setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+            setAutoReconnectStatus('connected');
+            PeerCache.addPeer(peerId, {
+              fingerprint: peerId, name: peerInfo.n, publicKeyHex: peerInfo.p,
+              lastIce: peerInfo.i, sdpOffer: peerInfo.s
+            });
+            const name = peerInfo.n || `Peer-${peerId.slice(0,6)}`;
+            setPeers(prev => {
+              if (prev.find(p => p.fingerprint === peerId || p.id === peerId)) {
+                return prev.map(p => (p.fingerprint === peerId || p.id === peerId)
+                  ? { ...p, status: 'online', lastSeen: 'now', name } : p);
+              }
+              return [...prev, {
+                id: peerId, name, status: 'online', pubKey: peerInfo.p || '',
+                lastSeen: 'now', avatar: name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase() || 'P',
+                color: peerColor(peerId), unread: 0, fingerprint: peerId, isReal: true, isManual: true
+              }];
+            });
+            addToast(`${name} connected via manual signal`, 'success');
+            setManualSignalStep('connected');
+          };
+          dc.onclose = () => {
+            setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+            setPeers(prev => prev.map(p =>
+              (p.fingerprint === peerId || p.id === peerId) ? { ...p, status: 'offline', lastSeen: fmtTime(Date.now()) } : p
+            ));
+          };
+          dc.onmessage = async (evt) => {
+            try {
+              const msg = JSON.parse(evt.data);
+              if (msg.type === 'chat') {
+                const block = await chain.add(msg.sender, msg.content, msg.msgType || 'text', msg.meta || {});
+                block.encrypted = msg.iv ? { iv: msg.iv, ciphertext: msg.ciphertext } : await CryptoEngine.encrypt(msg.content, identity.fingerprint);
+                setMessages(prev => ({ ...prev, [peerId]: [...(prev[peerId] || []), block] }));
+                setPeers(prev => prev.map(p =>
+                  (p.fingerprint === peerId || p.id === peerId) && peerId !== activeConvo
+                    ? { ...p, unread: (p.unread || 0) + 1 } : p
+                ));
+              } else if (msg.type === 'typing') {
+                setTyping(true);
+                setTimeout(() => setTyping(false), 3000);
+              }
+            } catch (e) { console.error('Manual DC message error:', e); }
+          };
+          pc.oniceconnectionstatechange = () => {
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+              setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+              setPeers(prev => prev.map(p =>
+                (p.fingerprint === peerId || p.id === peerId) ? { ...p, status: 'offline', lastSeen: fmtTime(Date.now()) } : p
+              ));
+            }
+          };
+        };
+
+        const generateManualOffer = async () => {
+          if (!identity) return;
+          setManualSignalStep('creating');
+          try {
+            const result = await ManualSignaling.createOffer(identity);
+            manualPcRef.current = result.pc;
+            manualDcRef.current = result.dc;
+            setManualOfferString(result.encoded);
+            setManualSignalStep('offer-ready');
+            // Set up the data channel handlers for when answer arrives
+            setupManualDataChannel(result.dc, result.pc, 'pending-manual', { n: 'Peer', p: '', i: [], s: '' });
+          } catch (e) {
+            console.error('Manual offer failed:', e);
+            addToast('Failed to create offer: ' + e.message, 'error');
+            setManualSignalStep('idle');
+          }
+        };
+
+        const processManualAnswer = async () => {
+          if (!manualPeerInput.trim() || !manualPcRef.current) return;
+          try {
+            const peerInfo = await ManualSignaling.processAnswer(manualPeerInput.trim(), manualPcRef.current);
+            // Re-register the connection under the real peer ID
+            const peerId = peerInfo.f || 'manual-peer';
+            const oldConn = manualConnectionsRef.current['pending-manual'];
+            if (oldConn) {
+              delete manualConnectionsRef.current['pending-manual'];
+              manualConnectionsRef.current[peerId] = oldConn;
+              setupManualDataChannel(oldConn.dc, oldConn.pc, peerId, peerInfo);
+            }
+            setManualPeerInfo(peerInfo);
+            setManualPeerInput('');
+            addToast('Processing answer...', 'info');
+          } catch (e) {
+            console.error('Answer processing failed:', e);
+            addToast('Invalid answer signal', 'error');
+          }
+        };
+
+        const processManualOffer = async () => {
+          if (!manualPeerInput.trim() || !identity) return;
+          if (!ManualSignaling.isManualSignal(manualPeerInput.trim())) {
+            addToast('Invalid signal format', 'error');
+            return;
+          }
+          setManualSignalStep('processing-offer');
+          try {
+            const result = await ManualSignaling.processOffer(manualPeerInput.trim(), identity);
+            manualPcRef.current = result.pc;
+            setManualAnswerString(result.encoded);
+            setManualSignalStep('answer-ready');
+            const peerId = result.peerInfo.f || 'manual-peer';
+            setManualPeerInfo(result.peerInfo);
+            // Listen for incoming data channel
+            result.pc.ondatachannel = (evt) => {
+              manualDcRef.current = evt.channel;
+              setupManualDataChannel(evt.channel, result.pc, peerId, result.peerInfo);
+            };
+            setManualPeerInput('');
+          } catch (e) {
+            console.error('Offer processing failed:', e);
+            addToast('Invalid offer signal', 'error');
+            setManualSignalStep('idle');
+          }
+        };
+
         const joinPeer = async (code) => {
-          if (!code || !code.startsWith('GL-')) { addToast('Invalid invite code. Must start with GL-', 'error'); return; }
+          // Detect if this is a manual signal (base64 SDP bundle) or a GL- invite code
+          if (ManualSignaling.isManualSignal(code)) {
+            setManualPeerInput(code);
+            await processManualOffer();
+            return;
+          }
+          if (!code || !code.startsWith('GL-')) { addToast('Invalid code. Use GL- invite or paste a manual signal.', 'error'); return; }
           try {
             if (peerManager) {
               await peerManager.joinRoom(code);
@@ -1363,7 +1697,7 @@
             {/* ══════ SIDEBAR ══════ */}
             <div style={{ width: isTablet ? 52 : 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
               <div style={{ color: th.accent, marginBottom: 16, cursor: "pointer" }}><I t="ghost" s={28} c={th.accent} /></div>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingConnected ? "#00cc66" : "#ff4444", margin: "4px auto", boxShadow: signalingConnected ? "0 0 8px #00cc6688" : "0 0 8px #ff444488" }} title={signalingConnected ? "Connected to signaling" : "Offline"} />
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingConnected ? "#00cc66" : connectionMode === 'Manual Signal' ? th.accent3 : autoReconnectStatus === 'waiting' ? "#ff8844" : "#ff4444", margin: "4px auto", boxShadow: `0 0 8px ${signalingConnected ? "#00cc6688" : connectionMode === 'Manual Signal' ? th.accent3 + '88' : "#ff444488"}` }} title={signalingConnected ? "Relay connected" : connectionMode === 'Manual Signal' ? "Manual P2P active" : autoReconnectStatus === 'waiting' ? "Peer offline — waiting" : "Offline"} />
               {[
                 { id: "chat", icon: "chat", label: "Chats" },
                 { id: "files", icon: "file", label: "Files" },
@@ -1576,6 +1910,12 @@
                           <div style={{ fontSize: isMobile ? 13 : 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                             {activePeer?.name}
                             {!isMobile && <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>}
+                            {(() => {
+                              const modeColor = connectionMode === 'P2P Direct' ? th.accent : connectionMode === 'Via Relay' ? th.accent2 : connectionMode === 'Manual Signal' ? th.accent3 : '#4a5568';
+                              const modeIcon = connectionMode === 'P2P Direct' ? 'zap' : connectionMode === 'Via Relay' ? 'globe' : connectionMode === 'Manual Signal' ? 'link' : 'globe';
+                              const modeLabel = connectionMode || (autoReconnectStatus === 'waiting' ? 'Peer offline' : autoReconnectStatus === 'trying-cache' ? 'Reconnecting...' : 'Connecting...');
+                              return <Tag color={modeColor} icon={modeIcon}>{modeLabel.toUpperCase()}</Tag>;
+                            })()}
                           </div>
                           <div style={{ fontSize: 9.5, color: "#4a5568" }}>{isMobile ? (chainValid ? "✓ encrypted" : "⚠ broken") : `${convoMsgs.length} blocks · E2E encrypted · P2P`}</div>
                         </div>
@@ -1881,53 +2221,225 @@
               </div>
             )}
 
-            {/* ══════ INVITE MODAL ══════ */}
+            {/* ══════ INVITE MODAL (Hybrid Signaling) ══════ */}
             {showInvite && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowInvite(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 460, width: "100%", animation: "fadeInScale 0.2s ease" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="link" s={20} c={th.accent} /> PEER CONNECTION
                     </span>
-                    <button onClick={() => setShowInvite(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                    <button onClick={() => { setShowInvite(false); setManualSignalStep('idle'); }} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
                   </div>
 
+                  {/* Server status indicator */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "8px 12px", borderRadius: 8, background: signalingAvailable ? `${th.accent}08` : 'rgba(255,136,68,0.08)', border: `1px solid ${signalingAvailable ? th.accent + '20' : 'rgba(255,136,68,0.2)'}` }}>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingAvailable ? th.accent : '#ff8844', boxShadow: `0 0 6px ${signalingAvailable ? th.accent : '#ff8844'}88` }} />
+                    <span style={{ fontSize: 10, color: signalingAvailable ? th.accent : '#ff8844', fontWeight: 600 }}>
+                      {signalingAvailable ? 'Relay server online — auto mode' : 'No relay — manual signal available'}
+                    </span>
+                  </div>
+
+                  {/* Tab row: Create / Join / Manual */}
                   <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 3 }}>
-                    {["create", "join"].map(t => (
-                      <button key={t} onClick={() => setInviteTab(t)} style={{
+                    {["create", "join", "manual"].map(t => (
+                      <button key={t} onClick={() => { setInviteTab(t); if (t === 'manual') { setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); } }} style={{
                         flex: 1, padding: "9px 0", borderRadius: 8, border: "none",
                         background: inviteTab === t ? `${th.accent}15` : "transparent",
                         color: inviteTab === t ? th.accent : "#5a5a6a", cursor: "pointer",
-                        fontFamily: "inherit", fontSize: 11, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase",
-                      }}>{t === "create" ? "Create Invite" : "Join Channel"}</button>
+                        fontFamily: "inherit", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase",
+                      }}>{t === "create" ? "Relay Invite" : t === "join" ? "Join" : "Manual P2P"}</button>
                     ))}
                   </div>
 
                   {inviteTab === "create" ? (
                     <>
-                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Share this one-time invite code via a secure out-of-band channel. The code expires after first use.</p>
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Share this invite code via a secure channel. Requires relay server.</p>
                       <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
                         <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700 }}>{inviteCode}</div>
                       </div>
                       <Btn accent style={{ width: "100%" }} onClick={copyInvite}>
                         <I t={copied ? "check" : "copy"} s={15} c="#000" /> {copied ? "COPIED TO CLIPBOARD" : "COPY INVITE CODE"}
                       </Btn>
-                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
+                      {!signalingAvailable && (
+                        <div style={{ marginTop: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(255,136,68,0.06)", border: "1px solid rgba(255,136,68,0.15)", fontSize: 10, color: "#ff8844", textAlign: "center", lineHeight: 1.5 }}>
+                          Relay server unavailable. Switch to <button onClick={() => setInviteTab('manual')} style={{ background: "none", border: "none", color: th.accent3, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700, textDecoration: "underline" }}>Manual P2P</button> for serverless connection.
+                        </div>
+                      )}
+                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use</div>
                       {qrSvgMarkup && (
                         <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrSvgMarkup }} />
                       )}
                     </>
-                  ) : (
+                  ) : inviteTab === "join" ? (
                     <>
-                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code from your peer to establish an encrypted P2P connection.</p>
-                      <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GL-XXXXXXXX-XXXXXXXX-..."
-                        style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 13, fontFamily: "monospace", marginBottom: 14, letterSpacing: 1 }} />
-                      <Btn accent style={{ width: "100%" }} onClick={() => { joinPeer(joinCode); setJoinCode(""); }}>
-                        <I t="link" s={15} c="#000" /> CONNECT TO PEER
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code (GL-...) or a manual signal string from your peer.</p>
+                      <textarea value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GL-XXXXXXXX-... or paste manual signal"
+                        rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 12, fontFamily: "monospace", marginBottom: 8, letterSpacing: 0.5, resize: "none" }} />
+                      {joinCode && ManualSignaling.isManualSignal(joinCode) && (
+                        <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 6, background: `${th.accent3}10`, border: `1px solid ${th.accent3}20`, fontSize: 10, color: th.accent3 }}>
+                          Manual signal detected — will create answer for peer
+                        </div>
+                      )}
+                      <Btn accent style={{ width: "100%" }} onClick={async () => {
+                        const code = joinCode.trim();
+                        if (ManualSignaling.isManualSignal(code)) {
+                          // Process manual offer and show answer
+                          setManualPeerInput(code);
+                          setInviteTab('manual');
+                          setManualSignalStep('processing-offer');
+                          try {
+                            const result = await ManualSignaling.processOffer(code, identity);
+                            manualPcRef.current = result.pc;
+                            setManualAnswerString(result.encoded);
+                            setManualSignalStep('answer-ready');
+                            setManualPeerInfo(result.peerInfo);
+                            result.pc.ondatachannel = (evt) => {
+                              manualDcRef.current = evt.channel;
+                              setupManualDataChannel(evt.channel, result.pc, result.peerInfo.f || 'manual-peer', result.peerInfo);
+                            };
+                          } catch (e) {
+                            addToast('Invalid signal: ' + e.message, 'error');
+                            setManualSignalStep('idle');
+                          }
+                        } else {
+                          joinPeer(code);
+                        }
+                        setJoinCode("");
+                      }}>
+                        <I t="link" s={15} c="#000" /> {joinCode && ManualSignaling.isManualSignal(joinCode) ? "PROCESS & GENERATE ANSWER" : "CONNECT TO PEER"}
                       </Btn>
                       <Btn ghost small onClick={() => { setShowInvite(false); setShowQRScanner(true); }} style={{ width: "100%", marginTop: 8 }}>
                         <I t="search" s={14} /> Scan QR Code
                       </Btn>
+                    </>
+                  ) : (
+                    /* ── MANUAL P2P TAB ── */
+                    <>
+                      <div style={{ fontSize: 10, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.7 }}>
+                        True zero-server connection. Exchange SDP signals with your peer via any out-of-band channel (text, email, paper).
+                      </div>
+
+                      {manualSignalStep === 'idle' && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          <Btn accent style={{ width: "100%" }} onClick={generateManualOffer}>
+                            <I t="zap" s={15} c="#000" /> GENERATE DIRECT OFFER
+                          </Btn>
+                          <div style={{ textAlign: "center", fontSize: 10, color: "#3a3a4a", letterSpacing: 1 }}>— OR —</div>
+                          <div style={{ fontSize: 10, color: "#5a5a6a", marginBottom: 4 }}>Paste a peer's offer signal:</div>
+                          <textarea value={manualPeerInput} onChange={e => setManualPeerInput(e.target.value)} placeholder="Paste peer's offer signal here..."
+                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 12px", color: "#e0e0e8", fontSize: 10, fontFamily: "monospace", resize: "none" }} />
+                          <Btn ghost style={{ width: "100%" }} onClick={processManualOffer} disabled={!manualPeerInput.trim()}>
+                            <I t="link" s={14} /> PROCESS OFFER & GENERATE ANSWER
+                          </Btn>
+                        </div>
+                      )}
+
+                      {manualSignalStep === 'creating' && (
+                        <div style={{ textAlign: "center", padding: 30 }}>
+                          <div style={{ display: "flex", gap: 5, justifyContent: "center", marginBottom: 12 }}>
+                            {[0,1,2,3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i*0.25}s` }} />)}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#5a5a6a" }}>Generating SDP offer & gathering ICE candidates...</div>
+                        </div>
+                      )}
+
+                      {manualSignalStep === 'processing-offer' && (
+                        <div style={{ textAlign: "center", padding: 30 }}>
+                          <div style={{ display: "flex", gap: 5, justifyContent: "center", marginBottom: 12 }}>
+                            {[0,1,2,3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent2, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i*0.25}s` }} />)}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#5a5a6a" }}>Processing offer & generating answer...</div>
+                        </div>
+                      )}
+
+                      {manualSignalStep === 'offer-ready' && (
+                        <>
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 1: SEND THIS OFFER TO YOUR PEER</div>
+                          <div style={{ background: `${th.accent}06`, border: `1px solid ${th.accent}18`, borderRadius: 10, padding: 10, marginBottom: 10, maxHeight: 120, overflowY: "auto" }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 8, color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.5, userSelect: "all" }}>{manualOfferString}</div>
+                          </div>
+                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={() => { navigator.clipboard?.writeText(manualOfferString); addToast('Offer copied to clipboard', 'success'); }}>
+                            <I t="copy" s={14} c="#000" /> COPY OFFER SIGNAL
+                          </Btn>
+
+                          {/* Try QR for offer */}
+                          {manualOfferString.length < 4000 && (() => {
+                            try {
+                              if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+                                const { matrix } = qrEncode(manualOfferString);
+                                const svg = matrixToSVG(matrix, matrix.length, 180);
+                                return <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+                              }
+                            } catch {}
+                            return null;
+                          })()}
+
+                          <div style={{ fontSize: 10, color: th.accent2, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 2: PASTE PEER'S ANSWER</div>
+                          <textarea value={manualPeerInput} onChange={e => setManualPeerInput(e.target.value)} placeholder="Paste peer's answer signal here..."
+                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 12px", color: "#e0e0e8", fontSize: 10, fontFamily: "monospace", resize: "none", marginBottom: 10 }} />
+                          <Btn ghost style={{ width: "100%" }} onClick={processManualAnswer} disabled={!manualPeerInput.trim()}>
+                            <I t="link" s={14} /> CONNECT WITH ANSWER
+                          </Btn>
+                        </>
+                      )}
+
+                      {manualSignalStep === 'answer-ready' && (
+                        <>
+                          {manualPeerInfo && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "8px 10px", borderRadius: 8, background: `${th.accent2}08`, border: `1px solid ${th.accent2}15` }}>
+                              <I t="users" s={14} c={th.accent2} />
+                              <span style={{ fontSize: 11, color: th.accent2, fontWeight: 600 }}>{manualPeerInfo.n}</span>
+                              <span style={{ fontSize: 8, color: "#4a5568", fontFamily: "monospace" }}>FP: {manualPeerInfo.f?.slice(0,12)}...</span>
+                            </div>
+                          )}
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>SEND THIS ANSWER BACK TO YOUR PEER</div>
+                          <div style={{ background: `${th.accent2}06`, border: `1px solid ${th.accent2}18`, borderRadius: 10, padding: 10, marginBottom: 10, maxHeight: 120, overflowY: "auto" }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 8, color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.5, userSelect: "all" }}>{manualAnswerString}</div>
+                          </div>
+                          <Btn accent style={{ width: "100%", marginBottom: 8 }} onClick={() => { navigator.clipboard?.writeText(manualAnswerString); addToast('Answer copied to clipboard', 'success'); }}>
+                            <I t="copy" s={14} c="#000" /> COPY ANSWER SIGNAL
+                          </Btn>
+
+                          {/* Try QR for answer */}
+                          {manualAnswerString.length < 4000 && (() => {
+                            try {
+                              if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+                                const { matrix } = qrEncode(manualAnswerString);
+                                const svg = matrixToSVG(matrix, matrix.length, 180);
+                                return <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+                              }
+                            } catch {}
+                            return null;
+                          })()}
+
+                          <div style={{ fontSize: 10, color: "#5a5a6a", textAlign: "center", lineHeight: 1.6 }}>
+                            Once your peer processes your answer, the P2P connection will establish automatically.
+                          </div>
+                        </>
+                      )}
+
+                      {manualSignalStep === 'connected' && (
+                        <div style={{ textAlign: "center", padding: 20 }}>
+                          <div style={{ width: 56, height: 56, borderRadius: "50%", background: `${th.accent}15`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", border: `2px solid ${th.accent}30` }}>
+                            <I t="check" s={28} c={th.accent} />
+                          </div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: th.accent, marginBottom: 6 }}>Connected!</div>
+                          {manualPeerInfo && <div style={{ fontSize: 12, color: "#8a8a9a", marginBottom: 4 }}>{manualPeerInfo.n}</div>}
+                          <Tag color={th.accent3} icon="link">MANUAL SIGNAL</Tag>
+                          <div style={{ marginTop: 12 }}>
+                            <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); }}>
+                              <I t="chat" s={14} c="#000" /> START CHATTING
+                            </Btn>
+                          </div>
+                        </div>
+                      )}
+
+                      {manualSignalStep === 'idle' && (
+                        <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", fontSize: 9, color: "#3a3a4a", lineHeight: 1.6 }}>
+                          <strong style={{ color: "#5a5a6a" }}>How it works:</strong> You generate an offer containing your SDP + ICE candidates + public key. Send it to your peer via any channel. They paste it, generate an answer, and send it back. Both sides connect directly — zero servers.
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
@@ -1947,7 +2459,7 @@
                   <div style={{ textAlign: "left", background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 14 }}>
                     {[
                       { label: "Public Key", value: activePeer.pubKey },
-                      { label: "Connection", value: "WebRTC P2P Direct" },
+                      { label: "Connection", value: connectionMode || "WebRTC P2P" },
                       { label: "Encryption", value: "ECDH + AES-256-GCM" },
                       { label: "Messages", value: `${convoMsgs.length} blocks` },
                       { label: "Chain Status", value: chainValid ? "Valid" : "Broken" },
