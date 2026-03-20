@@ -514,7 +514,9 @@
           if (!identity || peerManager) return;
 
           const SIGNALING_URL = window.GHOSTLINK_SIGNAL_URL
-            || (window.location.hostname === 'localhost' ? 'ws://localhost:3001' : `ws://${window.location.hostname}:3001`);
+            || (!window.location.hostname || window.location.hostname === 'localhost'
+                ? 'ws://localhost:3001'
+                : `ws://${window.location.hostname}:3001`);
 
           // Initialize Signal Protocol session manager
           const initSignalProtocol = async () => {
