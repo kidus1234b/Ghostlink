@@ -1,283 +1,192 @@
 'use strict';
 
 const http = require('http');
-const express = require('express');
-const cors = require('cors');
 const { WebSocketServer } = require('ws');
-const crypto = require('crypto');
-const { v4: uuidv4 } = require('uuid');
 
 // ─── Configuration ───────────────────────────────────────────────────────────
 
-const PORT_HTTP = parseInt(process.env.PORT_HTTP || '3000', 10);
-const PORT_WS = parseInt(process.env.PORT_WS || '3001', 10);
-const TURN_SECRET = process.env.TURN_SECRET || 'ghostlink-turn-secret-change-me';
-const TURN_SERVER_URL = process.env.TURN_SERVER_URL || '';
-const TURN_TTL = parseInt(process.env.TURN_TTL || '86400', 10); // 24h
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HEARTBEAT_INTERVAL_MS = 30000;
+const HANDSHAKE_TIMEOUT_MS = 15000;
+const MAX_MSG_BYTES = 64 * 1024;
+const RATE_LIMIT_WINDOW_MS = 60000;
+const RATE_LIMIT_MAX = 200;
+const MAX_ROOM_SIZE = 100;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-  : ['*'];
-const MAX_ROOM_SIZE = 50;
-const MAX_MSG_SIZE = 64 * 1024; // 64 KB
-const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
-const RATE_LIMIT_MAX = 100;
-const HANDSHAKE_TIMEOUT = 30 * 1000; // 30 seconds
-const OFFLINE_QUEUE_MAX = 1000;
-const OFFLINE_MSG_TTL = 24 * 60 * 60 * 1000; // 24 hours
-const ROOM_CLEANUP_DELAY = 5 * 60 * 1000; // 5 minutes
-
-const STUN_SERVERS = [
-  'stun:stun.l.google.com:19302',
-  'stun:stun1.l.google.com:19302',
-];
+  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
+  : null; // null = allow all
 
 // ─── State ───────────────────────────────────────────────────────────────────
 
-// rooms: Map<roomId, Map<peerId, { ws, publicKey, name, status }>>
+/** @type {Map<string, WebSocket>} peerId -> ws */
+const peers = new Map();
+
+/** @type {Map<string, Set<string>>} roomId -> Set<peerId> */
 const rooms = new Map();
-// peerToRoom: Map<peerId, roomId>
-const peerToRoom = new Map();
-// offlineQueue: Map<peerId, Array<{ from, encrypted, timestamp }>>
-const offlineQueue = new Map();
-// roomCleanupTimers: Map<roomId, timeout>
-const roomCleanupTimers = new Map();
-// rateLimiter: WeakMap<ws, { count, resetAt }>
-const rateLimiter = new WeakMap();
+
+/** @type {Map<string, string>} peerId -> roomId (current room) */
+const peerRoom = new Map();
+
+/** @type {Map<string, string>} peerId -> publicKey */
+const peerKeys = new Map();
+
+/** @type {WeakMap<WebSocket, string>} ws -> peerId (reverse lookup) */
+const wsPeer = new WeakMap();
+
+/** @type {WeakMap<WebSocket, { count: number, resetAt: number }>} */
+const rateBuckets = new WeakMap();
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
 function log(level, msg, data) {
-  const entry = {
-    ts: new Date().toISOString(),
-    level,
-    msg,
-    ...(data && { data }),
-  };
-  if (level === 'error') {
-    console.error(JSON.stringify(entry));
-  } else {
-    console.log(JSON.stringify(entry));
-  }
+  const entry = { ts: new Date().toISOString(), level, msg };
+  if (data) entry.data = data;
+  const out = JSON.stringify(entry);
+  if (level === 'error') console.error(out);
+  else console.log(out);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isValidRoomId(room) {
-  return typeof room === 'string' && /^GL-[A-Za-z0-9]{8,}/.test(room);
-}
-
 function send(ws, data) {
-  if (ws.readyState === 1) { // WebSocket.OPEN
+  if (ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(data));
   }
 }
 
-function broadcastToRoom(roomId, msg, excludePeerId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-  for (const [pid, peer] of room) {
+function sendToPeer(peerId, data) {
+  const ws = peers.get(peerId);
+  if (ws) send(ws, data);
+}
+
+function broadcastToRoom(roomId, data, excludePeerId) {
+  const members = rooms.get(roomId);
+  if (!members) return;
+  for (const pid of members) {
     if (pid !== excludePeerId) {
-      send(peer.ws, msg);
+      sendToPeer(pid, data);
     }
   }
 }
 
 function getPeerList(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return [];
-  return Array.from(room.entries()).map(([peerId, p]) => ({
-    peerId,
-    publicKey: p.publicKey,
-    name: p.name,
-    status: p.status,
-  }));
+  const members = rooms.get(roomId);
+  if (!members) return [];
+  const list = [];
+  for (const pid of members) {
+    list.push({ peerId: pid, publicKey: peerKeys.get(pid) || null });
+  }
+  return list;
 }
 
 function checkRateLimit(ws) {
   const now = Date.now();
-  let bucket = rateLimiter.get(ws);
+  let bucket = rateBuckets.get(ws);
   if (!bucket || now > bucket.resetAt) {
-    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW };
-    rateLimiter.set(ws, bucket);
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    rateBuckets.set(ws, bucket);
   }
   bucket.count++;
   return bucket.count <= RATE_LIMIT_MAX;
 }
 
-function pruneOfflineQueue(peerId) {
-  const queue = offlineQueue.get(peerId);
-  if (!queue) return;
-  const now = Date.now();
-  const pruned = queue.filter(m => now - m.timestamp < OFFLINE_MSG_TTL);
-  if (pruned.length === 0) {
-    offlineQueue.delete(peerId);
-  } else {
-    offlineQueue.set(peerId, pruned);
-  }
-}
+function removePeerFromRoom(peerId) {
+  const roomId = peerRoom.get(peerId);
+  if (!roomId) return;
 
-function enqueueOfflineMessage(toPeerId, fromPeerId, encrypted) {
-  pruneOfflineQueue(toPeerId);
-  let queue = offlineQueue.get(toPeerId);
-  if (!queue) {
-    queue = [];
-    offlineQueue.set(toPeerId, queue);
-  }
-  if (queue.length >= OFFLINE_QUEUE_MAX) {
-    queue.shift(); // drop oldest
-  }
-  queue.push({ from: fromPeerId, encrypted, timestamp: Date.now() });
-}
+  const members = rooms.get(roomId);
+  if (members) {
+    members.delete(peerId);
 
-function deliverOfflineMessages(peerId, ws) {
-  pruneOfflineQueue(peerId);
-  const queue = offlineQueue.get(peerId);
-  if (!queue || queue.length === 0) return;
-  log('info', 'delivering offline messages', { peerId, count: queue.length });
-  for (const msg of queue) {
-    send(ws, {
-      type: 'relay-message',
-      from: msg.from,
-      encrypted: msg.encrypted,
-      queued: true,
-      timestamp: msg.timestamp,
-    });
-  }
-  offlineQueue.delete(peerId);
-}
+    // Notify remaining peers
+    broadcastToRoom(roomId, { type: 'peer-left', peerId });
 
-function scheduleRoomCleanup(roomId) {
-  if (roomCleanupTimers.has(roomId)) return;
-  const timer = setTimeout(() => {
-    roomCleanupTimers.delete(roomId);
-    const room = rooms.get(roomId);
-    if (room && room.size === 0) {
+    log('info', 'peer left room', { peerId, room: roomId, remaining: members.size });
+
+    // Clean up empty room
+    if (members.size === 0) {
       rooms.delete(roomId);
-      log('info', 'room cleaned up', { roomId });
+      log('info', 'room destroyed (empty)', { room: roomId });
     }
-  }, ROOM_CLEANUP_DELAY);
-  roomCleanupTimers.set(roomId, timer);
+  }
+
+  peerRoom.delete(peerId);
 }
 
-function cancelRoomCleanup(roomId) {
-  const timer = roomCleanupTimers.get(roomId);
-  if (timer) {
-    clearTimeout(timer);
-    roomCleanupTimers.delete(roomId);
-  }
+function cleanupPeer(peerId) {
+  removePeerFromRoom(peerId);
+  peers.delete(peerId);
+  peerKeys.delete(peerId);
 }
 
-function findPeerWs(peerId) {
-  const roomId = peerToRoom.get(peerId);
-  if (!roomId) return null;
-  const room = rooms.get(roomId);
-  if (!room) return null;
-  const peer = room.get(peerId);
-  return peer ? peer.ws : null;
-}
+// ─── HTTP Server (health endpoint + WebSocket upgrade) ───────────────────────
 
-// ─── TURN Credential Generation ─────────────────────────────────────────────
+const httpServer = http.createServer((req, res) => {
+  // CORS headers for any HTTP request
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-function generateTurnCredentials() {
-  const timestamp = Math.floor(Date.now() / 1000) + TURN_TTL;
-  const username = `${timestamp}:ghostlink-${uuidv4().slice(0, 8)}`;
-  const hmac = crypto.createHmac('sha1', TURN_SECRET);
-  hmac.update(username);
-  const credential = hmac.digest('base64');
-
-  const urls = [...STUN_SERVERS.map(s => s)];
-  if (TURN_SERVER_URL) {
-    urls.push(TURN_SERVER_URL);
-    urls.push(TURN_SERVER_URL.replace(/^turn:/, 'turns:'));
-  }
-
-  return { urls, username, credential, ttl: TURN_TTL };
-}
-
-// ─── Express HTTP Server ─────────────────────────────────────────────────────
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-app.get('/health', (_req, res) => {
-  const roomCount = rooms.size;
-  let peerCount = 0;
-  for (const room of rooms.values()) {
-    peerCount += room.size;
-  }
-  res.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    rooms: roomCount,
-    peers: peerCount,
-    timestamp: new Date().toISOString(),
-  });
-});
-
-app.post('/turn-credentials', (_req, res) => {
-  // Validate TURN secret exists before generating credentials
-  if (!TURN_SECRET || TURN_SECRET === 'ghostlink-turn-secret-change-me') {
-    log('error', 'TURN secret not configured');
-    return res.status(503).json({ error: 'TURN credentials not configured' });
-  }
-  try {
-    const credentials = generateTurnCredentials();
-    res.json(credentials);
-  } catch (err) {
-    log('error', 'TURN credential generation failed', { error: err.message });
-    res.status(500).json({ error: 'Failed to generate credentials' });
-  }
-});
-
-app.use((_req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
-
-// Express error-handling middleware
-app.use((err, req, res, next) => {
-  console.error('Express error:', err.message);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-const httpServer = http.createServer(app);
-
-// ─── WebSocket Signaling Server ──────────────────────────────────────────────
-
-const wss = new WebSocketServer({ port: PORT_WS });
-
-wss.on('listening', () => {
-  log('info', `WebSocket signaling server listening on port ${PORT_WS}`);
-});
-
-wss.on('connection', (ws, req) => {
-  const origin = req.headers.origin || '';
-  if (ALLOWED_ORIGINS[0] !== '*' && !ALLOWED_ORIGINS.includes(origin)) {
-    log('warn', 'rejected connection from unauthorized origin', { origin });
-    ws.close(4003, 'Origin not allowed');
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    res.end();
     return;
   }
 
+  if (req.url === '/health' && req.method === 'GET') {
+    let peerCount = 0;
+    for (const members of rooms.values()) peerCount += members.size;
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      uptime: process.uptime(),
+      rooms: rooms.size,
+      peers: peerCount,
+      connectedSockets: peers.size,
+      timestamp: new Date().toISOString(),
+    }));
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not found' }));
+});
+
+// ─── WebSocket Signaling Server ──────────────────────────────────────────────
+
+const wss = new WebSocketServer({
+  server: httpServer,
+  maxPayload: MAX_MSG_BYTES,
+  verifyClient: (info, done) => {
+    if (!ALLOWED_ORIGINS) return done(true);
+    const origin = info.origin || info.req.headers.origin || '';
+    if (ALLOWED_ORIGINS.includes(origin)) return done(true);
+    log('warn', 'rejected connection from unauthorized origin', { origin });
+    done(false, 403, 'Origin not allowed');
+  },
+});
+
+wss.on('connection', (ws, req) => {
+  ws.isAlive = true;
   let peerId = null;
-  let currentRoom = null;
   let joined = false;
 
-  // Handshake timeout — must join a room within 30s
+  // The client must send a `join` message within HANDSHAKE_TIMEOUT_MS
   const handshakeTimer = setTimeout(() => {
     if (!joined) {
-      log('warn', 'handshake timeout, closing connection');
+      log('warn', 'handshake timeout — no join received');
       ws.close(4001, 'Handshake timeout');
     }
-  }, HANDSHAKE_TIMEOUT);
+  }, HANDSHAKE_TIMEOUT_MS);
+
+  // Pong handler for heartbeat
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
 
   ws.on('message', (raw) => {
-    // Size check
-    if (raw.length > MAX_MSG_SIZE) {
-      send(ws, { type: 'error', message: 'Message too large' });
-      return;
-    }
-
-    // Rate limit
+    // Rate limiting
     if (!checkRateLimit(ws)) {
       send(ws, { type: 'error', message: 'Rate limit exceeded' });
       return;
@@ -300,16 +209,22 @@ wss.on('connection', (ws, req) => {
       case 'join':
         handleJoin(ws, msg, handshakeTimer);
         break;
+      case 'join-room':
+        handleJoinRoom(ws, msg);
+        break;
+      case 'leave-room':
+        handleLeaveRoom(ws, msg);
+        break;
+      case 'peer-list':
+        handlePeerList(ws, msg);
+        break;
       case 'offer':
       case 'answer':
       case 'ice-candidate':
         handleSignaling(ws, msg);
         break;
-      case 'presence':
-        handlePresence(ws, msg);
-        break;
-      case 'relay-message':
-        handleRelayMessage(ws, msg);
+      case 'relay':
+        handleRelay(ws, msg);
         break;
       default:
         send(ws, { type: 'error', message: `Unknown message type: ${msg.type}` });
@@ -318,259 +233,250 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     clearTimeout(handshakeTimer);
-    handleDisconnect();
+    if (peerId) {
+      log('info', 'peer disconnected', { peerId });
+      cleanupPeer(peerId);
+      wsPeer.delete(ws);
+    }
   });
 
   ws.on('error', (err) => {
     log('error', 'WebSocket error', { peerId, error: err.message });
-    clearTimeout(handshakeTimer);
-    handleDisconnect();
   });
 
   // ── Message Handlers ─────────────────────────────────────────────────────
 
+  /**
+   * join — Register a peer with their ID.
+   * Client sends: { type: 'join', peerId: string }
+   */
   function handleJoin(_ws, msg, timer) {
-    if (joined) {
-      send(ws, { type: 'error', message: 'Already joined a room' });
-      return;
-    }
-
-    const { room, peerId: pid, publicKey, name } = msg;
-
-    if (!isValidRoomId(room)) {
-      send(ws, { type: 'error', message: 'Invalid room ID format (expected GL-XXXXXXXX-...)' });
-      return;
-    }
+    const pid = msg.peerId;
     if (!pid || typeof pid !== 'string') {
       send(ws, { type: 'error', message: 'Missing or invalid peerId' });
       return;
     }
-    if (!publicKey || typeof publicKey !== 'string') {
-      send(ws, { type: 'error', message: 'Missing or invalid publicKey' });
-      return;
-    }
 
-    // Check room size limit
-    let room_ = rooms.get(room);
-    if (room_ && room_.size >= MAX_ROOM_SIZE) {
-      send(ws, { type: 'error', message: 'Room is full' });
-      return;
+    // If this peerId is already connected, close the old socket
+    const existing = peers.get(pid);
+    if (existing && existing !== ws) {
+      log('info', 'duplicate peer — closing old connection', { peerId: pid });
+      existing.close(4002, 'Duplicate connection');
+      cleanupPeer(pid);
     }
 
     clearTimeout(timer);
     joined = true;
     peerId = pid;
-    currentRoom = room;
+
+    peers.set(peerId, ws);
+    wsPeer.set(ws, peerId);
+
+    log('info', 'peer joined', { peerId });
+    send(ws, { type: 'joined', peerId });
+  }
+
+  /**
+   * join-room — Join a named room.
+   * Client sends: { type: 'join-room', room: string, peerId: string, publicKey: string }
+   */
+  function handleJoinRoom(_ws, msg) {
+    if (!joined) {
+      send(ws, { type: 'error', message: 'Must join (register peerId) first' });
+      return;
+    }
+
+    const { room, publicKey } = msg;
+    if (!room || typeof room !== 'string') {
+      send(ws, { type: 'error', message: 'Missing or invalid room' });
+      return;
+    }
+
+    // Leave current room first if in one
+    const currentRoomId = peerRoom.get(peerId);
+    if (currentRoomId) {
+      removePeerFromRoom(peerId);
+    }
 
     // Create room if needed
-    if (!room_) {
-      room_ = new Map();
-      rooms.set(room, room_);
-    }
-    cancelRoomCleanup(room);
-
-    // If peer was already connected (duplicate), close old connection
-    const existing = room_.get(peerId);
-    if (existing && existing.ws !== ws) {
-      existing.ws.close(4002, 'Duplicate connection');
+    if (!rooms.has(room)) {
+      rooms.set(room, new Set());
+      log('info', 'room created', { room });
     }
 
-    // Register peer
-    room_.set(peerId, {
-      ws,
-      publicKey,
-      name: name || 'Anonymous',
-      status: 'online',
-    });
-    peerToRoom.set(peerId, room);
+    const members = rooms.get(room);
 
-    log('info', 'peer joined room', { peerId, room, name: name || 'Anonymous' });
+    // Room size check
+    if (members.size >= MAX_ROOM_SIZE) {
+      send(ws, { type: 'error', message: 'Room is full' });
+      return;
+    }
 
-    // Send current peer list to the joiner
-    send(ws, {
-      type: 'room-info',
-      room,
-      peers: getPeerList(room).filter(p => p.peerId !== peerId),
-    });
+    // Store public key
+    if (publicKey) {
+      peerKeys.set(peerId, publicKey);
+    }
 
-    // Broadcast peer-joined to others
+    // Add peer to room
+    members.add(peerId);
+    peerRoom.set(peerId, room);
+
+    log('info', 'peer joined room', { peerId, room, members: members.size });
+
+    // Send current peer list to the joiner (excluding self)
+    const peerList = getPeerList(room).filter(p => p.peerId !== peerId);
+    send(ws, { type: 'peer-list', room, peers: peerList });
+
+    // Broadcast peer-joined to other members
     broadcastToRoom(room, {
       type: 'peer-joined',
       peerId,
-      publicKey,
-      name: name || 'Anonymous',
+      publicKey: publicKey || null,
     }, peerId);
-
-    // Deliver any queued offline messages
-    deliverOfflineMessages(peerId, ws);
   }
 
+  /**
+   * leave-room — Leave a room.
+   * Client sends: { type: 'leave-room', room: string, peerId: string }
+   */
+  function handleLeaveRoom(_ws, msg) {
+    if (!joined) return;
+
+    removePeerFromRoom(peerId);
+    log('info', 'peer left room (explicit)', { peerId, room: msg.room });
+  }
+
+  /**
+   * peer-list — Request the list of peers in a room.
+   * Client sends: { type: 'peer-list', room: string }
+   */
+  function handlePeerList(_ws, msg) {
+    if (!joined) {
+      send(ws, { type: 'error', message: 'Must join first' });
+      return;
+    }
+
+    const room = msg.room || peerRoom.get(peerId);
+    if (!room) {
+      send(ws, { type: 'error', message: 'Not in a room' });
+      return;
+    }
+
+    const peerList = getPeerList(room).filter(p => p.peerId !== peerId);
+    send(ws, { type: 'peer-list', room, peers: peerList });
+  }
+
+  /**
+   * offer / answer / ice-candidate — Relay WebRTC signaling to a target peer.
+   *
+   * Client sends:
+   *   offer:         { type: 'offer',         to, from, sdp, publicKey }
+   *   answer:        { type: 'answer',        to, from, sdp, publicKey }
+   *   ice-candidate: { type: 'ice-candidate', to, from, candidate }
+   *
+   * Server relays to the target peer with `to` removed (target knows it's for them).
+   */
   function handleSignaling(_ws, msg) {
     if (!joined) {
-      send(ws, { type: 'error', message: 'Must join a room first' });
+      send(ws, { type: 'error', message: 'Must join first' });
       return;
     }
 
-    // Peer ID validation — prevent impersonation
+    // Prevent impersonation — enforce the sender is who they say they are
     if (msg.from && msg.from !== peerId) {
-      send(ws, { type: 'error', message: 'Peer ID mismatch — impersonation rejected' });
+      send(ws, { type: 'error', message: 'Peer ID mismatch' });
       return;
     }
 
-    const { to, type } = msg;
+    const { to } = msg;
     if (!to || typeof to !== 'string') {
-      send(ws, { type: 'error', message: 'Missing target peerId' });
+      send(ws, { type: 'error', message: 'Missing target peerId (to)' });
       return;
     }
 
-    // Room access control — target must be in the same room
-    const targetRoom = peerToRoom.get(to);
-    if (targetRoom !== currentRoom) {
-      send(ws, { type: 'error', message: 'Target peer not in your room' });
+    const targetWs = peers.get(to);
+    if (!targetWs || targetWs.readyState !== targetWs.OPEN) {
+      send(ws, { type: 'error', message: 'Target peer not connected' });
       return;
     }
 
-    const targetWs = findPeerWs(to);
-    if (!targetWs) {
-      send(ws, { type: 'error', message: 'Target peer not found' });
-      return;
-    }
-
-    // Relay the message with sender info
+    // Build relay message: include everything the client sent, ensure `from` is set
     const relay = { ...msg, from: peerId };
+    // Remove `to` — the recipient knows the message is for them
     delete relay.to;
+
     send(targetWs, relay);
   }
 
-  function handlePresence(_ws, msg) {
-    if (!joined) return;
-
-    const status = msg.status;
-    if (!['online', 'offline', 'typing'].includes(status)) {
-      send(ws, { type: 'error', message: 'Invalid presence status' });
-      return;
-    }
-
-    const room = rooms.get(currentRoom);
-    if (room) {
-      const peer = room.get(peerId);
-      if (peer) {
-        peer.status = status;
-      }
-    }
-
-    broadcastToRoom(currentRoom, {
-      type: 'presence',
-      peerId,
-      status,
-    }, peerId);
-  }
-
-  function handleRelayMessage(_ws, msg) {
+  /**
+   * relay — Relay an encrypted payload through the signaling server (P2P fallback).
+   * Client sends: { type: 'relay', to, from, payload }
+   */
+  function handleRelay(_ws, msg) {
     if (!joined) {
-      send(ws, { type: 'error', message: 'Must join a room first' });
+      send(ws, { type: 'error', message: 'Must join first' });
       return;
     }
 
-    // Peer ID validation — prevent impersonation
     if (msg.from && msg.from !== peerId) {
-      send(ws, { type: 'error', message: 'Peer ID mismatch — impersonation rejected' });
+      send(ws, { type: 'error', message: 'Peer ID mismatch' });
       return;
     }
 
-    const { to, encrypted } = msg;
+    const { to, payload } = msg;
     if (!to || typeof to !== 'string') {
-      send(ws, { type: 'error', message: 'Missing target peerId' });
-      return;
-    }
-    if (!encrypted || typeof encrypted !== 'object') {
-      send(ws, { type: 'error', message: 'Missing encrypted payload' });
+      send(ws, { type: 'error', message: 'Missing target peerId (to)' });
       return;
     }
 
-    // Room access control — only relay to peers in the same room (or queue for offline peers who were in the room)
-    const targetRoom = peerToRoom.get(to);
-    if (targetRoom && targetRoom !== currentRoom) {
-      send(ws, { type: 'error', message: 'Target peer not in your room' });
+    const targetWs = peers.get(to);
+    if (!targetWs || targetWs.readyState !== targetWs.OPEN) {
+      send(ws, { type: 'error', message: 'Target peer not connected' });
       return;
     }
 
-    const targetWs = findPeerWs(to);
-    if (targetWs) {
-      // Peer is online — relay directly
-      send(targetWs, {
-        type: 'relay-message',
-        from: peerId,
-        encrypted,
-        timestamp: Date.now(),
-      });
-    } else {
-      // Peer is offline — queue it
-      enqueueOfflineMessage(to, peerId, encrypted);
-      send(ws, { type: 'message-queued', to, timestamp: Date.now() });
-    }
-  }
-
-  function handleDisconnect() {
-    if (!joined || !peerId || !currentRoom) return;
-    joined = false; // prevent double handling
-
-    const room = rooms.get(currentRoom);
-    if (room) {
-      room.delete(peerId);
-
-      // Broadcast departure
-      broadcastToRoom(currentRoom, {
-        type: 'peer-left',
-        peerId,
-      });
-
-      log('info', 'peer left room', { peerId, room: currentRoom, remaining: room.size });
-
-      // Schedule room cleanup if empty
-      if (room.size === 0) {
-        scheduleRoomCleanup(currentRoom);
-      }
-    }
-
-    peerToRoom.delete(peerId);
+    send(targetWs, { type: 'relay', from: peerId, payload });
   }
 });
 
-// ─── Periodic Cleanup ────────────────────────────────────────────────────────
+// ─── Heartbeat — Ping/Pong Dead Connection Detection ────────────────────────
 
-// Prune expired offline messages every 10 minutes
-setInterval(() => {
-  let pruned = 0;
-  for (const peerId of offlineQueue.keys()) {
-    const before = (offlineQueue.get(peerId) || []).length;
-    pruneOfflineQueue(peerId);
-    const after = (offlineQueue.get(peerId) || []).length;
-    pruned += before - after;
-  }
-  if (pruned > 0) {
-    log('info', 'pruned expired offline messages', { count: pruned });
-  }
-}, 10 * 60 * 1000);
+const heartbeatInterval = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      const pid = wsPeer.get(ws);
+      log('info', 'terminating dead connection', { peerId: pid || 'unknown' });
+      if (pid) cleanupPeer(pid);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, HEARTBEAT_INTERVAL_MS);
+
+wss.on('close', () => {
+  clearInterval(heartbeatInterval);
+});
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 
-httpServer.listen(PORT_HTTP, () => {
-  log('info', `HTTP server listening on port ${PORT_HTTP}`);
-  log('info', 'GhostLink signaling server started', {
-    httpPort: PORT_HTTP,
-    wsPort: PORT_WS,
-    turnConfigured: !!TURN_SERVER_URL,
-    allowedOrigins: ALLOWED_ORIGINS,
+httpServer.listen(PORT, () => {
+  log('info', `GhostLink signaling server listening on port ${PORT}`, {
+    port: PORT,
+    heartbeatInterval: HEARTBEAT_INTERVAL_MS,
+    maxPayload: MAX_MSG_BYTES,
+    maxRoomSize: MAX_ROOM_SIZE,
   });
 });
 
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
 
 function shutdown(signal) {
-  log('info', `Received ${signal}, shutting down gracefully...`);
+  log('info', `Received ${signal}, shutting down...`);
 
-  // Close all WebSocket connections
+  clearInterval(heartbeatInterval);
+
+  // Close all client connections
   wss.clients.forEach((client) => {
     client.close(1001, 'Server shutting down');
   });
@@ -583,11 +489,11 @@ function shutdown(signal) {
     });
   });
 
-  // Force exit after 10 seconds
+  // Force exit after 10s
   setTimeout(() => {
     log('error', 'Forced shutdown after timeout');
     process.exit(1);
-  }, 10000);
+  }, 10000).unref();
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -602,4 +508,4 @@ process.on('unhandledRejection', (reason) => {
   log('error', 'Unhandled rejection', { reason: String(reason) });
 });
 
-module.exports = { app, wss, httpServer };
+module.exports = { httpServer, wss };

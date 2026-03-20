@@ -451,29 +451,14 @@
         const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
         const [isTablet, setIsTablet] = useState(window.innerWidth >= 768 && window.innerWidth < 1024);
 
-        // Demo peers
-        const [peers, setPeers] = useState([
-          { id: 1, name: "Alex Chen", status: "online", pubKey: "04a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5", lastSeen: "now", avatar: "AC", color: "#1a3a2a", unread: 2 },
-          { id: 2, name: "Sarah Kim", status: "online", pubKey: "04d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8", lastSeen: "now", avatar: "SK", color: "#2a1a3a", unread: 0 },
-          { id: 3, name: "Dev Team", status: "group", pubKey: "multi-sig-composite-key", lastSeen: "5 peers", avatar: "DT", color: "#1a2a3a", isGroup: true, unread: 5 },
-          { id: 4, name: "Maya Patel", status: "offline", pubKey: "04f8e9d0c1b2a3948576a7b8c9d0e1f2", lastSeen: "2h ago", avatar: "MP", color: "#3a2a1a", unread: 0 },
-        ]);
+        // Peers — populated dynamically from signaling server discovery
+        const [peers, setPeers] = useState([]);
 
-        // Call history
-        const callHistory = useMemo(() => [
-          { id: 1, peer: "Alex Chen", avatar: "AC", color: "#1a3a2a", type: "voice", dir: "out", duration: 342, ts: Date.now() - 3600000, status: "completed" },
-          { id: 2, peer: "Sarah Kim", avatar: "SK", color: "#2a1a3a", type: "video", dir: "in", duration: 0, ts: Date.now() - 86400000, status: "missed" },
-          { id: 3, peer: "Dev Team", avatar: "DT", color: "#1a2a3a", type: "voice", dir: "in", duration: 1823, ts: Date.now() - 172800000, status: "completed" },
-          { id: 4, peer: "Maya Patel", avatar: "MP", color: "#3a2a1a", type: "video", dir: "out", duration: 0, ts: Date.now() - 259200000, status: "missed" },
-        ], []);
+        // Call history — populated from real calls
+        const [callHistory, setCallHistory] = useState([]);
 
-        // Demo files
-        const demoFiles = useMemo(() => [
-          { name: "api-schema-v3.json", size: 24800, from: "Alex Chen", ts: Date.now() - 3600000, hash: "a7f3b2...", chunks: 4 },
-          { name: "deployment-keys.zip", size: 1258000, from: "Sarah Kim", ts: Date.now() - 7200000, hash: "c9d0e1...", chunks: 12, encrypted: true },
-          { name: "architecture-diagram.png", size: 487000, from: "You", ts: Date.now() - 1800000, hash: "f2a3b4...", chunks: 8 },
-          { name: "sprint-notes.pdf", size: 156000, from: "Dev Team", ts: Date.now() - 10800000, hash: "b8c9d0...", chunks: 3 },
-        ], []);
+        // Transferred files — populated from real P2P file transfers
+        const [transferredFiles, setTransferredFiles] = useState([]);
 
         // ==================== EFFECTS ====================
         useEffect(() => {
@@ -528,17 +513,27 @@
         useEffect(() => {
           if (!identity || peerManager) return;
 
-          const SIGNALING_URL = window.location.hostname === 'localhost'
-            ? 'ws://localhost:3001'
-            : (window.GHOSTLINK_SIGNAL_URL || 'ws://localhost:3001');
+          const SIGNALING_URL = window.GHOSTLINK_SIGNAL_URL
+            || (window.location.hostname === 'localhost' ? 'ws://localhost:3001' : `ws://${window.location.hostname}:3001`);
 
           // Initialize Signal Protocol session manager
           const initSignalProtocol = async () => {
             if (typeof GhostLinkSignal !== 'undefined') {
               const sm = new GhostLinkSignal.SessionManager();
-              setSessionManager(sm);
-              const gk = new GhostLinkSignal.GroupKeyAgreement(sm);
-              setGroupKeyManager(gk);
+              try {
+                const preKeyBundle = await sm.init(20);
+                console.log('[GhostLink] Signal Protocol initialized, pre-key bundle ready');
+                setSessionManager(sm);
+                const gk = new GhostLinkSignal.GroupKeyAgreement(sm);
+                setGroupKeyManager(gk);
+              } catch (e) {
+                console.warn('[GhostLink] Signal Protocol init failed, falling back to AES encryption:', e);
+                // Still set the session manager (un-initialized) so the app knows it exists
+                // but encryption will fall back to base CryptoEngine AES
+                setSessionManager(null);
+                setGroupKeyManager(null);
+                addToast('Signal Protocol unavailable — using AES-256 encryption', 'info');
+              }
             }
           };
 
@@ -553,18 +548,35 @@
 
               pm.on('signaling-connected', () => { setSignalingConnected(true); addToast('Connected to signaling server', 'success'); });
               pm.on('signaling-disconnected', () => { setSignalingConnected(false); addToast('Disconnected from server', 'error'); });
-              pm.on('peer-connected', ({ peerId, peerInfo }) => {
+              // Generate a deterministic color from a peer ID
+              const peerColor = (id) => {
+                const colors = ['#1a3a2a', '#2a1a3a', '#1a2a3a', '#3a2a1a', '#2a3a1a', '#1a3a3a', '#3a1a2a', '#2a2a3a'];
+                let hash = 0;
+                for (let i = 0; i < (id || '').length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i);
+                return colors[Math.abs(hash) % colors.length];
+              };
+
+              pm.on('peer-connected', (peerId, peerInfo) => {
                 setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
                 setPeers(prev => {
-                  if (prev.find(p => p.fingerprint === peerId || p.id === peerId)) return prev;
+                  const existing = prev.find(p => p.fingerprint === peerId || p.id === peerId);
+                  if (existing) {
+                    // Update existing peer to online
+                    return prev.map(p =>
+                      (p.fingerprint === peerId || p.id === peerId)
+                        ? { ...p, status: 'online', lastSeen: 'now', name: peerInfo?.name || p.name }
+                        : p
+                    );
+                  }
+                  const name = peerInfo?.name || `Peer-${peerId.slice(0, 6)}`;
                   return [...prev, {
                     id: peerId,
-                    name: peerInfo?.name || 'Unknown Peer',
+                    name,
                     status: 'online',
                     pubKey: peerInfo?.publicKey || '',
                     lastSeen: 'now',
-                    avatar: (peerInfo?.name || 'UP').slice(0, 2).toUpperCase(),
-                    color: '#1a2a3a',
+                    avatar: name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'P',
+                    color: peerColor(peerId),
                     unread: 0,
                     fingerprint: peerId,
                     isReal: true
@@ -572,26 +584,55 @@
                 });
                 addToast(`${peerInfo?.name || 'Peer'} connected`, 'success');
               });
-              pm.on('peer-disconnected', ({ peerId }) => {
+              pm.on('peer-disconnected', (peerId) => {
                 setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
                 setPeers(prev => prev.map(p =>
-                  (p.fingerprint === peerId || p.id === peerId) ? { ...p, status: 'offline' } : p
+                  (p.fingerprint === peerId || p.id === peerId)
+                    ? { ...p, status: 'offline', lastSeen: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+                    : p
                 ));
               });
-              pm.on('message', async ({ peerId, data }) => {
+              pm.on('message', async (peerId, data) => {
                 try {
-                  const msg = JSON.parse(data);
+                  let msg;
+                  const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+
+                  // Check if this is a Signal Protocol encrypted message
+                  if (parsed.signalProtocol && parsed.envelope && sessionManager) {
+                    try {
+                      const decrypted = await sessionManager.decryptMessage(peerId, parsed.envelope);
+                      msg = JSON.parse(decrypted);
+                    } catch (signalErr) {
+                      console.warn('[GhostLink] Signal decrypt failed:', signalErr);
+                      msg = parsed; // fall through to regular handling
+                    }
+                  } else {
+                    msg = parsed;
+                  }
+
                   if (msg.type === 'chat') {
                     const block = await chain.add(msg.sender, msg.content, msg.msgType || 'text', msg.meta || {});
-                    block.encrypted = { iv: msg.iv, ciphertext: msg.ciphertext };
+                    block.encrypted = msg.iv ? { iv: msg.iv, ciphertext: msg.ciphertext } : await CryptoEngine.encrypt(msg.content, identity.fingerprint);
+                    // Find the conversation key — use the peer's id from our peers list
+                    const peerEntry = peers.find(p => p.fingerprint === peerId || p.id === peerId);
+                    const convoKey = peerEntry ? peerEntry.id : peerId;
                     setMessages(prev => ({
                       ...prev,
-                      [peerId]: [...(prev[peerId] || []), block]
+                      [convoKey]: [...(prev[convoKey] || []), block]
                     }));
+                    // Increment unread count if not the active conversation
+                    setPeers(prev => prev.map(p =>
+                      (p.fingerprint === peerId || p.id === peerId) && convoKey !== activeConvo
+                        ? { ...p, unread: (p.unread || 0) + 1 }
+                        : p
+                    ));
+                  } else if (msg.type === 'typing') {
+                    setTyping(true);
+                    setTimeout(() => setTyping(false), 3000);
                   }
                 } catch (e) { console.error('Message parse error:', e); }
               });
-              pm.on('connection-state-change', ({ peerId, state }) => {
+              pm.on('connection-state-change', (peerId, state) => {
                 setConnectionStates(prev => ({ ...prev, [peerId]: state }));
               });
 
@@ -603,6 +644,17 @@
                 });
                 ft.on('complete', ({ transferId, peerId, file }) => {
                   setActiveTransfers(prev => { const n = { ...prev }; delete n[transferId]; return n; });
+                  if (file) {
+                    setTransferredFiles(prev => [...prev, {
+                      name: file.name || 'unknown',
+                      size: file.size || 0,
+                      from: peerId,
+                      ts: Date.now(),
+                      hash: transferId?.slice(0, 8) + '...',
+                      chunks: Math.ceil((file.size || 0) / 65536),
+                      encrypted: true
+                    }]);
+                  }
                 });
                 setFileTransferManager(ft);
               }
@@ -769,16 +821,44 @@
           const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
           if (peerManager && connectionStates[peerId] === 'connected') {
             try {
-              const msgPayload = JSON.stringify({
-                type: 'chat',
-                sender: identity.name,
-                content: content.trim(),
-                msgType: type,
-                meta,
-                iv: block.encrypted.iv,
-                ciphertext: block.encrypted.ciphertext,
-                blockHash: block.hash
-              });
+              // Try Signal Protocol encryption first, fall back to AES
+              let msgPayload;
+              if (sessionManager && sessionManager.getSession(peerId)) {
+                try {
+                  const encrypted = await sessionManager.encryptMessage(peerId, JSON.stringify({
+                    type: 'chat',
+                    sender: identity.name,
+                    content: content.trim(),
+                    msgType: type,
+                    meta,
+                    blockHash: block.hash
+                  }));
+                  msgPayload = JSON.stringify({ signalProtocol: true, envelope: encrypted });
+                } catch (signalErr) {
+                  console.warn('[GhostLink] Signal encrypt failed, using AES fallback:', signalErr);
+                  msgPayload = JSON.stringify({
+                    type: 'chat',
+                    sender: identity.name,
+                    content: content.trim(),
+                    msgType: type,
+                    meta,
+                    iv: block.encrypted.iv,
+                    ciphertext: block.encrypted.ciphertext,
+                    blockHash: block.hash
+                  });
+                }
+              } else {
+                msgPayload = JSON.stringify({
+                  type: 'chat',
+                  sender: identity.name,
+                  content: content.trim(),
+                  msgType: type,
+                  meta,
+                  iv: block.encrypted.iv,
+                  ciphertext: block.encrypted.ciphertext,
+                  blockHash: block.hash
+                });
+              }
               await peerManager.sendMessage(peerId, msgPayload);
             } catch (e) {
               console.error('P2P send failed, queuing:', e);
@@ -793,29 +873,6 @@
               ...prev,
               [peerId]: [...(prev[peerId] || []), { id: block.hash, encrypted: block.encrypted }]
             }));
-          }
-
-          // Simulated reply (keep for demo when no real peers)
-          if (!peerManager || !signalingConnected) {
-            setTyping(true);
-            setTimeout(async () => {
-              setTyping(false);
-              const replies = [
-                "Got it. Checking the codebase now.",
-                "Acknowledged. Will push the fix within the hour.",
-                "Chain verified on my end. All blocks intact.",
-                "Pulling the latest. Stand by.",
-                "Roger. Encrypted channel is stable.",
-                "Nice catch. Reviewing and will circle back.",
-                "Pushed to staging. Check when ready.",
-                "Merged. Pipeline running now.",
-              ];
-              const reply = replies[Math.floor(Math.random() * replies.length)];
-              const peer = peers.find(p => p.id === activeConvo);
-              const rb = await chain.add(peer?.name || "Peer", reply, "text", {});
-              rb.encrypted = await CryptoEngine.encrypt(reply, identity.fingerprint);
-              setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), rb] }));
-            }, 1200 + Math.random() * 2000);
           }
           } catch (e) { console.error('sendMessage error:', e); addToast(e.message || 'Failed to send message', 'error'); }
         };
@@ -834,19 +891,20 @@
                 if (transferId === id) setUploadProgress(p => ({ ...p, [id]: progress }));
               });
               await fileTransferManager.sendFile(peerId, fileObj);
-              await sendMessage(fileName, "file", { fileSize, chunks: Math.ceil(fileSize / 65536), hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
+              const fHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
+              const fChunks = Math.ceil(fileSize / 65536);
+              await sendMessage(fileName, "file", { fileSize, chunks: fChunks, hash: fHash });
+              setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fHash + '...', chunks: fChunks, encrypted: true }]);
               setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
               return;
             } catch (e) { console.error('P2P file transfer failed:', e); addToast('File transfer failed: ' + e.message, 'error'); }
           }
 
-          // Fallback: simulated transfer
+          // Fallback: local-only file record (no P2P connection)
           const chunks = Math.ceil(fileSize / 65536);
-          for (let i = 0; i <= chunks; i++) {
-            await new Promise(r => setTimeout(r, 200));
-            setUploadProgress(p => ({ ...p, [id]: Math.min(((i + 1) / chunks) * 100, 100) }));
-          }
-          await sendMessage(fileName, "file", { fileSize, chunks, hash: (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12) });
+          const fileHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
+          await sendMessage(fileName, "file", { fileSize, chunks, hash: fileHash });
+          setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fileHash + '...', chunks, encrypted: true }]);
           setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
           } catch (e) { console.error('sendFile error:', e); addToast(e.message || 'Failed to send file', 'error'); }
         };
@@ -1335,7 +1393,7 @@
                 </div>
               ) : activeTab === "files" ? (
                 <div style={{ flex: 1, overflowY: "auto", padding: 10 }}>
-                  {demoFiles.map((f, i) => (
+                  {transferredFiles.map((f, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both", cursor: "pointer" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 8, background: `${fileIcons[getExt(f.name)] || "#6a6a7a"}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                         <I t="file" s={16} c={fileIcons[getExt(f.name)] || "#6a6a7a"} />
@@ -1347,12 +1405,23 @@
                       {f.encrypted && <I t="lock" s={12} c={th.accent} />}
                     </div>
                   ))}
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>All files are chunked and encrypted P2P</div>
+                  {transferredFiles.length === 0 && <div style={{ textAlign: "center", padding: 40, fontSize: 11, color: "#2a2a3a" }}>No files transferred yet. Send files via the chat.</div>}
+                  {transferredFiles.length > 0 && <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>All files are chunked and encrypted P2P</div>}
                 </div>
               ) : (
                 <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
+                  {peers.length === 0 && (
+                    <div style={{ textAlign: "center", padding: "40px 20px", color: "#2a2a3a" }}>
+                      <I t="users" s={32} c="#1a1a2a" />
+                      <div style={{ marginTop: 12, fontSize: 12, fontWeight: 600, color: "#3a3a4a" }}>No peers connected</div>
+                      <div style={{ marginTop: 6, fontSize: 10, color: "#2a2a3a", lineHeight: 1.6 }}>Create an invite and share with a peer to start a P2P encrypted session</div>
+                      <button onClick={genInvite} style={{ marginTop: 14, padding: "8px 16px", borderRadius: 8, border: `1px solid ${th.accent}30`, background: `${th.accent}10`, color: th.accent, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, fontWeight: 600 }}>
+                        + Create Invite
+                      </button>
+                    </div>
+                  )}
                   {peers.map(peer => (
-                    <div key={peer.id} onClick={() => setActiveConvo(peer.id)} style={{
+                    <div key={peer.id} onClick={() => { setActiveConvo(peer.id); setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, unread: 0 } : p)); }} style={{
                       padding: "11px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11,
                       background: activeConvo === peer.id ? `${th.accent}08` : "transparent",
                       borderLeft: activeConvo === peer.id ? `2px solid ${th.accent}` : "2px solid transparent",

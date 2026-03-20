@@ -1,272 +1,299 @@
-import React, {createContext, useContext, useReducer, useCallback, useEffect} from 'react';
-import EncryptedStorage from 'react-native-encrypted-storage';
-import {CryptoEngine} from '../utils/crypto';
+/**
+ * GhostLink Mobile — Global Application Context
+ *
+ * Centralized state for identity, peers, messages, settings,
+ * and connection status. Persistent state backed by AsyncStorage.
+ * Peers and messages use Map for O(1) lookups.
+ */
 
-const AppContext = createContext();
+import React, {
+  createContext,
+  useContext,
+  useReducer,
+  useCallback,
+  useEffect,
+  useRef,
+} from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BIP39_WORDS = ["abandon","ability","able","above","absent","absorb","abuse","access","account","achieve","acid","across","action","actor","adapt","address","admit","adult","advance","advice","afford","afraid","again","agent","agree","aim","airport","alarm","album","alert","alien","alley","allow","almost","alone","already","alter","amateur","amazing","anchor","ancient","anger","angle","animal","annual","antenna","anxiety","appear","approve","arch","arctic","area","argue","armor","army","arrest","arrive","artist","aspect","assault","assist","athlete","attach","attend","attract","audit","author","autumn","aware","awesome","axis","balance","bamboo","banner","barely","barrel","battle","beauty","become","benefit","betray","bicycle","biology","birth","bitter","blade","blame","blast","bless","blind","blossom","boost","border","bounce","bracket","brave","bridge","brief","bright","brisk","broken","brother","bubble","bullet","bundle","burden","burst","business","butter","cable","cactus","canvas","capable","captain","carbon","cargo","carry","castle","casual","catalog","cause","caution","cement","century","cereal","champion","chapter","charge","chase","cheap","chest","chief","child","choice","circuit","citizen","civil","claim","clever","client","climb","clinic","clog","cloth","cloud","cluster","clutch","coast","coconut","combine","comfort","company","confirm","congress","connect","consider","control","convince","copper","coral","correct","cotton","country","couple","cousin","cover","crack","cradle","craft","crane","crash","cream","cricket","crime","crisp","cross","crucial","crystal","culture","curious","current","custom","cycle","damage","danger","daring","daughter","decade","decline","define","delay","deliver","demand","dental","derive","describe","design","detect","develop","device","diagram","diamond","digital","dilemma","discover","display","domain","donate","double","dragon","drama","draw","dream","dress","drift","drive","dynamic","eagle","economy","effort","eight","electric","element","elite","emerge","emotion","employ","enable","endorse","energy","enforce","engage","engine","enjoy","enough","enrich","enter","equal","equip","escape","estate","ethics","evidence","evolve","exact","excess","excite","exercise","exhaust","exist","expand","explain","expose","extend","fabric","faculty","faith","famous","fantasy","fashion","feature","festival","fiction","figure","filter","fiscal","fitness","flame","flavor","flight","float","flower","fluid","focus","forest","fortune","fossil","frame","frequent","fresh","future","galaxy","gallery","garlic","gather","genius","genuine","ghost","giant","ginger","giraffe","global","gospel","govern","grace","grain","grape","gravity","great","guard","guide","guitar","habit","harvest","hazard","health","heavy","height","hidden","history","hobby","hockey","holiday","honey","hospital","hover","humble","humor","hybrid","icon","ignore","illegal","image","immune","impact","improve","impulse","income","indoor","industry","infant","innocent","inquiry","inspire","install","intact","invest","invite","island","isolate","jacket","jaguar","jealous","journey","jungle","kangaroo","kingdom","kitchen","knowledge","language","laptop","laundry","lawsuit","leader","lecture","legend","liberty","license","liquid","lottery","luggage","luxury","magic","magnet","marble","margin","marine","master","matrix","meadow","melody","memory","mentor","mercy","middle","midnight","miracle","mitten","monitor","monkey","moral","morning","mountain","museum","mystery","nature","network","neutral","noble","nominee","nuclear","object","obtain","ocean","olympic","onion","orbit","orchard","order","organ","orphan","ostrich","output","oxygen","paddle","palace","panic","patrol","payment","peasant","pelican","penalty","perfect","permit","phrase","physical","pioneer","pistol","planet","plastic","pledge","polar","popular","portrait","pottery","poverty","predict","preserve","primary","priority","prison","produce","profit","program","promote","property","protect","provide","pudding","quantum","question","rabbit","raccoon","radar","rainbow","rally","random","rebel","rebuild","recall","recipe","reduce","reform","region","regular","release","remain","remind","rescue","resist","resource","result","retire","reunion","reveal","reward","rhythm","ribbon","ritual","robust","romance","rookie","rotate","satellite","satisfy","scatter","science","scorpion","screen","second","section","security","segment","seminar","separate","shadow","sheriff","shield","signal","silent","similar","simple","siren","social","solar","soldier","solution","someone","source","space","spatial","spawn","special","sphere","spirit","sponsor","stable","stadium","stairs","strategy","street","struggle","student","style","submit","subway","surface","surprise","sustain","symbol","symptom","tackle","talent","target","texture","theory","thunder","timber","tissue","token","tornado","tourist","traffic","tragic","transfer","trigger","trophy","trumpet","tunnel","unique","universe","unlock","unusual","upgrade","uphold","urban","utility","vacant","valley","vendor","venture","verify","vibrant","victory","vintage","virtual","vital","vivid","volcano","voyage","walnut","warfare","warrior","wealth","weapon","wedding","whisper","wildlife","wisdom","witness","wonder","wrist","yellow","zebra","zero"];
+// ─── Storage Keys ────────────────────────────────────────────
+const STORAGE_KEYS = {
+  IDENTITY: '@ghostlink/identity',
+  MESSAGES: '@ghostlink/messages',
+  SETTINGS: '@ghostlink/settings',
+  PEERS: '@ghostlink/peers',
+};
 
-function generateSeedPhrase() {
-  const words = [];
-  for (let i = 0; i < 12; i++) {
-    const idx = Math.floor(Math.random() * BIP39_WORDS.length);
-    words.push(BIP39_WORDS[idx]);
+// ─── Default Settings ────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+  theme: 'phantom',
+  fontSize: 16,
+  notifications: true,
+  sounds: true,
+  readReceipts: false,
+  encLevel: 'signal', // 'signal' | 'aes-gcm' | 'triple'
+  p2pRelay: false,
+};
+
+// ─── Initial State ───────────────────────────────────────────
+const INITIAL_STATE = {
+  identity: null, // { name, publicKeyHex, fingerprint, keyPair }
+  peers: new Map(), // peerId -> { id, name, publicKeyHex, fingerprint, online, lastSeen }
+  messages: new Map(), // roomId -> [{ id, sender, text, timestamp, type, status }]
+  settings: {...DEFAULT_SETTINGS},
+  connectionStatus: 'disconnected', // 'disconnected' | 'connecting' | 'connected'
+};
+
+// ─── Action Types ────────────────────────────────────────────
+const Actions = {
+  SET_IDENTITY: 'SET_IDENTITY',
+  ADD_PEER: 'ADD_PEER',
+  REMOVE_PEER: 'REMOVE_PEER',
+  ADD_MESSAGE: 'ADD_MESSAGE',
+  UPDATE_SETTINGS: 'UPDATE_SETTINGS',
+  SET_CONNECTION_STATUS: 'SET_CONNECTION_STATUS',
+  RESTORE_STATE: 'RESTORE_STATE',
+  WIPE_ALL: 'WIPE_ALL',
+};
+
+// ─── Map Serialisation Helpers ───────────────────────────────
+
+function mapToObject(map) {
+  const obj = {};
+  for (const [key, value] of map.entries()) {
+    obj[key] = value;
   }
-  return words;
+  return obj;
 }
 
-const initialState = {
-  identity: null,
-  seedPhrase: null,
-  displayName: '',
-  isSetupComplete: false,
-  peers: [],
-  activePeer: null,
-  messages: {},
-  pinnedMessages: {},
-  rooms: [],
-  activeRoom: null,
-  callState: null,
-  chain: [],
-  files: [],
-  notifications: true,
-  biometricEnabled: false,
-  autoWipeMinutes: 0,
-  inviteCode: '',
-};
+function objectToMap(obj) {
+  const map = new Map();
+  if (obj && typeof obj === 'object') {
+    for (const key of Object.keys(obj)) {
+      map.set(key, obj[key]);
+    }
+  }
+  return map;
+}
+
+// ─── Reducer ─────────────────────────────────────────────────
 
 function appReducer(state, action) {
   switch (action.type) {
-    case 'SET_IDENTITY':
+    case Actions.SET_IDENTITY:
       return {...state, identity: action.payload};
-    case 'SET_SEED_PHRASE':
-      return {...state, seedPhrase: action.payload};
-    case 'SET_DISPLAY_NAME':
-      return {...state, displayName: action.payload};
-    case 'COMPLETE_SETUP':
-      return {...state, isSetupComplete: true};
-    case 'ADD_PEER':
-      if (state.peers.find(p => p.id === action.payload.id)) return state;
-      return {...state, peers: [...state.peers, action.payload]};
-    case 'REMOVE_PEER':
-      return {...state, peers: state.peers.filter(p => p.id !== action.payload)};
-    case 'SET_ACTIVE_PEER':
-      return {...state, activePeer: action.payload};
-    case 'UPDATE_PEER':
-      return {
-        ...state,
-        peers: state.peers.map(p =>
-          p.id === action.payload.id ? {...p, ...action.payload} : p,
-        ),
-      };
-    case 'ADD_MESSAGE': {
+
+    case Actions.ADD_PEER: {
+      const nextPeers = new Map(state.peers);
+      nextPeers.set(action.payload.id, action.payload);
+      return {...state, peers: nextPeers};
+    }
+
+    case Actions.REMOVE_PEER: {
+      const nextPeers = new Map(state.peers);
+      nextPeers.delete(action.payload);
+      return {...state, peers: nextPeers};
+    }
+
+    case Actions.ADD_MESSAGE: {
       const {roomId, message} = action.payload;
-      const roomMessages = state.messages[roomId] || [];
+      const nextMessages = new Map(state.messages);
+      const existing = nextMessages.get(roomId) || [];
+      nextMessages.set(roomId, [...existing, message]);
+      return {...state, messages: nextMessages};
+    }
+
+    case Actions.UPDATE_SETTINGS:
       return {
         ...state,
-        messages: {
-          ...state.messages,
-          [roomId]: [...roomMessages, message],
-        },
+        settings: {...state.settings, ...action.payload},
       };
-    }
-    case 'DELETE_MESSAGE': {
-      const {roomId: rid, messageId} = action.payload;
-      const msgs = (state.messages[rid] || []).filter(m => m.id !== messageId);
-      return {...state, messages: {...state.messages, [rid]: msgs}};
-    }
-    case 'PIN_MESSAGE': {
-      const {roomId: prid, messageId: pmid} = action.payload;
-      const pinned = state.pinnedMessages[prid] || [];
-      if (pinned.includes(pmid)) {
-        return {
-          ...state,
-          pinnedMessages: {
-            ...state.pinnedMessages,
-            [prid]: pinned.filter(id => id !== pmid),
-          },
-        };
-      }
-      return {
-        ...state,
-        pinnedMessages: {
-          ...state.pinnedMessages,
-          [prid]: [...pinned, pmid],
-        },
-      };
-    }
-    case 'ADD_ROOM':
-      return {...state, rooms: [...state.rooms, action.payload]};
-    case 'SET_ACTIVE_ROOM':
-      return {...state, activeRoom: action.payload};
-    case 'SET_CALL_STATE':
-      return {...state, callState: action.payload};
-    case 'ADD_CHAIN_BLOCK':
-      return {...state, chain: [...state.chain, action.payload]};
-    case 'SET_CHAIN':
-      return {...state, chain: action.payload};
-    case 'ADD_FILE':
-      return {...state, files: [...state.files, action.payload]};
-    case 'SET_NOTIFICATIONS':
-      return {...state, notifications: action.payload};
-    case 'SET_BIOMETRIC':
-      return {...state, biometricEnabled: action.payload};
-    case 'SET_AUTO_WIPE':
-      return {...state, autoWipeMinutes: action.payload};
-    case 'SET_INVITE_CODE':
-      return {...state, inviteCode: action.payload};
-    case 'WIPE_ALL':
-      return {...initialState};
-    case 'RESTORE_STATE':
+
+    case Actions.SET_CONNECTION_STATUS:
+      return {...state, connectionStatus: action.payload};
+
+    case Actions.RESTORE_STATE:
       return {...state, ...action.payload};
+
+    case Actions.WIPE_ALL:
+      return {
+        ...INITIAL_STATE,
+        settings: {...DEFAULT_SETTINGS},
+        peers: new Map(),
+        messages: new Map(),
+      };
+
     default:
       return state;
   }
 }
 
-export function AppProvider({children}) {
-  const [state, dispatch] = useReducer(appReducer, initialState);
+// ─── Context ─────────────────────────────────────────────────
+const AppContext = createContext(null);
 
+function AppProvider({children}) {
+  const [state, dispatch] = useReducer(appReducer, INITIAL_STATE);
+  const hydrated = useRef(false);
+
+  // ── Hydrate from AsyncStorage on mount ──
   useEffect(() => {
-    loadPersistedState();
-  }, []);
+    (async () => {
+      try {
+        const [rawIdentity, rawMessages, rawSettings, rawPeers] =
+          await Promise.all([
+            AsyncStorage.getItem(STORAGE_KEYS.IDENTITY),
+            AsyncStorage.getItem(STORAGE_KEYS.MESSAGES),
+            AsyncStorage.getItem(STORAGE_KEYS.SETTINGS),
+            AsyncStorage.getItem(STORAGE_KEYS.PEERS),
+          ]);
 
-  const loadPersistedState = async () => {
-    try {
-      const stored = await EncryptedStorage.getItem('gl_app_state');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        dispatch({type: 'RESTORE_STATE', payload: parsed});
+        const restored = {};
+
+        if (rawIdentity) {
+          restored.identity = JSON.parse(rawIdentity);
+        }
+        if (rawMessages) {
+          restored.messages = objectToMap(JSON.parse(rawMessages));
+        }
+        if (rawSettings) {
+          restored.settings = {...DEFAULT_SETTINGS, ...JSON.parse(rawSettings)};
+        }
+        if (rawPeers) {
+          restored.peers = objectToMap(JSON.parse(rawPeers));
+        }
+
+        if (Object.keys(restored).length > 0) {
+          dispatch({type: Actions.RESTORE_STATE, payload: restored});
+        }
+      } catch (err) {
+        console.warn('[AppContext] hydration failed:', err);
+      } finally {
+        hydrated.current = true;
       }
-    } catch (_e) {
-      // First launch or corrupted state
-    }
-  };
-
-  const persistState = useCallback(async () => {
-    try {
-      const toStore = {
-        displayName: state.displayName,
-        isSetupComplete: state.isSetupComplete,
-        peers: state.peers,
-        messages: state.messages,
-        pinnedMessages: state.pinnedMessages,
-        rooms: state.rooms,
-        chain: state.chain,
-        files: state.files,
-        notifications: state.notifications,
-        biometricEnabled: state.biometricEnabled,
-        autoWipeMinutes: state.autoWipeMinutes,
-        inviteCode: state.inviteCode,
-      };
-      await EncryptedStorage.setItem('gl_app_state', JSON.stringify(toStore));
-    } catch (_e) {
-      // Storage error
-    }
-  }, [state]);
-
-  useEffect(() => {
-    if (state.isSetupComplete) {
-      persistState();
-    }
-  }, [state, persistState]);
-
-  const setupIdentity = useCallback(async (name) => {
-    const keyPair = await CryptoEngine.generateKeyPair();
-    const seed = generateSeedPhrase();
-    const fingerprint = await CryptoEngine.sha256(keyPair.publicKeyHex);
-    const invite = CryptoEngine.genInvite();
-
-    const identity = {
-      publicKeyHex: keyPair.publicKeyHex,
-      fingerprint: fingerprint.slice(0, 16),
-      name,
-    };
-
-    await CryptoEngine.storeKeyPair(keyPair.publicKeyHex, keyPair.privateKeyRaw);
-
-    dispatch({type: 'SET_IDENTITY', payload: identity});
-    dispatch({type: 'SET_SEED_PHRASE', payload: seed});
-    dispatch({type: 'SET_DISPLAY_NAME', payload: name});
-    dispatch({type: 'SET_INVITE_CODE', payload: invite});
-
-    return {identity, seedPhrase: seed, inviteCode: invite};
+    })();
   }, []);
 
-  const sendMessage = useCallback(
-    async (roomId, text, options = {}) => {
-      const {replyTo, selfDestruct, fileAttachment} = options;
-      const encrypted = await CryptoEngine.encrypt(text, state.identity?.publicKeyHex || 'default-key');
+  // ── Persist identity ──
+  useEffect(() => {
+    if (!hydrated.current) {
+      return;
+    }
+    if (state.identity) {
+      // Strip non-serialisable keyPair before writing
+      const {keyPair, ...serialisable} = state.identity;
+      AsyncStorage.setItem(
+        STORAGE_KEYS.IDENTITY,
+        JSON.stringify(serialisable),
+      ).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(STORAGE_KEYS.IDENTITY).catch(() => {});
+    }
+  }, [state.identity]);
 
-      const message = {
-        id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        sender: state.displayName,
-        senderFingerprint: state.identity?.fingerprint || '',
-        content: encrypted,
-        plainText: text,
-        type: fileAttachment ? 'file' : 'text',
-        timestamp: Date.now(),
-        replyTo: replyTo || null,
-        selfDestruct: selfDestruct || 0,
-        selfDestructAt: selfDestruct ? Date.now() + selfDestruct * 1000 : null,
-        file: fileAttachment || null,
-        read: false,
-        delivered: true,
-      };
+  // ── Persist messages ──
+  useEffect(() => {
+    if (!hydrated.current) {
+      return;
+    }
+    AsyncStorage.setItem(
+      STORAGE_KEYS.MESSAGES,
+      JSON.stringify(mapToObject(state.messages)),
+    ).catch(() => {});
+  }, [state.messages]);
 
-      dispatch({type: 'ADD_MESSAGE', payload: {roomId, message}});
+  // ── Persist settings ──
+  useEffect(() => {
+    if (!hydrated.current) {
+      return;
+    }
+    AsyncStorage.setItem(
+      STORAGE_KEYS.SETTINGS,
+      JSON.stringify(state.settings),
+    ).catch(() => {});
+  }, [state.settings]);
 
-      const hash = await CryptoEngine.sha256(
-        JSON.stringify({sender: message.sender, content: text, ts: message.timestamp}),
-      );
-      dispatch({
-        type: 'ADD_CHAIN_BLOCK',
-        payload: {
-          index: state.chain.length,
-          ts: message.timestamp,
-          sender: message.sender,
-          hash,
-          type: message.type,
-          prevHash: state.chain.length > 0 ? state.chain[state.chain.length - 1].hash : '0'.repeat(64),
-        },
-      });
+  // ── Persist peers ──
+  useEffect(() => {
+    if (!hydrated.current) {
+      return;
+    }
+    AsyncStorage.setItem(
+      STORAGE_KEYS.PEERS,
+      JSON.stringify(mapToObject(state.peers)),
+    ).catch(() => {});
+  }, [state.peers]);
 
-      return message;
-    },
-    [state.identity, state.displayName, state.chain],
-  );
+  // ── Bound Actions ──
+
+  const setIdentity = useCallback(identity => {
+    dispatch({type: Actions.SET_IDENTITY, payload: identity});
+  }, []);
+
+  const addPeer = useCallback(peer => {
+    dispatch({type: Actions.ADD_PEER, payload: peer});
+  }, []);
+
+  const removePeer = useCallback(peerId => {
+    dispatch({type: Actions.REMOVE_PEER, payload: peerId});
+  }, []);
+
+  const addMessage = useCallback((roomId, message) => {
+    dispatch({
+      type: Actions.ADD_MESSAGE,
+      payload: {roomId, message},
+    });
+  }, []);
+
+  const updateSettings = useCallback(partial => {
+    dispatch({type: Actions.UPDATE_SETTINGS, payload: partial});
+  }, []);
+
+  const setConnectionStatus = useCallback(status => {
+    dispatch({type: Actions.SET_CONNECTION_STATUS, payload: status});
+  }, []);
 
   const wipeAll = useCallback(async () => {
     try {
-      await EncryptedStorage.clear();
-      await CryptoEngine.clearKeys();
-    } catch (_e) {
-      // Wipe error
+      await AsyncStorage.multiRemove([
+        STORAGE_KEYS.IDENTITY,
+        STORAGE_KEYS.MESSAGES,
+        STORAGE_KEYS.SETTINGS,
+        STORAGE_KEYS.PEERS,
+      ]);
+    } catch (err) {
+      console.warn('[AppContext] wipe error:', err);
     }
-    dispatch({type: 'WIPE_ALL'});
+    dispatch({type: Actions.WIPE_ALL});
   }, []);
 
-  return (
-    <AppContext.Provider
-      value={{
-        state,
-        dispatch,
-        setupIdentity,
-        sendMessage,
-        wipeAll,
-        generateSeedPhrase,
-        BIP39_WORDS,
-      }}>
-      {children}
-    </AppContext.Provider>
-  );
+  const value = {
+    // State
+    identity: state.identity,
+    peers: state.peers,
+    messages: state.messages,
+    settings: state.settings,
+    connectionStatus: state.connectionStatus,
+
+    // Actions
+    setIdentity,
+    addPeer,
+    removePeer,
+    addMessage,
+    updateSettings,
+    setConnectionStatus,
+    wipeAll,
+  };
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
-export function useApp() {
+function useApp() {
   const ctx = useContext(AppContext);
-  if (!ctx) throw new Error('useApp must be inside AppProvider');
+  if (!ctx) {
+    throw new Error('useApp must be used inside <AppProvider>');
+  }
   return ctx;
 }
 
-export {BIP39_WORDS};
+export {AppProvider, useApp, DEFAULT_SETTINGS, STORAGE_KEYS};
 export default AppContext;

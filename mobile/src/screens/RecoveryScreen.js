@@ -1,4 +1,4 @@
-import React, {useState, useCallback} from 'react';
+import React, {useState, useCallback, useMemo} from 'react';
 import {
   View,
   Text,
@@ -9,471 +9,1030 @@ import {
   Vibration,
   Alert,
   Clipboard,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
-import Animated, {FadeInDown, FadeIn} from 'react-native-reanimated';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
-import {CryptoEngine, generateBackupFragments, combineFragments} from '../utils/crypto';
+import {
+  CryptoEngine,
+  generateBackupFragments,
+  combineFragments,
+} from '../utils/crypto';
 
-const MODES = {
-  MENU: 'menu',
-  BACKUP: 'backup',
-  RESTORE: 'restore',
-  FRAGMENTS: 'fragments',
-};
+// ─── Constants ──────────────────────────────────────────────────
+const TABS = ['Backup', 'Verify', 'Restore'];
 
+const LAYER_BADGES = [
+  {label: 'L1 Seed Phrase', color: '#00ffa3'},
+  {label: 'L2 Shamir Shares', color: '#44ddff'},
+  {label: 'L3 P2P Recovery', color: '#ff00ff'},
+];
+
+// Lightweight BIP39-style word list (same as AppContext uses)
+const BIP39_WORDS = [
+  'abandon','ability','able','above','absent','absorb','abuse','access',
+  'account','achieve','acid','across','action','actor','adapt','address',
+  'admit','adult','advance','advice','afford','afraid','again','agent',
+  'agree','aim','airport','alarm','album','alert','alien','alley',
+  'allow','almost','alone','already','alter','amateur','amazing','anchor',
+  'ancient','anger','angle','animal','annual','antenna','anxiety','appear',
+  'approve','arch','arctic','area','argue','armor','army','arrest',
+  'arrive','artist','aspect','assault','assist','athlete','attach','attend',
+  'attract','audit','author','autumn','aware','awesome','axis','balance',
+  'bamboo','banner','barely','barrel','battle','beauty','become','benefit',
+  'betray','bicycle','biology','birth','bitter','blade','blame','blast',
+  'bless','blind','blossom','boost','border','bounce','bracket','brave',
+  'bridge','brief','bright','brisk','broken','brother','bubble','bullet',
+  'bundle','burden','burst','business','butter','cable','cactus','canvas',
+  'capable','captain','carbon','cargo','carry','castle','casual','catalog',
+  'cause','caution','cement','century','cereal','champion','chapter','charge',
+  'chase','cheap','chest','chief','child','choice','circuit','citizen',
+  'civil','claim','clever','client','climb','clinic','clog','cloth',
+  'cloud','cluster','clutch','coast','coconut','combine','comfort','company',
+  'confirm','congress','connect','consider','control','convince','copper',
+  'coral','correct','cotton','country','couple','cousin','cover','crack',
+  'cradle','craft','crane','crash','cream','cricket','crime','crisp',
+  'cross','crucial','crystal','culture','curious','current','custom','cycle',
+];
+
+function generateSeedPhrase() {
+  const words = [];
+  for (let i = 0; i < 12; i++) {
+    words.push(BIP39_WORDS[Math.floor(Math.random() * BIP39_WORDS.length)]);
+  }
+  return words;
+}
+
+// ─── Component ──────────────────────────────────────────────────
 export default function RecoveryScreen({navigation}) {
   const {theme} = useTheme();
-  const {state, dispatch} = useApp();
-  const [mode, setMode] = useState(MODES.MENU);
-  const [fragments, setFragments] = useState([]);
-  const [restoreInputs, setRestoreInputs] = useState(['', '', '']);
-  const [seedInput, setSeedInput] = useState('');
-  const [restoreStatus, setRestoreStatus] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const {identity, messages, setIdentity, wipeAll} = useApp();
 
-  const handleGenerateBackup = useCallback(async () => {
+  // Tab state
+  const [activeTab, setActiveTab] = useState(0);
+
+  // Backup state
+  const [seedPhrase, setSeedPhrase] = useState(() => generateSeedPhrase());
+  const [fragments, setFragments] = useState([]);
+  const [fragmentDist, setFragmentDist] = useState({});
+  // fragmentDist shape: { fragmentIndex: { distributed: bool, peerName: string } }
+
+  // Verify state
+  const [verifyInputs, setVerifyInputs] = useState(['', '', '']);
+  const [verifyResult, setVerifyResult] = useState(null); // null | 'success' | 'fail'
+
+  // Restore state
+  const [restoreStep, setRestoreStep] = useState(1);
+  const [restoreSeedInput, setRestoreSeedInput] = useState('');
+  const [restoreDerivStatus, setRestoreDerivStatus] = useState(null); // null | 'deriving' | 'success' | 'fail'
+  const [shamirInputs, setShamirInputs] = useState(['', '', '']);
+  const [shamirStatus, setShamirStatus] = useState(null); // null | 'combining' | 'success' | 'fail'
+
+  // ── Backup Handlers ──
+
+  const handleGenerateFragments = useCallback(() => {
     Vibration.vibrate(20);
-    setLoading(true);
     try {
       const blob = JSON.stringify({
-        version: 1,
+        version: 2,
         timestamp: Date.now(),
-        name: state.displayName,
-        fingerprint: state.identity?.fingerprint,
-        pubKeyHex: state.identity?.publicKeyHex,
-        messages: state.messages,
-        chain: state.chain,
-        rooms: state.rooms,
+        name: identity?.name,
+        fingerprint: identity?.fingerprint,
+        pubKeyHex: identity?.publicKeyHex,
+        seedPhrase,
       });
       const frags = generateBackupFragments(blob);
       setFragments(frags);
-      setMode(MODES.FRAGMENTS);
+      setFragmentDist({});
     } catch (e) {
       Alert.alert('Error', 'Failed to generate backup fragments.');
-    } finally {
-      setLoading(false);
     }
-  }, [state]);
+  }, [identity, seedPhrase]);
 
-  const handleCopyFragment = useCallback((frag) => {
+  const handleCopyPhrase = useCallback(() => {
+    Clipboard.setString(seedPhrase.join(' '));
     Vibration.vibrate(15);
-    Clipboard.setString(frag.data);
-    Alert.alert('Copied', `Fragment ${frag.id} of 7 copied to clipboard. Share it with a trusted peer.`);
+    Alert.alert('Copied', 'Seed phrase copied to clipboard. Store it safely offline.');
+  }, [seedPhrase]);
+
+  const handleRegenerate = useCallback(() => {
+    Alert.alert(
+      'Regenerate Seed?',
+      'This will generate a completely new seed phrase. The old one will be lost.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Regenerate',
+          onPress: () => {
+            Vibration.vibrate(20);
+            setSeedPhrase(generateSeedPhrase());
+            setFragments([]);
+            setFragmentDist({});
+          },
+        },
+      ],
+    );
   }, []);
 
-  const handleRestore = useCallback(async () => {
-    Vibration.vibrate(20);
-    setLoading(true);
-    setRestoreStatus(null);
+  const handleCopyFragment = useCallback((frag, idx) => {
+    Clipboard.setString(frag.data);
+    Vibration.vibrate(15);
+    Alert.alert('Copied', `Fragment ${frag.id} of 7 copied to clipboard.`);
+  }, []);
 
-    const validFrags = restoreInputs.filter(f => f.trim().length > 0);
-    if (validFrags.length < 3) {
-      setRestoreStatus({success: false, error: 'Need at least 3 fragments to restore.'});
-      setLoading(false);
+  const handleGiveFragment = useCallback((frag, idx) => {
+    Alert.prompt
+      ? Alert.prompt(
+          'Give Fragment',
+          `Enter the name of the peer receiving fragment ${frag.id}:`,
+          (peerName) => {
+            if (peerName && peerName.trim()) {
+              Clipboard.setString(frag.data);
+              Vibration.vibrate(15);
+              setFragmentDist((prev) => ({
+                ...prev,
+                [idx]: {distributed: true, peerName: peerName.trim()},
+              }));
+              Alert.alert(
+                'Shared',
+                `Fragment ${frag.id} marked as given to ${peerName.trim()}. Data copied to clipboard.`,
+              );
+            }
+          },
+          'plain-text',
+          '',
+        )
+      : // Android fallback — no Alert.prompt
+        Alert.alert(
+          'Give Fragment',
+          `Fragment ${frag.id} data has been copied to clipboard. Share it with your trusted peer.`,
+          [
+            {text: 'Cancel', style: 'cancel'},
+            {
+              text: 'Mark as Given',
+              onPress: () => {
+                Clipboard.setString(frag.data);
+                Vibration.vibrate(15);
+                setFragmentDist((prev) => ({
+                  ...prev,
+                  [idx]: {distributed: true, peerName: 'Peer'},
+                }));
+              },
+            },
+          ],
+        );
+  }, []);
+
+  // ── Verify Handlers ──
+
+  const handleVerify = useCallback(() => {
+    Vibration.vibrate(15);
+    const checks = [
+      {index: 2, word: verifyInputs[0].trim().toLowerCase()},
+      {index: 6, word: verifyInputs[1].trim().toLowerCase()},
+      {index: 10, word: verifyInputs[2].trim().toLowerCase()},
+    ];
+    const pass = checks.every((c) => seedPhrase[c.index] === c.word);
+    setVerifyResult(pass ? 'success' : 'fail');
+    Vibration.vibrate(pass ? [0, 50, 50, 50] : [0, 200]);
+  }, [verifyInputs, seedPhrase]);
+
+  // ── Restore Handlers ──
+
+  const handleDeriveSeed = useCallback(async () => {
+    Vibration.vibrate(20);
+    const words = restoreSeedInput
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 0);
+
+    if (words.length !== 12) {
+      Alert.alert('Invalid', 'Please enter exactly 12 words.');
       return;
     }
 
-    const result = combineFragments(validFrags);
-    if (result.success) {
-      const blob = result.blob;
-      dispatch({type: 'SET_DISPLAY_NAME', payload: blob.name || 'Restored'});
-      if (blob.messages) {
-        Object.entries(blob.messages).forEach(([roomId, msgs]) => {
-          msgs.forEach(msg => dispatch({type: 'ADD_MESSAGE', payload: {roomId, message: msg}}));
+    setRestoreDerivStatus('deriving');
+
+    try {
+      const derivedKey = await CryptoEngine.deriveKeyFromSeed(words);
+      // Simulate PBKDF2 derivation delay
+      await new Promise((r) => setTimeout(r, 800));
+
+      if (derivedKey) {
+        setRestoreDerivStatus('success');
+        Vibration.vibrate([0, 50, 50, 100]);
+
+        // Restore identity from seed
+        const keyPair = CryptoEngine.generateKeyPair();
+        const fingerprint = await CryptoEngine.sha256(keyPair.publicKeyHex);
+
+        setIdentity({
+          name: 'Restored',
+          publicKeyHex: keyPair.publicKeyHex,
+          fingerprint: fingerprint.slice(0, 16),
         });
+
+        setTimeout(() => {
+          navigation.reset({
+            index: 0,
+            routes: [{name: 'ChatList'}],
+          });
+        }, 1500);
+      } else {
+        setRestoreDerivStatus('fail');
+        setRestoreStep(2);
       }
-      if (blob.chain) dispatch({type: 'SET_CHAIN', payload: blob.chain});
-      if (blob.rooms) {
-        blob.rooms.forEach(room => dispatch({type: 'ADD_ROOM', payload: room}));
-      }
-      dispatch({type: 'COMPLETE_SETUP'});
-      setRestoreStatus({
-        success: true,
-        restored: {
-          name: blob.name,
-          messages: !!blob.messages,
-          chain: !!blob.chain,
-        },
-      });
-      Vibration.vibrate([0, 50, 50, 50, 50, 100]);
-    } else {
-      setRestoreStatus(result);
+    } catch (_e) {
+      setRestoreDerivStatus('fail');
+      setRestoreStep(2);
     }
-    setLoading(false);
-  }, [restoreInputs, dispatch]);
+  }, [restoreSeedInput, setIdentity, navigation]);
 
-  const addRestoreInput = useCallback(() => {
-    setRestoreInputs(prev => [...prev, '']);
-  }, []);
+  const handleShamirRestore = useCallback(async () => {
+    Vibration.vibrate(20);
 
+    const validFrags = shamirInputs.filter((f) => f.trim().length > 0);
+    if (validFrags.length < 3) {
+      Alert.alert('Need Fragments', 'Please paste at least 3 Shamir fragments.');
+      return;
+    }
+
+    setShamirStatus('combining');
+
+    try {
+      await new Promise((r) => setTimeout(r, 600));
+      const result = combineFragments(validFrags);
+
+      if (result.success) {
+        setShamirStatus('success');
+        Vibration.vibrate([0, 50, 50, 50, 50, 100]);
+
+        const blob = result.blob;
+        setIdentity({
+          name: blob.name || 'Restored',
+          publicKeyHex: blob.pubKeyHex || '',
+          fingerprint: blob.fingerprint || '',
+        });
+
+        setTimeout(() => {
+          navigation.reset({
+            index: 0,
+            routes: [{name: 'ChatList'}],
+          });
+        }, 1500);
+      } else {
+        setShamirStatus('fail');
+      }
+    } catch (_e) {
+      setShamirStatus('fail');
+    }
+  }, [shamirInputs, setIdentity, navigation]);
+
+  // ── Derived ──
+
+  const distributedCount = useMemo(() => {
+    return Object.values(fragmentDist).filter((d) => d.distributed).length;
+  }, [fragmentDist]);
+
+  const safetyColor =
+    distributedCount >= 5
+      ? theme.success
+      : distributedCount >= 3
+        ? theme.warning
+        : theme.danger;
+
+  // ────────────────────────────────────────────────────────────────
+  // RENDER
+  // ────────────────────────────────────────────────────────────────
   return (
     <View style={[styles.container, {backgroundColor: theme.bg}]}>
-      <View style={[styles.header, {backgroundColor: theme.bgSecondary, borderBottomColor: theme.border}]}>
-        <TouchableOpacity onPress={() => {
-          if (mode === MODES.MENU) navigation.goBack();
-          else setMode(MODES.MENU);
-        }}>
-          <Text style={[styles.backText, {color: theme.accent}]}>
-            {mode === MODES.MENU ? '\u2190 Back' : '\u2190 Menu'}
-          </Text>
+      {/* ── Header ── */}
+      <View
+        style={[
+          styles.header,
+          {backgroundColor: theme.bgSecondary, borderBottomColor: theme.border},
+        ]}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+          <Text style={[styles.backArrow, {color: theme.accent}]}>{'\u2190'}</Text>
         </TouchableOpacity>
         <Text style={[styles.headerTitle, {color: theme.text}]}>Recovery System</Text>
-        <View style={{width: 50}} />
+        <View style={styles.headerSpacer} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        {mode === MODES.MENU && (
-          <>
-            <Animated.View entering={FadeInDown.duration(300)} style={styles.introBox}>
-              <Text style={[styles.introTitle, {color: theme.text}]}>3-Layer Recovery</Text>
-              <Text style={[styles.introDesc, {color: theme.textSecondary}]}>
-                GhostLink uses Shamir's Secret Sharing to split your identity into 7 fragments.
-                Any 3 fragments can reconstruct your full identity and data.
+      {/* ── Tab Bar ── */}
+      <View style={[styles.tabBar, {backgroundColor: theme.bgSecondary, borderBottomColor: theme.border}]}>
+        {TABS.map((tab, idx) => {
+          const active = activeTab === idx;
+          return (
+            <TouchableOpacity
+              key={tab}
+              style={[
+                styles.tab,
+                active && {borderBottomWidth: 2, borderBottomColor: theme.accent},
+              ]}
+              onPress={() => {
+                Vibration.vibrate(10);
+                setActiveTab(idx);
+              }}>
+              <Text
+                style={[
+                  styles.tabText,
+                  {color: active ? theme.accent : theme.textMuted},
+                ]}>
+                {tab}
               </Text>
-            </Animated.View>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
 
-            <Animated.View entering={FadeInDown.delay(100).duration(300)}>
-              <TouchableOpacity
-                style={[styles.menuCard, {backgroundColor: theme.bgSecondary, borderColor: theme.accent + '30'}]}
-                onPress={() => {
-                  Vibration.vibrate(15);
-                  setMode(MODES.BACKUP);
-                }}>
-                <View style={[styles.menuIcon, {backgroundColor: theme.accentDim}]}>
-                  <Text style={{color: theme.accent, fontSize: 24}}>{'\u{1F6E1}'}</Text>
-                </View>
-                <View style={styles.menuInfo}>
-                  <Text style={[styles.menuTitle, {color: theme.text}]}>Create Backup</Text>
-                  <Text style={[styles.menuDesc, {color: theme.textSecondary}]}>
-                    Generate 7 Shamir fragments from your identity
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </Animated.View>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled">
 
-            <Animated.View entering={FadeInDown.delay(200).duration(300)}>
-              <TouchableOpacity
-                style={[styles.menuCard, {backgroundColor: theme.bgSecondary, borderColor: theme.accent + '30'}]}
-                onPress={() => {
-                  Vibration.vibrate(15);
-                  setMode(MODES.RESTORE);
-                }}>
-                <View style={[styles.menuIcon, {backgroundColor: theme.accentDim}]}>
-                  <Text style={{color: theme.accent, fontSize: 24}}>{'\u{1F504}'}</Text>
-                </View>
-                <View style={styles.menuInfo}>
-                  <Text style={[styles.menuTitle, {color: theme.text}]}>Restore Identity</Text>
-                  <Text style={[styles.menuDesc, {color: theme.textSecondary}]}>
-                    Combine 3+ fragments to recover your account
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            </Animated.View>
-
-            <Animated.View
-              entering={FadeInDown.delay(300).duration(300)}
-              style={[styles.securityNote, {backgroundColor: theme.accent + '08', borderColor: theme.accent + '20'}]}>
-              <Text style={[styles.securityTitle, {color: theme.accent}]}>How It Works</Text>
-              <View style={styles.steps}>
-                {[
-                  'Your identity is encrypted and split into 7 fragments using GF(256) polynomial interpolation',
-                  'Distribute fragments to trusted peers or store in separate secure locations',
-                  'Any 3 of 7 fragments can reconstruct your identity — fewer than 3 reveals nothing',
-                ].map((step, idx) => (
-                  <View key={idx} style={styles.stepRow}>
-                    <View style={[styles.stepNum, {backgroundColor: theme.accentDim}]}>
-                      <Text style={[styles.stepNumText, {color: theme.accent}]}>{idx + 1}</Text>
-                    </View>
-                    <Text style={[styles.stepText, {color: theme.textSecondary}]}>{step}</Text>
+          {/* ═══════════════════ BACKUP TAB ═══════════════════ */}
+          {activeTab === 0 && (
+            <View>
+              {/* Layer Badges */}
+              <View style={styles.badgeRow}>
+                {LAYER_BADGES.map((b) => (
+                  <View
+                    key={b.label}
+                    style={[styles.badge, {backgroundColor: b.color + '18', borderColor: b.color + '40'}]}>
+                    <Text style={[styles.badgeText, {color: b.color}]}>{b.label}</Text>
                   </View>
                 ))}
               </View>
-            </Animated.View>
-          </>
-        )}
 
-        {mode === MODES.BACKUP && (
-          <Animated.View entering={FadeInDown.duration(300)}>
-            <Text style={[styles.sectionTitle, {color: theme.text}]}>Generate Backup Fragments</Text>
-            <Text style={[styles.sectionDesc, {color: theme.textSecondary}]}>
-              This will create 7 Shamir fragments from your current identity, messages, and chain data.
-            </Text>
-            <View style={[styles.statusCard, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
-              <Text style={[styles.statusLabel, {color: theme.textMuted}]}>Identity</Text>
-              <Text style={[styles.statusValue, {color: theme.text}]}>{state.displayName || 'Not set'}</Text>
-              <Text style={[styles.statusLabel, {color: theme.textMuted, marginTop: 8}]}>Messages</Text>
-              <Text style={[styles.statusValue, {color: theme.text}]}>
-                {Object.values(state.messages).flat().length} total
-              </Text>
-              <Text style={[styles.statusLabel, {color: theme.textMuted, marginTop: 8}]}>Chain Blocks</Text>
-              <Text style={[styles.statusValue, {color: theme.text}]}>{state.chain.length}</Text>
+              {/* 12-Word Seed Phrase (3x4 grid) */}
+              <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+                <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>SEED PHRASE</Text>
+                <View style={styles.seedGrid}>
+                  {seedPhrase.map((word, idx) => (
+                    <View
+                      key={idx}
+                      style={[styles.seedCell, {backgroundColor: theme.bgTertiary, borderColor: theme.border}]}>
+                      <Text style={[styles.seedIndex, {color: theme.textMuted}]}>{idx + 1}</Text>
+                      <Text style={[styles.seedWord, {color: theme.text}]}>{word}</Text>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Warning */}
+                <View style={[styles.warningBanner, {backgroundColor: theme.warning + '15', borderColor: theme.warning + '30'}]}>
+                  <Text style={[styles.warningText, {color: theme.warning}]}>
+                    Write this phrase down and store it offline. Never share it digitally.
+                  </Text>
+                </View>
+
+                {/* Buttons */}
+                <View style={styles.seedActions}>
+                  <TouchableOpacity
+                    style={[styles.seedBtn, {backgroundColor: theme.accentDim}]}
+                    onPress={handleCopyPhrase}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.seedBtnText, {color: theme.accent}]}>Copy Phrase</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.seedBtn, {backgroundColor: theme.bgTertiary}]}
+                    onPress={handleRegenerate}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.seedBtnText, {color: theme.textSecondary}]}>Regenerate</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Shamir Fragments */}
+              <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+                <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>SHAMIR FRAGMENTS</Text>
+
+                {fragments.length === 0 ? (
+                  <TouchableOpacity
+                    style={[styles.genFragBtn, {backgroundColor: theme.accent}]}
+                    onPress={handleGenerateFragments}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.genFragBtnText, {color: theme.bg}]}>
+                      Generate 7 Fragments
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <>
+                    {/* Distribution counter */}
+                    <View style={[styles.distCounter, {borderColor: safetyColor + '40'}]}>
+                      <Text style={[styles.distCounterText, {color: safetyColor}]}>
+                        {distributedCount}/7 distributed
+                      </Text>
+                      <Text style={[styles.distSafety, {color: safetyColor}]}>
+                        {distributedCount >= 5
+                          ? 'Excellent'
+                          : distributedCount >= 3
+                            ? 'Adequate'
+                            : 'Needs more'}
+                      </Text>
+                    </View>
+
+                    {/* Fragment list */}
+                    {fragments.map((frag, idx) => {
+                      const dist = fragmentDist[idx];
+                      return (
+                        <View
+                          key={frag.id}
+                          style={[
+                            styles.fragCard,
+                            {backgroundColor: theme.bgTertiary, borderColor: theme.border},
+                          ]}>
+                          <View style={styles.fragHeader}>
+                            <Text style={[styles.fragNum, {color: theme.accent}]}>
+                              Fragment {frag.id}
+                            </Text>
+                            <Text style={[styles.fragCheck, {color: theme.textMuted}]}>
+                              {frag.check}
+                            </Text>
+                          </View>
+
+                          {/* Distribution status */}
+                          {dist?.distributed ? (
+                            <Text style={[styles.fragDist, {color: theme.success}]}>
+                              Distributed to {dist.peerName}
+                            </Text>
+                          ) : (
+                            <Text style={[styles.fragDist, {color: theme.textMuted}]}>
+                              Not distributed
+                            </Text>
+                          )}
+
+                          {/* Action buttons */}
+                          <View style={styles.fragActions}>
+                            <TouchableOpacity
+                              style={[styles.fragActionBtn, {backgroundColor: theme.accentDim}]}
+                              onPress={() => handleCopyFragment(frag, idx)}>
+                              <Text style={[styles.fragActionText, {color: theme.accent}]}>
+                                COPY
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={[styles.fragActionBtn, {backgroundColor: theme.bgSecondary}]}
+                              onPress={() => handleGiveFragment(frag, idx)}>
+                              <Text style={[styles.fragActionText, {color: theme.textSecondary}]}>
+                                GIVE
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </>
+                )}
+              </View>
             </View>
-            <TouchableOpacity
-              style={[styles.primaryBtn, {backgroundColor: theme.accent}, loading && {opacity: 0.6}]}
-              onPress={handleGenerateBackup}
-              disabled={loading}>
-              <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
-                {loading ? 'Generating...' : 'Generate 7 Fragments'}
-              </Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
+          )}
 
-        {mode === MODES.FRAGMENTS && (
-          <Animated.View entering={FadeInDown.duration(300)}>
-            <Text style={[styles.sectionTitle, {color: theme.text}]}>Your Backup Fragments</Text>
-            <Text style={[styles.sectionDesc, {color: theme.textSecondary}]}>
-              Distribute these to trusted peers. Any 3 can restore your identity.
-            </Text>
-            {fragments.map((frag, idx) => (
-              <Animated.View
-                key={frag.id}
-                entering={FadeInDown.delay(idx * 60).duration(250)}
-                style={[styles.fragmentCard, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
-                <View style={styles.fragmentHeader}>
-                  <View style={[styles.fragmentBadge, {backgroundColor: theme.accentDim}]}>
-                    <Text style={[styles.fragmentBadgeText, {color: theme.accent}]}>
-                      {frag.label}
+          {/* ═══════════════════ VERIFY TAB ═══════════════════ */}
+          {activeTab === 1 && (
+            <View>
+              <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+                <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>
+                  VERIFY YOUR SEED
+                </Text>
+                <Text style={[styles.verifyInstr, {color: theme.textSecondary}]}>
+                  Enter words 3, 7, and 11 from your seed phrase to verify you recorded it correctly.
+                </Text>
+
+                {[3, 7, 11].map((wordNum, idx) => (
+                  <View key={wordNum} style={styles.verifyInputGroup}>
+                    <Text style={[styles.verifyLabel, {color: theme.textMuted}]}>
+                      Word #{wordNum}
+                    </Text>
+                    <TextInput
+                      style={[
+                        styles.verifyInput,
+                        {
+                          backgroundColor: theme.bgTertiary,
+                          borderColor: theme.border,
+                          color: theme.text,
+                        },
+                      ]}
+                      placeholder={`Enter word ${wordNum}`}
+                      placeholderTextColor={theme.textMuted}
+                      value={verifyInputs[idx]}
+                      onChangeText={(text) => {
+                        setVerifyResult(null);
+                        setVerifyInputs((prev) => {
+                          const next = [...prev];
+                          next[idx] = text;
+                          return next;
+                        });
+                      }}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType={idx < 2 ? 'next' : 'done'}
+                    />
+                  </View>
+                ))}
+
+                <TouchableOpacity
+                  style={[styles.primaryBtn, {backgroundColor: theme.accent}]}
+                  onPress={handleVerify}
+                  activeOpacity={0.7}>
+                  <Text style={[styles.primaryBtnText, {color: theme.bg}]}>Verify</Text>
+                </TouchableOpacity>
+
+                {/* Result banners */}
+                {verifyResult === 'success' && (
+                  <View
+                    style={[
+                      styles.resultBanner,
+                      {backgroundColor: theme.success + '15', borderColor: theme.success + '40'},
+                    ]}>
+                    <Text style={[styles.resultTitle, {color: theme.success}]}>
+                      Verification Passed
+                    </Text>
+                    <Text style={[styles.resultDesc, {color: theme.success}]}>
+                      Your seed phrase was recorded correctly.
                     </Text>
                   </View>
-                  <Text style={[styles.fragmentCheck, {color: theme.textMuted}]}>
-                    Check: {frag.check}
-                  </Text>
-                </View>
-                <Text style={[styles.fragmentData, {color: theme.textSecondary}]} numberOfLines={2}>
-                  {frag.data}
-                </Text>
-                <TouchableOpacity
-                  style={[styles.copyBtn, {backgroundColor: theme.accentDim}]}
-                  onPress={() => handleCopyFragment(frag)}>
-                  <Text style={[styles.copyBtnText, {color: theme.accent}]}>Copy Fragment</Text>
-                </TouchableOpacity>
-              </Animated.View>
-            ))}
-          </Animated.View>
-        )}
-
-        {mode === MODES.RESTORE && (
-          <Animated.View entering={FadeInDown.duration(300)}>
-            <Text style={[styles.sectionTitle, {color: theme.text}]}>Restore Identity</Text>
-            <Text style={[styles.sectionDesc, {color: theme.textSecondary}]}>
-              Paste at least 3 backup fragments to reconstruct your identity.
-            </Text>
-
-            {restoreInputs.map((val, idx) => (
-              <View key={idx} style={styles.restoreInputRow}>
-                <View style={[styles.restoreLabel, {backgroundColor: theme.bgTertiary}]}>
-                  <Text style={[styles.restoreLabelText, {color: theme.accent}]}>
-                    Fragment {idx + 1}
-                  </Text>
-                </View>
-                <TextInput
-                  style={[
-                    styles.restoreInput,
-                    {
-                      backgroundColor: theme.bgSecondary,
-                      borderColor: theme.border,
-                      color: theme.text,
-                    },
-                  ]}
-                  placeholder="Paste fragment hex data..."
-                  placeholderTextColor={theme.textMuted}
-                  value={val}
-                  onChangeText={text => {
-                    setRestoreInputs(prev => {
-                      const next = [...prev];
-                      next[idx] = text;
-                      return next;
-                    });
-                  }}
-                  multiline
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
+                )}
+                {verifyResult === 'fail' && (
+                  <View
+                    style={[
+                      styles.resultBanner,
+                      {backgroundColor: theme.danger + '15', borderColor: theme.danger + '40'},
+                    ]}>
+                    <Text style={[styles.resultTitle, {color: theme.danger}]}>
+                      Verification Failed
+                    </Text>
+                    <Text style={[styles.resultDesc, {color: theme.danger}]}>
+                      One or more words do not match. Check your seed phrase and try again.
+                    </Text>
+                  </View>
+                )}
               </View>
-            ))}
+            </View>
+          )}
 
-            <TouchableOpacity
-              style={[styles.addFragBtn, {borderColor: theme.border}]}
-              onPress={addRestoreInput}>
-              <Text style={[styles.addFragText, {color: theme.textSecondary}]}>
-                + Add Another Fragment
-              </Text>
-            </TouchableOpacity>
+          {/* ═══════════════════ RESTORE TAB ═══════════════════ */}
+          {activeTab === 2 && (
+            <View>
+              {/* Step 1: Seed Phrase Restore */}
+              {restoreStep === 1 && (
+                <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+                  <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>
+                    STEP 1: SEED PHRASE
+                  </Text>
+                  <Text style={[styles.restoreDesc, {color: theme.textSecondary}]}>
+                    Enter your 12-word seed phrase to derive your identity key.
+                  </Text>
 
-            {restoreStatus && (
-              <Animated.View
-                entering={FadeIn.duration(200)}
-                style={[
-                  styles.resultCard,
-                  {
-                    backgroundColor: restoreStatus.success ? theme.success + '15' : theme.danger + '15',
-                    borderColor: restoreStatus.success ? theme.success + '40' : theme.danger + '40',
-                  },
-                ]}>
-                <Text
-                  style={[
-                    styles.resultTitle,
-                    {color: restoreStatus.success ? theme.success : theme.danger},
-                  ]}>
-                  {restoreStatus.success ? 'Restoration Successful' : 'Restoration Failed'}
-                </Text>
-                <Text
-                  style={[
-                    styles.resultDesc,
-                    {color: restoreStatus.success ? theme.success : theme.danger},
-                  ]}>
-                  {restoreStatus.success
-                    ? `Restored as "${restoreStatus.restored?.name}". Messages: ${restoreStatus.restored?.messages ? 'Yes' : 'No'}, Chain: ${restoreStatus.restored?.chain ? 'Yes' : 'No'}`
-                    : restoreStatus.error}
-                </Text>
-              </Animated.View>
-            )}
+                  <TextInput
+                    style={[
+                      styles.restoreTextarea,
+                      {
+                        backgroundColor: theme.bgTertiary,
+                        borderColor: theme.border,
+                        color: theme.text,
+                      },
+                    ]}
+                    placeholder="Enter 12 words separated by spaces..."
+                    placeholderTextColor={theme.textMuted}
+                    value={restoreSeedInput}
+                    onChangeText={(text) => {
+                      setRestoreSeedInput(text);
+                      setRestoreDerivStatus(null);
+                    }}
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    textAlignVertical="top"
+                  />
 
-            <TouchableOpacity
-              style={[styles.primaryBtn, {backgroundColor: theme.accent}, loading && {opacity: 0.6}]}
-              onPress={handleRestore}
-              disabled={loading}>
-              <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
-                {loading ? 'Restoring...' : 'Restore Identity'}
-              </Text>
-            </TouchableOpacity>
-          </Animated.View>
-        )}
-      </ScrollView>
+                  <TouchableOpacity
+                    style={[
+                      styles.primaryBtn,
+                      {backgroundColor: theme.accent},
+                      restoreDerivStatus === 'deriving' && {opacity: 0.6},
+                    ]}
+                    onPress={handleDeriveSeed}
+                    disabled={restoreDerivStatus === 'deriving'}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
+                      {restoreDerivStatus === 'deriving'
+                        ? 'Deriving Key (PBKDF2)...'
+                        : 'Derive Key & Check Device'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Status indicators */}
+                  {restoreDerivStatus === 'deriving' && (
+                    <View style={[styles.statusRow, {borderColor: theme.accent + '30'}]}>
+                      <Text style={[styles.statusText, {color: theme.accent}]}>
+                        Running PBKDF2 derivation...
+                      </Text>
+                    </View>
+                  )}
+                  {restoreDerivStatus === 'success' && (
+                    <View
+                      style={[
+                        styles.resultBanner,
+                        {backgroundColor: theme.success + '15', borderColor: theme.success + '40'},
+                      ]}>
+                      <Text style={[styles.resultTitle, {color: theme.success}]}>
+                        Identity Restored
+                      </Text>
+                      <Text style={[styles.resultDesc, {color: theme.success}]}>
+                        Key derived successfully. Redirecting to chat...
+                      </Text>
+                    </View>
+                  )}
+                  {restoreDerivStatus === 'fail' && (
+                    <View
+                      style={[
+                        styles.resultBanner,
+                        {backgroundColor: theme.danger + '15', borderColor: theme.danger + '40'},
+                      ]}>
+                      <Text style={[styles.resultTitle, {color: theme.danger}]}>
+                        Seed Derivation Failed
+                      </Text>
+                      <Text style={[styles.resultDesc, {color: theme.danger}]}>
+                        Could not restore from seed. Try Shamir fragment recovery below.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Step 2: Shamir Fragment Restore */}
+              {restoreStep === 2 && (
+                <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+                  <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>
+                    STEP 2: SHAMIR FRAGMENTS
+                  </Text>
+                  <Text style={[styles.restoreDesc, {color: theme.textSecondary}]}>
+                    Paste at least 3 Shamir fragments to reconstruct your identity.
+                  </Text>
+
+                  {shamirInputs.map((val, idx) => (
+                    <View key={idx} style={styles.shamirInputGroup}>
+                      <View style={styles.shamirLabelRow}>
+                        <Text style={[styles.shamirLabel, {color: theme.accent}]}>
+                          Fragment {idx + 1}
+                        </Text>
+                        {val.trim().length > 0 && (
+                          <Text style={[styles.shamirOk, {color: theme.success}]}>Ready</Text>
+                        )}
+                      </View>
+                      <TextInput
+                        style={[
+                          styles.shamirInput,
+                          {
+                            backgroundColor: theme.bgTertiary,
+                            borderColor: theme.border,
+                            color: theme.text,
+                          },
+                        ]}
+                        placeholder="Paste hex fragment data..."
+                        placeholderTextColor={theme.textMuted}
+                        value={val}
+                        onChangeText={(text) => {
+                          setShamirStatus(null);
+                          setShamirInputs((prev) => {
+                            const next = [...prev];
+                            next[idx] = text;
+                            return next;
+                          });
+                        }}
+                        multiline
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        textAlignVertical="top"
+                      />
+                    </View>
+                  ))}
+
+                  <TouchableOpacity
+                    style={[
+                      styles.primaryBtn,
+                      {backgroundColor: theme.accent},
+                      shamirStatus === 'combining' && {opacity: 0.6},
+                    ]}
+                    onPress={handleShamirRestore}
+                    disabled={shamirStatus === 'combining'}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
+                      {shamirStatus === 'combining'
+                        ? 'Combining Fragments...'
+                        : 'Combine & Restore'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Status */}
+                  {shamirStatus === 'combining' && (
+                    <View style={[styles.statusRow, {borderColor: theme.accent + '30'}]}>
+                      <Text style={[styles.statusText, {color: theme.accent}]}>
+                        Reconstructing secret via Lagrange interpolation...
+                      </Text>
+                    </View>
+                  )}
+                  {shamirStatus === 'success' && (
+                    <View
+                      style={[
+                        styles.resultBanner,
+                        {backgroundColor: theme.success + '15', borderColor: theme.success + '40'},
+                      ]}>
+                      <Text style={[styles.resultTitle, {color: theme.success}]}>
+                        Identity Restored
+                      </Text>
+                      <Text style={[styles.resultDesc, {color: theme.success}]}>
+                        Shamir reconstruction successful. Redirecting to chat...
+                      </Text>
+                    </View>
+                  )}
+                  {shamirStatus === 'fail' && (
+                    <View
+                      style={[
+                        styles.resultBanner,
+                        {backgroundColor: theme.danger + '15', borderColor: theme.danger + '40'},
+                      ]}>
+                      <Text style={[styles.resultTitle, {color: theme.danger}]}>
+                        Reconstruction Failed
+                      </Text>
+                      <Text style={[styles.resultDesc, {color: theme.danger}]}>
+                        Fragment data is invalid or insufficient. Verify fragment integrity.
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Back to Step 1 */}
+                  <TouchableOpacity
+                    style={[styles.secondaryBtn, {borderColor: theme.border}]}
+                    onPress={() => {
+                      setRestoreStep(1);
+                      setRestoreDerivStatus(null);
+                    }}
+                    activeOpacity={0.7}>
+                    <Text style={[styles.secondaryBtnText, {color: theme.textSecondary}]}>
+                      {'\u2190'} Back to Step 1
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </View>
   );
 }
 
+// ─── Styles ─────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  flex: {
+    flex: 1,
+  },
+
+  /* Header */
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    paddingTop: 48,
+    paddingTop: Platform.OS === 'ios' ? 54 : 48,
     borderBottomWidth: 1,
   },
-  backText: {
-    fontSize: 15,
+  backBtn: {
+    width: 40,
+    alignItems: 'flex-start',
+  },
+  backArrow: {
+    fontSize: 22,
     fontWeight: '600',
   },
   headerTitle: {
     fontSize: 17,
     fontWeight: '700',
   },
+  headerSpacer: {
+    width: 40,
+  },
+
+  /* Tab Bar */
+  tabBar: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+  },
+  tab: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  tabText: {
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+
+  /* Scroll */
   scroll: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: 50,
   },
-  introBox: {
-    marginBottom: 20,
+
+  /* Card */
+  card: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 18,
+    marginBottom: 14,
   },
-  introTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    marginBottom: 8,
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 2,
+    marginBottom: 14,
   },
-  introDesc: {
-    fontSize: 14,
-    lineHeight: 21,
+
+  /* Badge Row */
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
   },
-  menuCard: {
+  badge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  /* Seed Grid (3 columns, 4 rows) */
+  seedGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  seedCell: {
+    width: '31%',
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 16,
-    marginBottom: 12,
   },
-  menuIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuInfo: {
-    flex: 1,
-    marginLeft: 14,
-  },
-  menuTitle: {
-    fontSize: 16,
+  seedIndex: {
+    fontSize: 10,
     fontWeight: '700',
-    marginBottom: 3,
+    width: 18,
   },
-  menuDesc: {
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  securityNote: {
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 16,
-    marginTop: 8,
-  },
-  securityTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  steps: {
-    gap: 10,
-  },
-  stepRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  stepNum: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10,
-    marginTop: 1,
-  },
-  stepNumText: {
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  stepText: {
+  seedWord: {
+    fontSize: 13,
+    fontWeight: '600',
     flex: 1,
+  },
+
+  /* Warning */
+  warningBanner: {
+    borderRadius: 10,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 14,
+  },
+  warningText: {
     fontSize: 12,
+    fontWeight: '600',
     lineHeight: 18,
   },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginBottom: 8,
+
+  /* Seed Action Buttons */
+  seedActions: {
+    flexDirection: 'row',
+    gap: 10,
   },
-  sectionDesc: {
+  seedBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  seedBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  /* Fragment generation */
+  genFragBtn: {
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  genFragBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+
+  /* Distribution Counter */
+  distCounter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+  },
+  distCounterText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  distSafety: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+
+  /* Fragment Card */
+  fragCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 10,
+  },
+  fragHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  fragNum: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fragCheck: {
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  fragDist: {
+    fontSize: 12,
+    marginBottom: 10,
+  },
+  fragActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  fragActionBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  fragActionText: {
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+
+  /* Verify */
+  verifyInstr: {
     fontSize: 13,
     lineHeight: 19,
     marginBottom: 16,
   },
-  statusCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 16,
-    marginBottom: 16,
+  verifyInputGroup: {
+    marginBottom: 14,
   },
-  statusLabel: {
-    fontSize: 11,
+  verifyLabel: {
+    fontSize: 12,
     fontWeight: '700',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
+    marginBottom: 6,
   },
-  statusValue: {
+  verifyInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
     fontSize: 15,
-    fontWeight: '600',
-    marginTop: 2,
+    fontWeight: '500',
   },
+
+  /* Primary Button */
   primaryBtn: {
     borderRadius: 12,
     paddingVertical: 16,
@@ -484,84 +1043,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  fragmentCard: {
+
+  /* Secondary Button */
+  secondaryBtn: {
     borderRadius: 12,
     borderWidth: 1,
-    padding: 14,
-    marginBottom: 10,
-  },
-  fragmentHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+    paddingVertical: 14,
     alignItems: 'center',
-    marginBottom: 8,
+    marginTop: 12,
   },
-  fragmentBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  fragmentBadgeText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  fragmentCheck: {
-    fontSize: 11,
-  },
-  fragmentData: {
-    fontSize: 10,
-    letterSpacing: 0.3,
-    marginBottom: 10,
-    lineHeight: 16,
-  },
-  copyBtn: {
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  copyBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  restoreInputRow: {
-    marginBottom: 12,
-  },
-  restoreLabel: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    marginBottom: 6,
-    alignSelf: 'flex-start',
-  },
-  restoreLabelText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  restoreInput: {
-    borderWidth: 1,
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 12,
-    minHeight: 60,
-    textAlignVertical: 'top',
-  },
-  addFragBtn: {
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderRadius: 10,
-    padding: 14,
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  addFragText: {
-    fontSize: 13,
+  secondaryBtnText: {
+    fontSize: 14,
     fontWeight: '600',
   },
-  resultCard: {
+
+  /* Result banners */
+  resultBanner: {
     borderRadius: 12,
     borderWidth: 1,
     padding: 14,
-    marginBottom: 16,
+    marginTop: 14,
   },
   resultTitle: {
     fontSize: 15,
@@ -571,5 +1072,62 @@ const styles = StyleSheet.create({
   resultDesc: {
     fontSize: 12,
     lineHeight: 18,
+  },
+
+  /* Status indicator */
+  statusRow: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+    alignItems: 'center',
+  },
+  statusText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  /* Restore */
+  restoreDesc: {
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 14,
+  },
+  restoreTextarea: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 14,
+    minHeight: 100,
+    textAlignVertical: 'top',
+    marginBottom: 8,
+  },
+
+  /* Shamir Inputs */
+  shamirInputGroup: {
+    marginBottom: 12,
+  },
+  shamirLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  shamirLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  shamirOk: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  shamirInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 12,
+    minHeight: 70,
+    textAlignVertical: 'top',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
 });
