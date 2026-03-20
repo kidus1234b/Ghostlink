@@ -162,26 +162,40 @@ class RTCPeerManager extends EventEmitter {
   async connect() {
     if (this._ws && this._ws.readyState === WebSocket.OPEN) return;
     return new Promise((resolve, reject) => {
-      this._ws = new WebSocket(this._signalingUrl);
+      let settled = false;
+
+      try {
+        this._ws = new WebSocket(this._signalingUrl);
+      } catch (e) {
+        reject(e);
+        return;
+      }
 
       this._ws.onopen = () => {
         this._reconnectAttempt = 0;
         this.emit('signaling-connected');
-        // Announce identity
+        // Announce identity — server must reply with { type: 'joined' }
         this._send({ type: 'join', peerId: this._identity.peerId });
-        resolve();
+        // Resolve after sending join — server will ack via 'joined' message
+        if (!settled) { settled = true; resolve(); }
       };
 
-      this._ws.onmessage = (evt) => this._handleSignal(JSON.parse(evt.data));
+      this._ws.onmessage = (evt) => {
+        try { this._handleSignal(JSON.parse(evt.data)); }
+        catch (e) { console.error('[GhostLink] Signal parse error:', e); }
+      };
 
       this._ws.onclose = () => {
         this.emit('signaling-disconnected');
+        // Only reject if we haven't resolved yet (onerror may have already fired)
+        if (!settled) { settled = true; reject(new Error('WebSocket closed before connect')); }
         if (!this._closed) this._scheduleReconnect();
       };
 
       this._ws.onerror = (err) => {
         console.error('[GhostLink] Signaling error:', err);
-        reject(err);
+        // Only reject once (onerror fires before onclose)
+        if (!settled) { settled = true; reject(err); }
       };
     });
   }
@@ -194,6 +208,8 @@ class RTCPeerManager extends EventEmitter {
   _send(msg) {
     if (this._ws && this._ws.readyState === WebSocket.OPEN) {
       this._ws.send(JSON.stringify(msg));
+    } else {
+      console.warn('[GhostLink] Cannot send — WebSocket not open:', msg.type);
     }
   }
 
@@ -221,6 +237,14 @@ class RTCPeerManager extends EventEmitter {
    * @returns {Promise<void>}
    */
   async joinRoom(inviteCode) {
+    // If WebSocket isn't open, try to connect first
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) {
+      try {
+        await this.connect();
+      } catch (e) {
+        throw new Error('Cannot join room — signaling server unreachable');
+      }
+    }
     this._currentRoom = inviteCode;
     let pubKey = '';
     try { pubKey = await this._exportPublicKey(); } catch (e) {
