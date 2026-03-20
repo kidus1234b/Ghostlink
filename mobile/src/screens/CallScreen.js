@@ -425,17 +425,47 @@ export default function CallScreen({route, navigation}) {
 
   async function initializeCall() {
     try {
-      // Simulate WebRTC connection sequence
       setCallState(CALL_STATES.CONNECTING);
 
-      // Phase 1: Signaling
-      await new Promise(resolve => setTimeout(resolve, 800));
-      setCallState(CALL_STATES.RINGING);
+      // Use real WebRTC service if available
+      const WebRTCService = require('../services/WebRTCService').default;
+      const SignalingService = require('../services/SignalingService').default;
 
-      // Phase 2: Peer answers
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setCallState(CALL_STATES.CONNECTED);
-      Vibration.vibrate([0, 50, 50, 50]);
+      if (WebRTCService && SignalingService && peerId) {
+        // Real WebRTC call flow
+        setCallState(CALL_STATES.RINGING);
+
+        // Wait for peer to answer (with timeout)
+        const answerTimeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('No answer')), 30000),
+        );
+
+        try {
+          await Promise.race([
+            WebRTCService.createConnection(peerId, {initiator: !isIncoming}),
+            answerTimeout,
+          ]);
+
+          if (isVideoCall) {
+            await WebRTCService.addMediaStream(peerId, {video: true, audio: true});
+          } else {
+            await WebRTCService.addMediaStream(peerId, {video: false, audio: true});
+          }
+
+          setCallState(CALL_STATES.CONNECTED);
+          Vibration.vibrate([0, 50, 50, 50]);
+        } catch (rtcErr) {
+          console.warn('WebRTC connection failed:', rtcErr);
+          setCallState(CALL_STATES.FAILED);
+          return;
+        }
+      } else {
+        // Fallback: transition through states for UI feedback
+        setCallState(CALL_STATES.RINGING);
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        setCallState(CALL_STATES.CONNECTED);
+        Vibration.vibrate([0, 50, 50, 50]);
+      }
 
       // Start duration timer
       durationRef.current = setInterval(() => {
@@ -471,12 +501,22 @@ export default function CallScreen({route, navigation}) {
   const handleHangup = useCallback(() => {
     Vibration.vibrate(100);
     if (durationRef.current) clearInterval(durationRef.current);
+
+    // Clean up real WebRTC connection if available
+    try {
+      const WebRTCService = require('../services/WebRTCService').default;
+      if (WebRTCService && peerId) {
+        WebRTCService.removeMediaStream(peerId);
+        WebRTCService.disconnectPeer(peerId);
+      }
+    } catch (_) { /* service not available */ }
+
     setCallState(CALL_STATES.ENDED);
 
     setTimeout(() => {
       navigation.goBack();
     }, 1200);
-  }, [navigation]);
+  }, [navigation, peerId]);
 
   const handleAcceptIncoming = useCallback(() => {
     setCallState(CALL_STATES.CONNECTING);
