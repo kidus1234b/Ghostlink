@@ -21,8 +21,13 @@ const {
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
+const os = require('os');
 const { createTray, updateBadge, flashTray, destroyTray } = require('./tray');
 const { initUpdater } = require('./updater');
+const { createSignalingServer } = require('../../server/signaling-core');
+
+let signalingServer = null;
+let signalingPort = null;
 
 /* ─── Constants ─────────────────────────────────────────────── */
 
@@ -372,6 +377,24 @@ function setupIPC() {
     return true;
   });
 
+  /* ── Signaling server status ────────────────────────────────── */
+  ipcMain.handle('signaling-status', () => {
+    return signalingServer ? signalingServer.getStatus() : { running: false };
+  });
+
+  ipcMain.handle('get-network-info', () => {
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+    for (const [name, nets] of Object.entries(interfaces)) {
+      for (const net of nets) {
+        if (net.family === 'IPv4' && !net.internal) {
+          addresses.push({ name, address: net.address });
+        }
+      }
+    }
+    return { addresses, signalingPort };
+  });
+
   /* ── Auto-update trigger ────────────────────────────────────── */
   ipcMain.on('install-update', () => {
     isQuitting = true;
@@ -459,7 +482,16 @@ function generateFallbackIcon() {
    APP LIFECYCLE
    ═══════════════════════════════════════════════════════════════ */
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Start embedded signaling server
+  try {
+    signalingServer = createSignalingServer({ port: 3001, serveStatic: false });
+    signalingPort = await signalingServer.start();
+    console.log(`[GhostLink] Embedded signaling server on port ${signalingPort}`);
+  } catch (err) {
+    console.error('[GhostLink] Failed to start signaling server:', err.message);
+  }
+
   setupIPC();
   setupDragDrop();
   registerShortcuts();
@@ -497,6 +529,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  if (signalingServer) signalingServer.stop();
   globalShortcut.unregisterAll();
   destroyTray(tray);
   secureVault.clear();
