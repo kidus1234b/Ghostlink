@@ -502,7 +502,7 @@ Ghostlink/
 
 ## Development
 
-Built entirely from **Termux on Android** using Claude Code with the Anthropic API. No PC was used.
+Built entirely from **Termux on Android** by the help of Claude Code with the Anthropic API.
 
 ```bash
 # Clone
