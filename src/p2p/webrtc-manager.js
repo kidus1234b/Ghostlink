@@ -870,14 +870,11 @@ class RTCPeerManager extends EventEmitter {
 
     session.peerPublicKey = peerKey;
 
-    const sharedBits = await crypto.subtle.deriveBits(
+    // Use deriveKey (not deriveBits) to match the key usages from CryptoEngine.generateKeyPair(),
+    // which generates ECDH keys with ['deriveKey'] only.
+    session.sharedKey = await crypto.subtle.deriveKey(
       { name: 'ECDH', public: peerKey },
       privKey,
-      256
-    );
-
-    session.sharedKey = await crypto.subtle.importKey(
-      'raw', sharedBits,
       { name: 'AES-GCM', length: 256 },
       false,
       ['encrypt', 'decrypt']
