@@ -288,8 +288,15 @@ class RTCPeerManager extends EventEmitter {
     const session = new PeerSession(peerId, pc);
     this._peers.set(peerId, session);
 
-    // Derive shared encryption key via ECDH
-    await this._deriveSharedKey(session, peerPublicKeyRaw);
+    // Derive shared encryption key via ECDH — abort if it fails
+    try {
+      await this._deriveSharedKey(session, peerPublicKeyRaw);
+    } catch (e) {
+      console.error(`[GhostLink] Cannot connect to ${peerId}: ${e.message}`);
+      session.close();
+      this._peers.delete(peerId);
+      return;
+    }
 
     // Create data channels
     this._createDataChannels(session);
@@ -618,7 +625,15 @@ class RTCPeerManager extends EventEmitter {
       session = new PeerSession(from, pc);
       this._peers.set(from, session);
 
-      await this._deriveSharedKey(session, publicKey);
+      // Derive shared encryption key via ECDH — abort if it fails
+      try {
+        await this._deriveSharedKey(session, publicKey);
+      } catch (e) {
+        console.error(`[GhostLink] Cannot accept offer from ${from}: ${e.message}`);
+        session.close();
+        this._peers.delete(from);
+        return;
+      }
 
       // Create matching data channels (negotiated)
       this._createDataChannels(session);
@@ -815,23 +830,23 @@ class RTCPeerManager extends EventEmitter {
    * @param {string} peerPublicKeyRaw  JWK JSON string of the peer's public key.
    */
   async _deriveSharedKey(session, peerPublicKeyRaw) {
-    // If no private key available (e.g. identity restored from storage), skip ECDH
+    // Require a valid private key for ECDH — refuse to fall back to insecure key derivation.
+    // Deriving keys from peer IDs would be deterministic from public info and provide zero security.
     const privKey = this._identity.privateKey
       || (this._identity.keyPair && this._identity.keyPair.privateKey);
     if (!privKey) {
-      console.warn('[GhostLink] No private key available for ECDH — using fallback encryption');
-      // Derive a fallback key from peer ID + local ID
-      const fallbackMaterial = new TextEncoder().encode(
-        (this._identity.peerId || '') + ':' + (session.peerId || '')
-      );
-      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
-      session.sharedKey = await crypto.subtle.importKey(
-        'raw', hashBits,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']
-      );
-      return;
+      const errMsg = 'No private key available for ECDH key exchange — cannot establish secure channel';
+      console.error('[GhostLink]', errMsg);
+      this.emit('security-error', session.peerId, errMsg);
+      throw new Error(errMsg);
+    }
+
+    // Require a valid peer public key — refuse to establish an insecure connection.
+    if (!peerPublicKeyRaw) {
+      const errMsg = 'No peer public key provided — cannot establish secure channel';
+      console.error('[GhostLink]', errMsg);
+      this.emit('security-error', session.peerId, errMsg);
+      throw new Error(errMsg);
     }
 
     let peerJwk;
@@ -840,19 +855,10 @@ class RTCPeerManager extends EventEmitter {
         ? JSON.parse(peerPublicKeyRaw)
         : peerPublicKeyRaw;
     } catch (e) {
-      // peerPublicKeyRaw might be a hex string, not JWK — use fallback
-      console.warn('[GhostLink] Could not parse peer public key as JWK, using fallback key');
-      const fallbackMaterial = new TextEncoder().encode(
-        (this._identity.peerId || '') + ':' + (session.peerId || '')
-      );
-      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
-      session.sharedKey = await crypto.subtle.importKey(
-        'raw', hashBits,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']
-      );
-      return;
+      const errMsg = `Could not parse peer public key as JWK: ${e.message}`;
+      console.error('[GhostLink]', errMsg);
+      this.emit('security-error', session.peerId, errMsg);
+      throw new Error(errMsg);
     }
 
     const peerKey = await crypto.subtle.importKey(
