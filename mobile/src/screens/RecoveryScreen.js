@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useMemo} from 'react';
+import React, {useState, useCallback, useMemo, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -19,6 +19,9 @@ import {
   generateBackupFragments,
   combineFragments,
 } from '../utils/crypto';
+import {distributor} from '../services/MobileDistributor';
+
+const RECOVERY_TAG_PREFIX = 'ghostlink:recovery:';
 
 // ─── Constants ──────────────────────────────────────────────────
 const TABS = ['Backup', 'Verify', 'Restore'];
@@ -68,6 +71,33 @@ function generateSeedPhrase() {
 export default function RecoveryScreen({navigation}) {
   const {theme} = useTheme();
   const {identity, messages, setIdentity, wipeAll} = useApp();
+  const webrtcRef = useRef(null);
+
+  useEffect(() => {
+    const initWebRTC = async () => {
+      try {
+        const {default: WebRTCService} = await import('../services/WebRTCService');
+        const {default: SignalingService} = await import('../services/SignalingService');
+
+        const signaling = new SignalingService();
+        const webrtc = new WebRTCService();
+        webrtc.attachSignaling(signaling);
+
+        distributor.useWebRTC(webrtc);
+        webrtcRef.current = webrtc;
+      } catch (e) {
+        console.warn('[RecoveryScreen] WebRTC init failed:', e);
+      }
+    };
+
+    initWebRTC();
+
+    return () => {
+      if (webrtcRef.current) {
+        webrtcRef.current.destroy();
+      }
+    };
+  }, []);
 
   // Tab state
   const [activeTab, setActiveTab] = useState(0);
@@ -76,6 +106,7 @@ export default function RecoveryScreen({navigation}) {
   const [seedPhrase, setSeedPhrase] = useState(() => generateSeedPhrase());
   const [fragments, setFragments] = useState([]);
   const [fragmentDist, setFragmentDist] = useState({});
+  const [distributing, setDistributing] = useState(false);
   // fragmentDist shape: { fragmentIndex: { distributed: bool, peerName: string } }
 
   // Verify state
@@ -88,6 +119,11 @@ export default function RecoveryScreen({navigation}) {
   const [restoreDerivStatus, setRestoreDerivStatus] = useState(null); // null | 'deriving' | 'success' | 'fail'
   const [shamirInputs, setShamirInputs] = useState(['', '', '']);
   const [shamirStatus, setShamirStatus] = useState(null); // null | 'combining' | 'success' | 'fail'
+
+  // Peer state for P2P distribution
+  const [connectedPeers, setConnectedPeers] = useState([]);
+  const [showPeerPicker, setShowPeerPicker] = useState(false);
+  const [pendingFragment, setPendingFragment] = useState(null);
 
   // ── Backup Handlers ──
 
@@ -141,48 +177,100 @@ export default function RecoveryScreen({navigation}) {
     Alert.alert('Copied', `Fragment ${frag.id} of 7 copied to clipboard.`);
   }, []);
 
-  const handleGiveFragment = useCallback((frag, idx) => {
-    Alert.prompt
-      ? Alert.prompt(
-          'Give Fragment',
-          `Enter the name of the peer receiving fragment ${frag.id}:`,
-          (peerName) => {
-            if (peerName && peerName.trim()) {
+  const handleGiveFragment = useCallback(async (frag, idx) => {
+    setPendingFragment({frag, idx});
+    setShowPeerPicker(true);
+  }, []);
+
+  const handleSelectPeer = useCallback(
+    async peer => {
+      if (!pendingFragment) return;
+
+      const {frag, idx} = pendingFragment;
+      setShowPeerPicker(false);
+      setDistributing(true);
+
+      try {
+        if (webrtcRef.current && distributor) {
+          const tag = RECOVERY_TAG_PREFIX + (identity?.publicKeyHex?.slice(0, 16) || 'default');
+
+          const blob = JSON.stringify({
+            version: 2,
+            timestamp: Date.now(),
+            name: identity?.name,
+            fingerprint: identity?.fingerprint,
+            pubKeyHex: identity?.publicKeyHex,
+            seedPhrase,
+          });
+
+          const result = await distributor.distribute(
+            {tag, ...JSON.parse(blob)},
+            [peer],
+            {n: 1, k: 1},
+          );
+
+          if (result.ok) {
+            Vibration.vibrate(15);
+            setFragmentDist(prev => ({
+              ...prev,
+              [idx]: {distributed: true, peerName: peer.name || peer.id},
+            }));
+            Alert.alert('Distributed', `Fragment ${frag.id} sent to ${peer.name || peer.id} via P2P.`);
+          } else {
+            throw new Error('Distribution failed');
+          }
+        } else {
+          Clipboard.setString(frag.data);
+          Vibration.vibrate(15);
+          setFragmentDist(prev => ({
+            ...prev,
+            [idx]: {distributed: true, peerName: peer.name || peer.id},
+          }));
+          Alert.alert(
+            'Fallback',
+            `P2P not available. Fragment ${frag.id} copied to clipboard for manual sharing.`,
+          );
+        }
+      } catch (e) {
+        console.warn('[RecoveryScreen] Distribution error:', e);
+        Clipboard.setString(frag.data);
+        Vibration.vibrate(15);
+        setFragmentDist(prev => ({
+          ...prev,
+          [idx]: {distributed: true, peerName: peer.name || peer.id, fallback: true},
+        }));
+        Alert.alert(
+          'Fallback',
+          `P2P distribution failed. Fragment ${frag.id} copied to clipboard.`,
+        );
+      } finally {
+        setDistributing(false);
+        setPendingFragment(null);
+      }
+    },
+    [pendingFragment, identity, seedPhrase],
+  );
+
+  const handleManualGive = useCallback(
+    (frag, idx) => {
+      Alert.alert(
+        'Manual Sharing',
+        `Fragment ${frag.id} will be copied to clipboard. Share it with your trusted peer manually.`,
+        [
+          {text: 'Cancel', style: 'cancel'},
+          {
+            text: 'Copy',
+            onPress: () => {
               Clipboard.setString(frag.data);
               Vibration.vibrate(15);
-              setFragmentDist((prev) => ({
-                ...prev,
-                [idx]: {distributed: true, peerName: peerName.trim()},
-              }));
-              Alert.alert(
-                'Shared',
-                `Fragment ${frag.id} marked as given to ${peerName.trim()}. Data copied to clipboard.`,
-              );
-            }
-          },
-          'plain-text',
-          '',
-        )
-      : // Android fallback — no Alert.prompt
-        Alert.alert(
-          'Give Fragment',
-          `Fragment ${frag.id} data has been copied to clipboard. Share it with your trusted peer.`,
-          [
-            {text: 'Cancel', style: 'cancel'},
-            {
-              text: 'Mark as Given',
-              onPress: () => {
-                Clipboard.setString(frag.data);
-                Vibration.vibrate(15);
-                setFragmentDist((prev) => ({
-                  ...prev,
-                  [idx]: {distributed: true, peerName: 'Peer'},
-                }));
-              },
+              Alert.alert('Copied', `Fragment ${frag.id} copied to clipboard.`);
             },
-          ],
-        );
-  }, []);
+          },
+        ],
+      );
+    },
+    [],
+  );
 
   // ── Verify Handlers ──
 
@@ -253,26 +341,56 @@ export default function RecoveryScreen({navigation}) {
     Vibration.vibrate(20);
 
     const validFrags = shamirInputs.filter((f) => f.trim().length > 0);
-    if (validFrags.length < 3) {
-      Alert.alert('Need Fragments', 'Please paste at least 3 Shamir fragments.');
+    if (validFrags.length < 3 && connectedPeers.length === 0) {
+      Alert.alert(
+        'Need Fragments',
+        'Please paste at least 3 Shamir fragments or connect to peers for P2P recovery.',
+      );
       return;
     }
 
     setShamirStatus('combining');
 
-    try {
-      await new Promise((r) => setTimeout(r, 600));
-      const result = combineFragments(validFrags);
+    if (validFrags.length >= 3) {
+      try {
+        await new Promise((r) => setTimeout(r, 600));
+        const result = combineFragments(validFrags);
 
-      if (result.success) {
+        if (result.success) {
+          setShamirStatus('success');
+          Vibration.vibrate([0, 50, 50, 50, 50, 100]);
+
+          const blob = result.blob;
+          setIdentity({
+            name: blob.name || 'Restored',
+            publicKeyHex: blob.pubKeyHex || '',
+            fingerprint: blob.fingerprint || '',
+          });
+
+          setTimeout(() => {
+            navigation.reset({
+              index: 0,
+              routes: [{name: 'ChatList'}],
+            });
+          }, 1500);
+          return;
+        }
+      } catch (_e) {}
+    }
+
+    if (connectedPeers.length > 0 && distributor) {
+      try {
+        const tag = RECOVERY_TAG_PREFIX + (restoreSeedInput || 'default');
+        const blob = await distributor.recover(tag, connectedPeers, {k: 1});
+
         setShamirStatus('success');
         Vibration.vibrate([0, 50, 50, 50, 50, 100]);
 
-        const blob = result.blob;
         setIdentity({
           name: blob.name || 'Restored',
           publicKeyHex: blob.pubKeyHex || '',
           fingerprint: blob.fingerprint || '',
+          seedPhrase: blob.seedPhrase || [],
         });
 
         setTimeout(() => {
@@ -281,13 +399,52 @@ export default function RecoveryScreen({navigation}) {
             routes: [{name: 'ChatList'}],
           });
         }, 1500);
-      } else {
-        setShamirStatus('fail');
+        return;
+      } catch (e) {
+        console.warn('[RecoveryScreen] P2P recovery failed:', e);
       }
-    } catch (_e) {
-      setShamirStatus('fail');
     }
-  }, [shamirInputs, setIdentity, navigation]);
+
+    setShamirStatus('fail');
+  }, [shamirInputs, connectedPeers, setIdentity, navigation, restoreSeedInput]);
+
+  const handleRecoverFromPeers = useCallback(async () => {
+    if (connectedPeers.length === 0) {
+      Alert.alert('No Peers', 'Connect to peers first to recover via P2P.');
+      return;
+    }
+
+    setShamirStatus('combining');
+
+    try {
+      const tag = RECOVERY_TAG_PREFIX + (restoreSeedInput || 'default');
+      const blob = await distributor.recover(tag, connectedPeers, {k: 1});
+
+      setShamirStatus('success');
+      Vibration.vibrate([0, 50, 50, 50, 50, 100]);
+
+      setIdentity({
+        name: blob.name || 'Restored',
+        publicKeyHex: blob.pubKeyHex || '',
+        fingerprint: blob.fingerprint || '',
+        seedPhrase: blob.seedPhrase || [],
+      });
+
+      setTimeout(() => {
+        navigation.reset({
+          index: 0,
+          routes: [{name: 'ChatList'}],
+        });
+      }, 1500);
+    } catch (e) {
+      console.warn('[RecoveryScreen] P2P recovery failed:', e);
+      setShamirStatus('fail');
+      Alert.alert(
+        'P2P Recovery Failed',
+        'Could not recover from peers. Make sure the correct peers are connected and they have your fragments.',
+      );
+    }
+  }, [connectedPeers, restoreSeedInput, setIdentity, navigation]);
 
   // ── Derived ──
 
@@ -480,10 +637,18 @@ export default function RecoveryScreen({navigation}) {
                               </Text>
                             </TouchableOpacity>
                             <TouchableOpacity
-                              style={[styles.fragActionBtn, {backgroundColor: theme.bgSecondary}]}
-                              onPress={() => handleGiveFragment(frag, idx)}>
-                              <Text style={[styles.fragActionText, {color: theme.textSecondary}]}>
-                                GIVE
+                              style={[
+                                styles.fragActionBtn,
+                                {backgroundColor: dist?.distributed ? theme.success + '20' : theme.bgSecondary},
+                              ]}
+                              onPress={() => handleGiveFragment(frag, idx)}
+                              disabled={distributing}>
+                              <Text
+                                style={[
+                                  styles.fragActionText,
+                                  {color: dist?.distributed ? theme.success : theme.textSecondary},
+                                ]}>
+                                {dist?.distributed ? 'SENT' : distributing ? 'SENDING...' : 'SEND P2P'}
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -676,7 +841,36 @@ export default function RecoveryScreen({navigation}) {
                     STEP 2: SHAMIR FRAGMENTS
                   </Text>
                   <Text style={[styles.restoreDesc, {color: theme.textSecondary}]}>
-                    Paste at least 3 Shamir fragments to reconstruct your identity.
+                    Paste at least 3 Shamir fragments to reconstruct your identity, or recover from connected peers.
+                  </Text>
+
+                  {/* P2P Recovery Option */}
+                  <View style={[styles.p2pRecoveryCard, {backgroundColor: theme.accent + '10', borderColor: theme.accent + '30'}]}>
+                    <View style={styles.p2pRecoveryHeader}>
+                      <Text style={[styles.p2pRecoveryTitle, {color: theme.accent}]}>
+                        Recover from Peers
+                      </Text>
+                      <Text style={[styles.p2pRecoveryPeers, {color: theme.textMuted}]}>
+                        {connectedPeers.length} peer{connectedPeers.length !== 1 ? 's' : ''} connected
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.p2pRecoveryBtn,
+                        {backgroundColor: theme.accent},
+                        (shamirStatus === 'combining' || connectedPeers.length === 0) && {opacity: 0.6},
+                      ]}
+                      onPress={handleRecoverFromPeers}
+                      disabled={shamirStatus === 'combining' || connectedPeers.length === 0}
+                      activeOpacity={0.7}>
+                      <Text style={[styles.p2pRecoveryBtnText, {color: theme.bg}]}>
+                        Recover via P2P
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={[styles.restoreDivider, {color: theme.textMuted}]}>
+                    — or paste fragments manually —
                   </Text>
 
                   {shamirInputs.map((val, idx) => (
@@ -788,6 +982,64 @@ export default function RecoveryScreen({navigation}) {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Peer Picker Modal */}
+      {showPeerPicker && (
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+            <Text style={[styles.modalTitle, {color: theme.text}]}>Send to Peer</Text>
+            <Text style={[styles.modalSubtitle, {color: theme.textMuted}]}>
+              Select a connected peer to receive this fragment
+            </Text>
+
+            {connectedPeers.length === 0 ? (
+              <View style={styles.noPeersContainer}>
+                <Text style={[styles.noPeersText, {color: theme.textMuted}]}>
+                  No peers connected. Connect to peers first via the main chat screen.
+                </Text>
+                <TouchableOpacity
+                  style={[styles.modalBtn, {backgroundColor: theme.accentDim}]}
+                  onPress={() => setShowPeerPicker(false)}>
+                  <Text style={[styles.modalBtnText, {color: theme.accent}]}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                {connectedPeers.map(peer => (
+                  <TouchableOpacity
+                    key={peer.id}
+                    style={[styles.peerItem, {backgroundColor: theme.bgTertiary, borderColor: theme.border}]}
+                    onPress={() => handleSelectPeer(peer)}>
+                    <View style={[styles.peerAvatar, {backgroundColor: theme.accent}]}>
+                      <Text style={styles.peerInitial}>
+                        {(peer.name || peer.id)[0].toUpperCase()}
+                      </Text>
+                    </View>
+                    <View style={styles.peerInfo}>
+                      <Text style={[styles.peerName, {color: theme.text}]}>
+                        {peer.name || peer.id}
+                      </Text>
+                      <Text style={[styles.peerStatus, {color: theme.success}]}>Connected</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={[styles.modalBtn, {backgroundColor: theme.bgTertiary}]}
+                  onPress={() => {
+                    setShowPeerPicker(false);
+                    if (pendingFragment) {
+                      handleManualGive(pendingFragment.frag, pendingFragment.idx);
+                    }
+                  }}>
+                  <Text style={[styles.modalBtnText, {color: theme.textSecondary}]}>
+                    Manual (Copy to Clipboard)
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -1129,5 +1381,117 @@ const styles = StyleSheet.create({
     minHeight: 70,
     textAlignVertical: 'top',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+
+  /* Peer Picker Modal */
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 20,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    marginBottom: 16,
+  },
+  noPeersContainer: {
+    alignItems: 'center',
+    paddingVertical: 16,
+  },
+  noPeersText: {
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  peerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 8,
+  },
+  peerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  peerInitial: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  peerInfo: {
+    flex: 1,
+  },
+  peerName: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  peerStatus: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  modalBtn: {
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  modalBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+
+  /* P2P Recovery */
+  p2pRecoveryCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 14,
+    marginBottom: 12,
+  },
+  p2pRecoveryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  p2pRecoveryTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  p2pRecoveryPeers: {
+    fontSize: 12,
+  },
+  p2pRecoveryBtn: {
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  p2pRecoveryBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  restoreDivider: {
+    textAlign: 'center',
+    marginVertical: 12,
+    fontSize: 12,
   },
 });

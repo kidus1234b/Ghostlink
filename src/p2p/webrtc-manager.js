@@ -98,6 +98,8 @@ class PeerSession {
     this.peerPublicKey = null;
     /** @type {string} */
     this.state = 'new';
+    /** @type {boolean} Whether the main data channel (messages) is ready */
+    this.dataChannelReady = false;
   }
 
   /** Close the peer connection and all data channels. */
@@ -108,6 +110,7 @@ class PeerSession {
     this.channels.clear();
     try { this.pc.close(); } catch (_) { /* ignore */ }
     this.state = 'closed';
+    this.dataChannelReady = false;
   }
 }
 
@@ -389,6 +392,21 @@ class RTCPeerManager extends EventEmitter {
   _setupChannelEvents(session, name, ch) {
     ch.onopen = () => {
       console.log(`[GhostLink] Data channel "${name}" open with ${session.peerId}`);
+      if (name === 'messages') {
+        session.dataChannelReady = true;
+        this.emit('data-channel-ready', session.peerId);
+        
+        // Flush any pending messages
+        if (session._pendingMessages && session._pendingMessages.length > 0) {
+          console.log(`[GhostLink] Flushing ${session._pendingMessages.length} pending messages for ${session.peerId}`);
+          for (const pending of session._pendingMessages) {
+            this._sendOnChannel(session.peerId, pending.channelName, pending.data).catch(e => {
+              console.error('[GhostLink] Failed to send pending message:', e);
+            });
+          }
+          session._pendingMessages = [];
+        }
+      }
     };
 
     ch.onclose = () => {
@@ -483,6 +501,7 @@ class RTCPeerManager extends EventEmitter {
 
   /**
    * Internal: encrypt and send on a named channel.
+   * Waits for data channel if not ready yet.
    * @private
    * @param {string} peerId
    * @param {string} channelName
@@ -492,6 +511,18 @@ class RTCPeerManager extends EventEmitter {
   async _sendOnChannel(peerId, channelName, data) {
     const session = this._peers.get(peerId);
     if (!session) throw new Error(`No peer session for ${peerId}`);
+
+    // Wait for data channel if not ready
+    if (channelName === 'messages' && !session.dataChannelReady) {
+      try {
+        await this.waitForDataChannel(peerId, 5000);
+      } catch (e) {
+        console.warn(`[GhostLink] Data channel not ready for ${peerId}, queuing message`);
+        session._pendingMessages = session._pendingMessages || [];
+        session._pendingMessages.push({ channelName, data });
+        return;
+      }
+    }
 
     const ch = session.channels.get(channelName);
     if (!ch || ch.readyState !== 'open') {
@@ -522,11 +553,48 @@ class RTCPeerManager extends EventEmitter {
   getConnectedPeers() {
     const result = [];
     for (const [peerId, session] of this._peers) {
-      if (session.state === 'connected' || session.state === 'completed') {
+      if (session.dataChannelReady) {
         result.push(peerId);
       }
     }
     return result;
+  }
+
+  /**
+   * Check if a peer's data channel is ready for messaging.
+   * @param {string} peerId
+   * @returns {boolean}
+   */
+  isDataChannelReady(peerId) {
+    const session = this._peers.get(peerId);
+    return session ? session.dataChannelReady : false;
+  }
+
+  /**
+   * Wait for a peer's data channel to be ready.
+   * @param {string} peerId
+   * @param {number} timeoutMs
+   * @returns {Promise<boolean>}
+   */
+  async waitForDataChannel(peerId, timeoutMs = 10000) {
+    if (this.isDataChannelReady(peerId)) return true;
+    
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.off('data-channel-ready', handler);
+        reject(new Error(`Data channel for ${peerId} not ready within ${timeoutMs}ms`));
+      }, timeoutMs);
+      
+      const handler = (pId) => {
+        if (pId === peerId) {
+          clearTimeout(timer);
+          this.off('data-channel-ready', handler);
+          resolve(true);
+        }
+      };
+      
+      this.on('data-channel-ready', handler);
+    });
   }
 
   /**

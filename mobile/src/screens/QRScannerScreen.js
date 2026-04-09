@@ -23,6 +23,67 @@ import QRCodeScanner from 'react-native-qrcode-scanner';
 import QRCode from 'react-native-qrcode-svg';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
+import {sha256} from '../utils/crypto';
+
+const INVITE_CODE_REGEX = /^GL-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}$/;
+
+function parseInviteJSON(qrData) {
+  let parsed;
+  try {
+    parsed = JSON.parse(qrData);
+  } catch (_) {
+    return null;
+  }
+
+  const invite = {
+    code: parsed.code || parsed.c,
+    publicKey: parsed.publicKey || parsed.p,
+    name: parsed.name || parsed.n,
+    signaling: parsed.signaling || parsed.s,
+    timestamp: parsed.timestamp || parsed.t,
+    signature: parsed.signature || parsed.sig,
+  };
+
+  if (!invite.code || !INVITE_CODE_REGEX.test(invite.code)) {
+    return null;
+  }
+  if (!invite.publicKey || typeof invite.publicKey !== 'string') {
+    return null;
+  }
+  if (!invite.timestamp || typeof invite.timestamp !== 'number') {
+    return null;
+  }
+
+  return invite;
+}
+
+async function verifyInvite(invite) {
+  const age = Date.now() - invite.timestamp;
+  if (age > 86400000) {
+    return {valid: false, reason: 'Invite expired (older than 24 hours)'};
+  }
+  if (age < -300000) {
+    return {valid: false, reason: 'Invite timestamp is in the future'};
+  }
+
+  if (!invite.signature) {
+    return {valid: false, reason: 'Missing signature'};
+  }
+
+  const payload = `${invite.code}|${invite.publicKey}|${invite.name || ''}|${invite.timestamp}`;
+  const sigBytes = invite.signature.toLowerCase();
+
+  try {
+    const keyMaterial = invite.publicKey.slice(0, 64).toLowerCase();
+    const expectedSig = await sha256(payload + ':' + keyMaterial);
+
+    if (sigBytes === expectedSig) {
+      return {valid: true};
+    }
+  } catch (_) {}
+
+  return {valid: false, reason: 'Signature verification failed'};
+}
 
 const {width: SCREEN_WIDTH} = Dimensions.get('window');
 
@@ -51,16 +112,31 @@ export default function QRScannerScreen({navigation}) {
   }));
 
   const handleScan = useCallback(
-    (e) => {
+    async (e) => {
       const code = e.data;
       Vibration.vibrate([0, 50, 50, 50]);
       setScanSuccess(true);
       setScannedCode(code);
 
-      if (code.startsWith('GL-')) {
+      const jsonInvite = parseInviteJSON(code);
+
+      if (jsonInvite) {
+        const verification = await verifyInvite(jsonInvite);
+
+        if (!verification.valid) {
+          Alert.alert('Invalid Invite', verification.reason, [
+            {text: 'Cancel', style: 'cancel', onPress: () => {
+              setScanSuccess(false);
+              setScannedCode(null);
+              scannerRef.current?.reactivate();
+            }},
+          ]);
+          return;
+        }
+
         Alert.alert(
-          'Invite Code Found',
-          `Join room with code:\n${code}`,
+          'Invite from ' + (jsonInvite.name || 'Unknown'),
+          `Verified invite for room:\n${jsonInvite.code}\n\nPublic key fingerprint:\n${jsonInvite.publicKey.slice(0, 32)}...`,
           [
             {text: 'Cancel', style: 'cancel', onPress: () => {
               setScanSuccess(false);
@@ -70,6 +146,38 @@ export default function QRScannerScreen({navigation}) {
             {
               text: 'Join',
               onPress: () => {
+                const roomId = `room-${jsonInvite.code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+                dispatch({
+                  type: 'ADD_ROOM',
+                  payload: {
+                    id: roomId,
+                    name: jsonInvite.name || `Room ${jsonInvite.code.slice(3, 11)}`,
+                    inviteCode: jsonInvite.code,
+                    publicKey: jsonInvite.publicKey,
+                    signaling: jsonInvite.signaling,
+                    createdAt: Date.now(),
+                  },
+                });
+                dispatch({type: 'SET_ACTIVE_ROOM', payload: roomId});
+                Vibration.vibrate(40);
+                navigation.navigate('Chat');
+              },
+            },
+          ],
+        );
+      } else if (code.startsWith('GL-') && INVITE_CODE_REGEX.test(code)) {
+        Alert.alert(
+          'Legacy Invite Code',
+          'This is a legacy invite code format without signature verification.\n\nProceed with caution.',
+          [
+            {text: 'Cancel', style: 'cancel', onPress: () => {
+              setScanSuccess(false);
+              setScannedCode(null);
+              scannerRef.current?.reactivate();
+            }},
+            {
+              text: 'Join Anyway',
+              onPress: () => {
                 const roomId = `room-${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
                 dispatch({
                   type: 'ADD_ROOM',
@@ -77,6 +185,7 @@ export default function QRScannerScreen({navigation}) {
                     id: roomId,
                     name: `Room ${code.slice(3, 11)}`,
                     inviteCode: code,
+                    legacy: true,
                     createdAt: Date.now(),
                   },
                 });

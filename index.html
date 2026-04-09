@@ -87,6 +87,7 @@
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
             ]
           });
           const dc = pc.createDataChannel('ghostlink', { ordered: true });
@@ -110,6 +111,7 @@
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' },
             ]
           });
           const candidates = [];
@@ -788,14 +790,19 @@
                 ft.on('complete', ({ transferId, peerId, file }) => {
                   setActiveTransfers(prev => { const n = { ...prev }; delete n[transferId]; return n; });
                   if (file) {
+                    // Create object URL for download
+                    const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
+                    const url = URL.createObjectURL(blob);
                     setTransferredFiles(prev => [...prev, {
+                      id: transferId,
                       name: file.name || 'unknown',
                       size: file.size || 0,
                       from: peerId,
                       ts: Date.now(),
-                      hash: transferId?.slice(0, 8) + '...',
+                      url: url,
+                      type: file.type || 'application/octet-stream',
                       chunks: Math.ceil((file.size || 0) / 65536),
-                      encrypted: true
+                      encrypted: false
                     }]);
                   }
                 });
@@ -885,7 +892,7 @@
           const initOfflineQueue = async () => {
             if (typeof OfflineQueue !== 'undefined') {
               const SIGNALING_URL = await discoverSignaling();
-              const oq = new OfflineQueue(SIGNALING_URL.replace('ws', 'http').replace('3001', '3000'));
+              const oq = new OfflineQueue(SIGNALING_URL.replace('ws', 'http'));
               oq.on('message-delivered', ({ peerId, messageId }) => {
                 setPendingMessages(prev => {
                   const n = { ...prev };
@@ -1018,6 +1025,7 @@
           // Send via P2P if connected — check manual connections first, then peerManager
           const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
           const manualConn = manualConnectionsRef.current[peerId];
+          const dataChannelReady = peerManager?.isDataChannelReady?.(peerId) || false;
           if (manualConn?.dc?.readyState === 'open') {
             try {
               const msgPayload = JSON.stringify({
@@ -1030,7 +1038,7 @@
               console.error('Manual DC send failed:', e);
               addToast('Send failed on manual channel', 'error');
             }
-          } else if (peerManager && connectionStates[peerId] === 'connected') {
+          } else if (peerManager && (connectionStates[peerId] === 'connected' || dataChannelReady)) {
             try {
               // Try Signal Protocol encryption first, fall back to AES
               let msgPayload;
@@ -1175,6 +1183,13 @@
 
         const startCall = async (type) => {
           try {
+            // Check HTTPS requirement
+            const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+            if (!isSecure) {
+              addToast('Calls require HTTPS. Please use https:// or run on localhost.', 'error');
+              return;
+            }
+
             setCallType(type);
             setCallActive(true);
             setMicOn(true);
@@ -1187,7 +1202,16 @@
               else if (type === "video") await mediaHandler.startVideoCall(peerId);
               else if (type === "screen") await mediaHandler.startScreenShare(peerId);
             }
-          } catch (e) { console.error('Call start failed:', e); addToast('Call failed: ' + e.message, 'error'); setCallActive(false); setCallType(null); }
+          } catch (e) { 
+            console.error('Call start failed:', e); 
+            if (e.message.includes('HTTPS') || e.message.includes('permission')) {
+              addToast('⚠️ ' + e.message, 'error');
+            } else {
+              addToast('Call failed: ' + e.message, 'error');
+            }
+            setCallActive(false); 
+            setCallType(null); 
+          }
         };
 
         const endCall = async () => {
@@ -1811,7 +1835,7 @@
               ) : activeTab === "files" ? (
                 <div style={{ flex: 1, overflowY: "auto", padding: 10 }}>
                   {transferredFiles.map((f, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both", cursor: "pointer" }}>
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 8, background: `${fileIcons[getExt(f.name)] || "#6a6a7a"}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                         <I t="file" s={16} c={fileIcons[getExt(f.name)] || "#6a6a7a"} />
                       </div>
@@ -1819,11 +1843,22 @@
                         <div style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
                         <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{fmtSize(f.size)} · {f.from} · {f.chunks} chunks</div>
                       </div>
-                      {f.encrypted && <I t="lock" s={12} c={th.accent} />}
+                      {f.url ? (
+                        <a href={f.url} download={f.name} style={{ 
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          width: 32, height: 32, borderRadius: 6, flexShrink: 0,
+                          background: `${th.accent}15`, color: th.accent,
+                          textDecoration: "none", fontSize: 14, fontWeight: 700
+                        }}>
+                          ↓
+                        </a>
+                      ) : (
+                        <I t="lock" s={12} c={th.accent} />
+                      )}
                     </div>
                   ))}
                   {transferredFiles.length === 0 && <div style={{ textAlign: "center", padding: 40, fontSize: 11, color: "#2a2a3a" }}>No files transferred yet. Send files via the chat.</div>}
-                  {transferredFiles.length > 0 && <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>All files are chunked and encrypted P2P</div>}
+                  {transferredFiles.length > 0 && <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>Click ↓ to download files</div>}
                 </div>
               ) : (
                 <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
@@ -2013,15 +2048,30 @@
                             cursor: "pointer", transition: "all 0.15s ease",
                           }}>
                             {msg.type === "file" ? (
-                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <div style={{ width: 36, height: 36, borderRadius: 8, background: `${th.accent}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                  <I t="file" s={16} c={th.accent} />
-                                </div>
-                                <div>
-                                  <div style={{ fontSize: 12, fontWeight: 600 }}>{msg.content}</div>
-                                  <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{msg.meta?.chunks} chunks · {fmtSize(msg.meta?.fileSize || 0)} · <span style={{ color: th.accent }}>Encrypted</span></div>
-                                </div>
-                              </div>
+                              (() => {
+                                const fileData = transferredFiles.find(f => f.name === msg.content && Math.abs(f.size - (msg.meta?.fileSize || 0)) < 1000);
+                                return (
+                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                    <div style={{ width: 36, height: 36, borderRadius: 8, background: `${th.accent}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                      <I t="file" s={16} c={th.accent} />
+                                    </div>
+                                    <div style={{ flex: 1 }}>
+                                      <div style={{ fontSize: 12, fontWeight: 600 }}>{msg.content}</div>
+                                      <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{msg.meta?.chunks} chunks · {fmtSize(msg.meta?.fileSize || 0)}</div>
+                                    </div>
+                                    {fileData?.url && (
+                                      <a href={fileData.url} download={fileData.name} style={{ 
+                                        display: "flex", alignItems: "center", justifyContent: "center",
+                                        width: 32, height: 32, borderRadius: 6, 
+                                        background: `${th.accent}15`, color: th.accent,
+                                        textDecoration: "none", fontSize: 14
+                                      }}>
+                                        ↓
+                                      </a>
+                                    )}
+                                  </div>
+                                );
+                              })()
                             ) : (
                               <div style={{ fontSize: settings.fontSize, lineHeight: 1.55, color: "#d0d0d8" }}>{msg.content}</div>
                             )}

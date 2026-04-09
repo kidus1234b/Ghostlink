@@ -70,31 +70,26 @@ class TransferState {
   }
 }
 
-// ─── Simple EventEmitter ─────────────────────────────────────────────────────
+// ─── Simple EventEmitter (reuse from webrtc-manager.js) ─────────────────────
 
-class EventEmitter {
-  constructor() {
-    /** @type {Map<string, Set<Function>>} */
-    this._listeners = new Map();
-  }
-
-  /** @param {string} event @param {Function} cb */
-  on(event, cb) {
-    if (!this._listeners.has(event)) this._listeners.set(event, new Set());
-    this._listeners.get(event).add(cb);
-  }
-
-  /** @param {string} event @param {Function} cb */
-  off(event, cb) {
-    const s = this._listeners.get(event);
-    if (s) s.delete(cb);
-  }
-
-  /** @param {string} event @param {...any} args */
-  emit(event, ...args) {
-    const s = this._listeners.get(event);
-    if (s) for (const fn of s) {
-      try { fn(...args); } catch (e) { console.error(`[FileTransfer] Event error (${event}):`, e); }
+if (typeof EventEmitter === 'undefined') {
+  class EventEmitter {
+    constructor() {
+      this._listeners = new Map();
+    }
+    on(event, cb) {
+      if (!this._listeners.has(event)) this._listeners.set(event, new Set());
+      this._listeners.get(event).add(cb);
+    }
+    off(event, cb) {
+      const s = this._listeners.get(event);
+      if (s) s.delete(cb);
+    }
+    emit(event, ...args) {
+      const s = this._listeners.get(event);
+      if (s) for (const fn of s) {
+        try { fn(...args); } catch (e) { console.error(`[FileTransfer] Event error (${event}):`, e); }
+      }
     }
   }
 }
