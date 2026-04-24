@@ -1,0 +1,33 @@
+{
+  "name": "ghostlink",
+  "version": "2.0.0",
+  "description": "GhostLink — Zero Trust · Zero Trace · Zero Servers — Encrypted P2P Communication Platform",
+  "private": true,
+  "workspaces": [
+    "server",
+    "mobile",
+    "electron"
+  ],
+  "scripts": {
+    "start": "cd server && node index.js",
+    "server": "cd server && node index.js",
+    "desktop": "cd electron && npm start",
+    "mobile:android": "cd mobile && npx react-native run-android",
+    "mobile:ios": "cd mobile && npx react-native run-ios",
+    "build:desktop:win": "cd electron && npm run build:win",
+    "build:desktop:mac": "cd electron && npm run build:mac",
+    "build:desktop:linux": "cd electron && npm run build:linux",
+    "install:server": "cd server && npm install",
+    "install:mobile": "cd mobile && npm install",
+    "install:desktop": "cd electron && npm install",
+    "install:all": "npm run install:server && npm run install:mobile && npm run install:desktop"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ghostlink/ghostlink"
+  },
+  "license": "GPL-3.0",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
