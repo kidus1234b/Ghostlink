@@ -6,6 +6,7 @@ A peer-to-peer encrypted communication platform where nothing is stored on any s
 
 > Your data lives on your device. Your backups live with your peers. No one else has access — not even us.
 
+**Web + Desktop + Mobile**
 
 -----
 
@@ -65,7 +66,7 @@ Every major messaging app — even the “secure” ones — stores metadata on 
 
 ## Platform Details
 
-### Web App — `index.html` (~2,600 lines)
+### Web App — `index.html`
 
 Single HTML file with React 18 + Babel transpilation. No build step needed.
 
@@ -83,15 +84,15 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 - QR code invite generation (pure SVG, Reed-Solomon error correction)
 - Message search across encrypted conversations
 
-### Desktop App — Electron (5 modules, ~880 lines)
+### Desktop App — Electron
 
-|Module       |Lines|Purpose                                                           |
-|-------------|-----|------------------------------------------------------------------|
-|`main.js`    |~520 |Window management, IPC, embedded signaling server, deep links, CSP|
-|`preload.js` |~160 |Secure contextBridge API (`window.ghostlink`)                     |
-|`titlebar.js`|~250 |Custom frameless title bar (38px, draggable)                      |
-|`tray.js`    |~260 |System tray icon, badge count, flash on messages                  |
-|`updater.js` |~170 |Auto-updates via GitHub Releases                                  |
+|Module       |Purpose                                                           |
+|-------------|------------------------------------------------------------------|
+|`main.js`    |Window management, IPC, embedded signaling server, deep links, CSP|
+|`preload.js` |Secure contextBridge API (`window.ghostlink`)                     |
+|`titlebar.js`|Custom frameless title bar (38px, draggable)                      |
+|`tray.js`    |System tray icon, badge count, flash on messages                  |
+|`updater.js` |Auto-updates via GitHub Releases                                  |
 
 **Desktop-specific features:**
 
@@ -104,7 +105,7 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 - Secure storage via `electron-store`
 - Strict Content-Security-Policy headers
 
-### Mobile App — React Native (18 files, ~4,500+ lines)
+### Mobile App — React Native
 
 **Screens:**
 
@@ -182,7 +183,7 @@ No permanent server needed. The signaling relay is only used as a fallback for N
 |`files`   |1 |Reliable, ordered|Encrypted file transfer|
 |`presence`|2 |Unreliable       |Typing indicators      |
 
-### Signaling Server — `signaling-core.js` (~650 lines)
+### Signaling Server — `signaling-core.js`
 
 Lightweight WebSocket relay that only passes connection info — never sees message content.
 
@@ -422,7 +423,7 @@ server {
 
 ```
 Ghostlink/
-├── index.html              # Web app (~2,600 lines, single file)
+├── index.html              # Web app (single file, no build step)
 ├── README.md
 ├── LICENSE                  # GPL-3.0
 │
@@ -455,7 +456,7 @@ Ghostlink/
 │   └── package.json
 │
 └── server/                  # Signaling relay
-    ├── signaling-core.js   # WebSocket relay (~650 lines)
+    ├── signaling-core.js   # WebSocket relay
     └── index.js            # Entry point
 ```
 
