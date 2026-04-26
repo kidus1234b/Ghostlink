@@ -6,19 +6,18 @@ A peer-to-peer encrypted communication platform where nothing is stored on any s
 
 > Your data lives on your device. Your backups live with your peers. No one else has access — not even us.
 
-**~12,500+ lines of code · 26 files · Web + Desktop + Mobile**
 
----
+-----
 
 ## Why GhostLink?
 
-Every major messaging app — even the "secure" ones — stores metadata on central servers. Who you talked to, when, how often, from where. GhostLink eliminates this entirely.
+Every major messaging app — even the “secure” ones — stores metadata on central servers. Who you talked to, when, how often, from where. GhostLink eliminates this entirely.
 
 - **No servers.** Communication is peer-to-peer via WebRTC. There is no backend to hack, subpoena, or compromise.
 - **No metadata.** Connection timestamps, IP addresses, and contact graphs never leave your device.
 - **No trust required.** Cryptography enforces the rules, not policy.
 
----
+-----
 
 ## Architecture
 
@@ -48,21 +47,21 @@ Every major messaging app — even the "secure" ones — stores metadata on cent
 └──────────────────────────────────────────┘
 ```
 
----
+-----
 
 ## Cryptographic Stack
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| Key Exchange | ECDH P-256 | Derive shared secrets between peers |
-| Message Encryption | AES-256-GCM | Encrypt every message with unique IV |
-| Forward Secrecy | Signal Protocol (X3DH + Double Ratchet) | New keys per message — past messages safe if key leaks |
-| Hashing | SHA-256 | Blockchain integrity, fingerprints |
-| Key Derivation | PBKDF2 (100,000 iterations) | Derive master key from seed phrase |
-| Identity Recovery | Shamir's Secret Sharing GF(256) | Split identity into 7 shares, any 3 recover it |
-| Seed Backup | BIP39-style 12-word phrase | Human-readable identity backup |
+|Layer             |Technology                             |Purpose                                               |
+|------------------|---------------------------------------|------------------------------------------------------|
+|Key Exchange      |ECDH P-256                             |Derive shared secrets between peers                   |
+|Message Encryption|AES-256-GCM                            |Encrypt every message with unique IV                  |
+|Forward Secrecy   |Signal Protocol (X3DH + Double Ratchet)|New keys per message — past messages safe if key leaks|
+|Hashing           |SHA-256                                |Blockchain integrity, fingerprints                    |
+|Key Derivation    |PBKDF2 (100,000 iterations)            |Derive master key from seed phrase                    |
+|Identity Recovery |Shamir’s Secret Sharing GF(256)        |Split identity into 7 shares, any 3 recover it        |
+|Seed Backup       |BIP39-style 12-word phrase             |Human-readable identity backup                        |
 
----
+-----
 
 ## Platform Details
 
@@ -73,6 +72,7 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 **Screens:** Splash (ghost animation + loading) → Setup (name + 12-word seed generation) → Main Chat (full interface with sidebar)
 
 **Features:**
+
 - 4 themes: Phantom (teal), Crimson (red), Arctic (cyan), Void (purple)
 - Responsive layouts: mobile, tablet, desktop
 - Drag-and-drop encrypted file upload
@@ -85,15 +85,16 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 
 ### Desktop App — Electron (5 modules, ~880 lines)
 
-| Module | Lines | Purpose |
-|---|---|---|
-| `main.js` | ~520 | Window management, IPC, embedded signaling server, deep links, CSP |
-| `preload.js` | ~160 | Secure contextBridge API (`window.ghostlink`) |
-| `titlebar.js` | ~250 | Custom frameless title bar (38px, draggable) |
-| `tray.js` | ~260 | System tray icon, badge count, flash on messages |
-| `updater.js` | ~170 | Auto-updates via GitHub Releases |
+|Module       |Lines|Purpose                                                           |
+|-------------|-----|------------------------------------------------------------------|
+|`main.js`    |~520 |Window management, IPC, embedded signaling server, deep links, CSP|
+|`preload.js` |~160 |Secure contextBridge API (`window.ghostlink`)                     |
+|`titlebar.js`|~250 |Custom frameless title bar (38px, draggable)                      |
+|`tray.js`    |~260 |System tray icon, badge count, flash on messages                  |
+|`updater.js` |~170 |Auto-updates via GitHub Releases                                  |
 
 **Desktop-specific features:**
+
 - Frameless window with custom title bar
 - Minimize to system tray with badge count
 - Deep link protocol (`ghostlink://`)
@@ -107,35 +108,35 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 
 **Screens:**
 
-| Screen | Purpose |
-|---|---|
-| `SetupScreen` | 3-step identity creation (name → seed → confirm) |
-| `ChatListScreen` | Chat list with swipe actions (pin, mute, delete), FAB |
-| `ChatScreen` | Full chat with bubbles, typing indicators, voice messages |
-| `CallScreen` | Voice/video with draggable PiP, ringing animations |
-| `SettingsScreen` | 5 themes, security info, font slider, network config |
-| `RecoveryScreen` | Backup/Verify/Restore with Shamir fragments |
+|Screen          |Purpose                                                  |
+|----------------|---------------------------------------------------------|
+|`SetupScreen`   |3-step identity creation (name → seed → confirm)         |
+|`ChatListScreen`|Chat list with swipe actions (pin, mute, delete), FAB    |
+|`ChatScreen`    |Full chat with bubbles, typing indicators, voice messages|
+|`CallScreen`    |Voice/video with draggable PiP, ringing animations       |
+|`SettingsScreen`|5 themes, security info, font slider, network config     |
+|`RecoveryScreen`|Backup/Verify/Restore with Shamir fragments              |
 
 **Services:**
 
-| Service | Purpose |
-|---|---|
-| `CryptoService` | ECDH, AES-GCM, SHA-256, ECDSA (OpenSSL-backed) |
-| `WebRTCService` | `react-native-webrtc` peer connections + data channels |
-| `SignalingService` | WebSocket with auto-reconnect + health probe |
-| `StorageService` | AsyncStorage wrapper with encryption |
+|Service           |Purpose                                               |
+|------------------|------------------------------------------------------|
+|`CryptoService`   |ECDH, AES-GCM, SHA-256, ECDSA (OpenSSL-backed)        |
+|`WebRTCService`   |`react-native-webrtc` peer connections + data channels|
+|`SignalingService`|WebSocket with auto-reconnect + health probe          |
+|`StorageService`  |AsyncStorage wrapper with encryption                  |
 
 **Components:**
 
-| Component | Purpose |
-|---|---|
-| `GhostAvatar` | Deterministic gradient avatar from name hash |
-| `MessageBubble` | Chat bubble with receipts, replies, self-destruct, attachments |
-| `EncryptionBadge` | E2EE status pill (tap for cipher details) |
+|Component        |Purpose                                                       |
+|-----------------|--------------------------------------------------------------|
+|`GhostAvatar`    |Deterministic gradient avatar from name hash                  |
+|`MessageBubble`  |Chat bubble with receipts, replies, self-destruct, attachments|
+|`EncryptionBadge`|E2EE status pill (tap for cipher details)                     |
 
 **5 Themes:** Phantom, Neon, Blood, Ocean, Cyber
 
----
+-----
 
 ## P2P Connectivity
 
@@ -175,11 +176,11 @@ No permanent server needed. The signaling relay is only used as a fallback for N
 
 ### WebRTC Data Channels (3 multiplexed)
 
-| Channel | ID | Mode | Purpose |
-|---|---|---|---|
-| `messages` | 0 | Reliable, ordered | Chat messages |
-| `files` | 1 | Reliable, ordered | Encrypted file transfer |
-| `presence` | 2 | Unreliable | Typing indicators |
+|Channel   |ID|Mode             |Purpose                |
+|----------|--|-----------------|-----------------------|
+|`messages`|0 |Reliable, ordered|Chat messages          |
+|`files`   |1 |Reliable, ordered|Encrypted file transfer|
+|`presence`|2 |Unreliable       |Typing indicators      |
 
 ### Signaling Server — `signaling-core.js` (~650 lines)
 
@@ -196,7 +197,7 @@ Lightweight WebSocket relay that only passes connection info — never sees mess
 - **Fallback:** Signaling relay for symmetric NAT
 - **Auto-reconnect:** Exponential backoff (1s → 30s)
 
----
+-----
 
 ## Encrypted File Transfer
 
@@ -207,19 +208,19 @@ Lightweight WebSocket relay that only passes connection info — never sees mess
 - Backpressure handling (buffer high/low water marks)
 - Progress events (0–100%)
 
----
+-----
 
 ## Voice / Video / Screen Sharing
 
-| Mode | Audio | Video | Method |
-|---|---|---|---|
-| Voice | Echo cancellation + noise suppression | — | `getUserMedia()` |
-| Video | Echo cancellation + noise suppression | 1280x720, front camera | `getUserMedia()` |
-| Screen | — | Display surface | `getDisplayMedia()` |
+|Mode  |Audio                                |Video                 |Method             |
+|------|-------------------------------------|----------------------|-------------------|
+|Voice |Echo cancellation + noise suppression|—                     |`getUserMedia()`   |
+|Video |Echo cancellation + noise suppression|1280x720, front camera|`getUserMedia()`   |
+|Screen|—                                    |Display surface       |`getDisplayMedia()`|
 
 All media streams encrypted via SRTP (built into WebRTC).
 
----
+-----
 
 ## Message Blockchain
 
@@ -239,7 +240,7 @@ Block #N
 
 Chain explorer UI lets you verify integrity, view any block, and export the full chain as JSON.
 
----
+-----
 
 ## Identity Recovery (3 Layers)
 
@@ -281,7 +282,7 @@ Layer 3: P2P recovery
 └────────────────────────────────────────────┘
 ```
 
----
+-----
 
 ## Offline Support
 
@@ -290,23 +291,23 @@ Layer 3: P2P recovery
 - Auto-sync when peer reconnects
 - Relay via trusted third peer
 
----
+-----
 
 ## Security Model
 
 ### What GhostLink protects against
 
-| Threat | Protection |
-|---|---|
-| Server breach | No server exists to breach |
-| Man-in-the-middle | ECDH key exchange + message authentication |
-| Message tampering | SHA-256 blockchain chain verification |
-| Key compromise | Forward secrecy via Double Ratchet |
-| Data theft (device) | AES-256-GCM encryption at rest with key wrapping |
-| Backup compromise | Shamir's Secret Sharing — single fragment is useless |
-| Identity theft | BIP39 seed phrase derives all keys deterministically |
-| Metadata surveillance | P2P direct — no central logs, no connection records |
-| Replay attacks | Unique IV per message + blockchain ordering |
+|Threat               |Protection                                          |
+|---------------------|----------------------------------------------------|
+|Server breach        |No server exists to breach                          |
+|Man-in-the-middle    |ECDH key exchange + message authentication          |
+|Message tampering    |SHA-256 blockchain chain verification               |
+|Key compromise       |Forward secrecy via Double Ratchet                  |
+|Data theft (device)  |AES-256-GCM encryption at rest with key wrapping    |
+|Backup compromise    |Shamir’s Secret Sharing — single fragment is useless|
+|Identity theft       |BIP39 seed phrase derives all keys deterministically|
+|Metadata surveillance|P2P direct — no central logs, no connection records |
+|Replay attacks       |Unique IV per message + blockchain ordering         |
 
 ### What GhostLink does NOT protect against
 
@@ -318,19 +319,19 @@ Layer 3: P2P recovery
 
 ### Cryptographic Primitives
 
-| Function | Algorithm | Parameters |
-|---|---|---|
-| Key agreement | ECDH | P-256 (secp256r1) |
-| Symmetric encryption | AES-GCM | 256-bit key, 96-bit IV |
-| Key derivation | PBKDF2 | SHA-256, 100K iterations |
-| Forward secrecy | X3DH + Double Ratchet | Signal Protocol |
-| Message integrity | SHA-256 | Chained hashes (blockchain) |
-| Backup splitting | Shamir SSS | GF(256), 7 shares, threshold 3 |
-| Identity seed | BIP39 | 128-bit entropy, 12 words |
-| Signing | ECDSA | P-256 |
-| File chunks | AES-GCM | 64KB per chunk, unique IV |
+|Function            |Algorithm            |Parameters                    |
+|--------------------|---------------------|------------------------------|
+|Key agreement       |ECDH                 |P-256 (secp256r1)             |
+|Symmetric encryption|AES-GCM              |256-bit key, 96-bit IV        |
+|Key derivation      |PBKDF2               |SHA-256, 100K iterations      |
+|Forward secrecy     |X3DH + Double Ratchet|Signal Protocol               |
+|Message integrity   |SHA-256              |Chained hashes (blockchain)   |
+|Backup splitting    |Shamir SSS           |GF(256), 7 shares, threshold 3|
+|Identity seed       |BIP39                |128-bit entropy, 12 words     |
+|Signing             |ECDSA                |P-256                         |
+|File chunks         |AES-GCM              |64KB per chunk, unique IV     |
 
----
+-----
 
 ## Quick Start
 
@@ -339,6 +340,7 @@ Layer 3: P2P recovery
 The app is live at: **https://kidus1234b.github.io/Ghostlink/**
 
 Or run locally:
+
 ```bash
 git clone https://github.com/kidus1234b/Ghostlink.git
 cd Ghostlink
@@ -414,7 +416,7 @@ server {
 
 > **Note:** Web Crypto API requires HTTPS in production. `localhost` works for testing.
 
----
+-----
 
 ## Project Structure
 
@@ -457,52 +459,11 @@ Ghostlink/
     └── index.js            # Entry point
 ```
 
----
-
-## Roadmap
-
-### Done
-- [x] E2E encrypted chat with blockchain integrity
-- [x] BIP39 seed phrase identity generation
-- [x] Shamir's Secret Sharing backup GF(256) — 7 shares, threshold 3
-- [x] PBKDF2 key derivation from seed (100K iterations)
-- [x] AES-GCM private key wrapping
-- [x] localStorage / AsyncStorage persistence
-- [x] Self-destructing messages
-- [x] Encrypted file transfer (64KB chunks, per-chunk AES-GCM)
-- [x] Voice / Video calls via WebRTC
-- [x] Screen sharing
-- [x] Blockchain chain explorer
-- [x] 4 themes (web) + 5 themes (mobile)
-- [x] QR code invite generation with Reed-Solomon
-- [x] Electron desktop app with custom titlebar + tray
-- [x] React Native mobile app with 6 screens + 4 services
-- [x] Signaling server with rate limiting + security
-- [x] 3 multiplexed WebRTC data channels
-- [x] Offline message queue (IndexedDB, 24h TTL)
-- [x] Responsive layouts (mobile / tablet / desktop)
-
-### In Progress
-- [ ] Hybrid signaling (QR/paste first connect + relay reconnect)
-- [ ] Fragment distribution UI in recovery backup tab
-- [ ] Restore tab wiring to real `combineAndRestore()`
-
-### Planned
-- [ ] Signal Protocol Double Ratchet (forward secrecy)
-- [ ] Group key agreement (multi-party ECDH)
-- [ ] TURN server fallback for symmetric NAT
-- [ ] Push notifications (mobile)
-- [ ] Biometric unlock (Face ID / fingerprint)
-- [ ] Contact verification ceremony (safety numbers)
-- [ ] Message reactions
-- [ ] Voice messages with waveform
-- [ ] App Store / Play Store release
-
----
+-----
 
 ## Development
 
-Built entirely from **Termux on Android** by the help of Claude Code with the Anthropic API.
+Built entirely from **Termux on Android** using Claude Code with the Anthropic API. No PC was used.
 
 ```bash
 # Clone
@@ -519,13 +480,13 @@ python3 -m http.server 8000
 git add . && git commit -m "your message" && git push
 ```
 
----
+-----
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE) for details.
+GPL-3.0 — see <LICENSE> for details.
 
----
+-----
 
 <p align="center">
   <strong>👻 GhostLink</strong><br>
