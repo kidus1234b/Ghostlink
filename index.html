@@ -10,7 +10,7 @@
     <script src="src/p2p/webrtc-manager.js"></script>
     <script src="src/p2p/file-transfer.js"></script>
     <script src="src/p2p/media-handler.js"></script>
-    <script src="src/utils/offline-queue.js"></script>
+    <!-- offline-queue.js is an ES module, loaded dynamically -->
     <script src="src/utils/qr-invite.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
@@ -28,7 +28,7 @@
          ═══════════════════════════════════════════════════════════════ */
 
       // ==================== CONSTANTS (outside component) ====================
-      const BIP39_WORDS = ["abandon","ability","able","above","absent","absorb","abuse","access","account","achieve","acid","across","action","actor","adapt","address","admit","adult","advance","advice","afford","afraid","again","agent","agree","aim","airport","alarm","album","alert","alien","alley","allow","almost","alone","already","alter","amateur","amazing","anchor","ancient","anger","angle","animal","annual","antenna","anxiety","appear","approve","arch","arctic","area","argue","armor","army","arrest","arrive","artist","aspect","assault","assist","athlete","attach","attend","attract","audit","author","autumn","aware","awesome","axis","balance","bamboo","banner","barely","barrel","battle","beauty","become","benefit","betray","bicycle","biology","birth","bitter","blade","blame","blast","bless","blind","blossom","boost","border","bounce","bracket","brave","bridge","brief","bright","brisk","broken","brother","bubble","bullet","bundle","burden","burst","business","butter","cable","cactus","canvas","capable","captain","carbon","cargo","carry","castle","casual","catalog","cause","caution","cement","century","cereal","champion","chapter","charge","chase","cheap","chest","chief","child","choice","circuit","citizen","civil","claim","clever","client","climb","clinic","clog","cloth","cloud","cluster","clutch","coast","coconut","combine","comfort","company","confirm","congress","connect","consider","control","convince","copper","coral","correct","cotton","country","couple","cousin","cover","crack","cradle","craft","crane","crash","cream","cricket","crime","crisp","cross","crucial","crystal","culture","curious","current","custom","cycle","damage","danger","daring","daughter","decade","decline","define","delay","deliver","demand","dental","derive","describe","design","detect","develop","device","diagram","diamond","digital","dilemma","discover","display","domain","donate","double","dragon","drama","draw","dream","dress","drift","drive","dynamic","eagle","economy","effort","eight","electric","element","elite","emerge","emotion","employ","enable","endorse","energy","enforce","engage","engine","enjoy","enough","enrich","enter","equal","equip","escape","estate","ethics","evidence","evolve","exact","excess","excite","exercise","exhaust","exist","expand","explain","expose","extend","fabric","faculty","faith","famous","fantasy","fashion","feature","festival","fiction","figure","filter","fiscal","fitness","flame","flavor","flight","float","flower","fluid","focus","forest","fortune","fossil","frame","frequent","fresh","future","galaxy","gallery","garlic","gather","genius","genuine","ghost","giant","ginger","giraffe","global","gospel","govern","grace","grain","grape","gravity","great","guard","guide","guitar","habit","harvest","hazard","health","heavy","height","hidden","history","hobby","hockey","holiday","honey","hospital","hover","humble","humor","hybrid","icon","ignore","illegal","image","immune","impact","improve","impulse","income","indoor","industry","infant","innocent","inquiry","inspire","install","intact","invest","invite","island","isolate","jacket","jaguar","jealous","journey","jungle","kangaroo","kingdom","kitchen","knowledge","language","laptop","laundry","lawsuit","leader","lecture","legend","liberty","license","liquid","lottery","luggage","luxury","magic","magnet","marble","margin","marine","master","matrix","meadow","melody","memory","mentor","mercy","middle","midnight","miracle","mitten","monitor","monkey","moral","morning","mountain","museum","mystery","nature","network","neutral","noble","nominee","nuclear","object","obtain","ocean","olympic","onion","orbit","orchard","order","organ","orphan","ostrich","output","oxygen","paddle","palace","panic","patrol","payment","peasant","pelican","penalty","perfect","permit","phrase","physical","pioneer","pistol","planet","plastic","pledge","polar","popular","portrait","pottery","poverty","predict","preserve","primary","priority","prison","produce","profit","program","promote","property","protect","provide","pudding","quantum","question","rabbit","raccoon","radar","rainbow","rally","random","rebel","rebuild","recall","recipe","reduce","reform","region","regular","release","remain","remind","rescue","resist","resource","result","retire","reunion","reveal","reward","rhythm","ribbon","ritual","robust","romance","rookie","rotate","satellite","satisfy","scatter","science","scorpion","screen","second","section","security","segment","seminar","separate","shadow","sheriff","shield","signal","silent","similar","simple","siren","social","solar","soldier","solution","someone","source","space","spatial","spawn","special","sphere","spirit","sponsor","stable","stadium","stairs","strategy","street","struggle","student","style","submit","subway","surface","surprise","sustain","symbol","symptom","tackle","talent","target","texture","theory","thunder","timber","tissue","token","tornado","tourist","traffic","tragic","transfer","trigger","trophy","trumpet","tunnel","unique","universe","unlock","unusual","upgrade","uphold","urban","utility","vacant","valley","vendor","venture","verify","vibrant","victory","vintage","virtual","vital","vivid","volcano","voyage","walnut","warfare","warrior","wealth","weapon","wedding","whisper","wildlife","wisdom","witness","wonder","wrist","yellow","zebra","zero"];
+      const BIP39_WORDS = ["abandon","ability","able","about","above","absent","absorb","abstract","absurd","abuse","access","accident","account","accuse","achieve","acid","acoustic","acquire","across","act","action","actor","actress","actual","adapt","add","addict","address","adjust","admit","adult","advance","advice","aerobic","affair","afford","afraid","again","age","agent","agree","ahead","aim","air","airport","aisle","alarm","album","alcohol","alert","alien","all","alley","allow","almost","alone","alpha","already","also","alter","always","amateur","amazing","among","amount","amused","analyst","anchor","ancient","anger","angle","angry","animal","ankle","announce","annual","another","answer","antenna","antique","anxiety","any","apart","apology","appear","apple","approve","april","arch","arctic","area","arena","argue","arm","armed","armor","army","around","arrange","arrest","arrive","arrow","art","artefact","artist","artwork","ask","aspect","assault","asset","assist","assume","asthma","athlete","atom","attack","attend","attitude","attract","auction","audit","august","aunt","author","auto","autumn","average","avocado","avoid","awake","aware","away","awesome","awful","awkward","axis","baby","bachelor","bacon","badge","bag","balance","balcony","ball","bamboo","banana","banner","bar","barely","bargain","barrel","base","basic","basket","battle","beach","bean","beauty","because","become","beef","before","begin","behave","behind","believe","below","belt","bench","benefit","best","betray","better","between","beyond","bicycle","bid","bike","bind","biology","bird","birth","bitter","black","blade","blame","blanket","blast","bleak","bless","blind","blood","blossom","blouse","blue","blur","blush","board","boat","body","boil","bomb","bone","bonus","book","boost","border","boring","borrow","boss","bottom","bounce","box","boy","bracket","brain","brand","brass","brave","bread","breeze","brick","bridge","brief","bright","bring","brisk","broccoli","broken","bronze","broom","brother","brown","brush","bubble","buddy","budget","buffalo","build","bulb","bulk","bullet","bundle","bunker","burden","burger","burst","bus","business","busy","butter","buyer","buzz","cabbage","cabin","cable","cactus","cage","cake","call","calm","camera","camp","can","canal","cancel","candy","cannon","canoe","canvas","canyon","capable","capital","captain","car","carbon","card","cargo","carpet","carry","cart","case","cash","casino","castle","casual","cat","catalog","catch","category","cattle","caught","cause","caution","cave","ceiling","celery","cement","census","century","cereal","certain","chair","chalk","champion","change","chaos","chapter","charge","chase","chat","cheap","check","cheese","chef","cherry","chest","chicken","chief","child","chimney","choice","choose","chronic","chuckle","chunk","churn","cigar","cinnamon","circle","citizen","city","civil","claim","clap","clarify","claw","clay","clean","clerk","clever","click","client","cliff","climb","clinic","clip","clock","clog","close","cloth","cloud","clown","club","clump","cluster","clutch","coach","coast","coconut","code","coffee","coil","coin","collect","color","column","combine","come","comfort","comic","common","company","concert","conduct","confirm","congress","connect","consider","control","convince","cook","cool","copper","copy","coral","core","corn","correct","cost","cotton","couch","country","couple","course","cousin","cover","coyote","crack","cradle","craft","cram","crane","crash","crater","crawl","crazy","cream","credit","creek","crew","cricket","crime","crisp","critic","crop","cross","crouch","crowd","crucial","cruel","cruise","crumble","crunch","crush","cry","crystal","cube","culture","cup","cupboard","curious","current","curtain","curve","cushion","custom","cute","cycle","dad","damage","damp","dance","danger","daring","dash","daughter","dawn","day","deal","debate","debris","decade","december","decide","decline","decorate","decrease","deer","defense","define","defy","degree","delay","deliver","demand","demise","denial","dentist","deny","depart","depend","deposit","depth","deputy","derive","describe","desert","design","desk","despair","destroy","detail","detect","develop","device","devote","diagram","dial","diamond","diary","dice","diesel","diet","differ","digital","dignity","dilemma","dinner","dinosaur","direct","dirt","disagree","discover","disease","dish","dismiss","disorder","display","distance","divert","divide","divorce","dizzy","doctor","document","dog","doll","dolphin","domain","donate","donkey","donor","door","dose","double","dove","draft","dragon","drama","drastic","draw","dream","dress","drift","drill","drink","drip","drive","drop","drum","dry","duck","dumb","dune","during","dust","dutch","duty","dwarf","dynamic","eager","eagle","early","earn","earth","easily","east","easy","echo","ecology","economy","edge","edit","educate","effort","egg","eight","either","elbow","elder","electric","elegant","element","elephant","elevator","elite","else","embark","embody","embrace","emerge","emotion","employ","empower","empty","enable","enact","end","endless","endorse","enemy","energy","enforce","engage","engine","enhance","enjoy","enlist","enough","enrich","enroll","ensure","enter","entire","entry","envelope","episode","equal","equip","era","erase","erode","erosion","error","erupt","escape","essay","essence","estate","eternal","ethics","evidence","evil","evoke","evolve","exact","example","excess","exchange","excite","exclude","excuse","execute","exercise","exhaust","exhibit","exile","exist","exit","exotic","expand","expect","expire","explain","expose","express","extend","extra","eye","eyebrow","fabric","face","faculty","fade","faint","faith","fall","false","fame","family","famous","fan","fancy","fantasy","farm","fashion","fat","fatal","father","fatigue","fault","favorite","feature","february","federal","fee","feed","feel","female","fence","festival","fetch","fever","few","fiber","fiction","field","figure","file","film","filter","final","find","fine","finger","finish","fire","firm","first","fiscal","fish","fit","fitness","fix","flag","flame","flash","flat","flavor","flee","flight","flip","float","flock","floor","flower","fluid","flush","fly","foam","focus","fog","foil","fold","follow","food","foot","force","forest","forget","fork","fortune","forum","forward","fossil","foster","found","fox","fragile","frame","frequent","fresh","friend","fringe","frog","front","frost","frown","frozen","fruit","fuel","fun","funny","furnace","fury","future","gadget","gain","galaxy","gallery","game","gap","garage","garbage","garden","garlic","garment","gas","gasp","gate","gather","gauge","gaze","general","genius","genre","gentle","genuine","gesture","ghost","giant","gift","giggle","ginger","giraffe","girl","give","glad","glance","glare","glass","glide","glimpse","globe","gloom","glory","glove","glow","glue","goat","goddess","gold","good","goose","gorilla","gospel","gossip","govern","gown","grab","grace","grain","grant","grape","grass","gravity","great","green","grid","grief","grit","grocery","group","grow","grunt","guard","guess","guide","guilt","guitar","gun","gym","habit","hair","half","hammer","hamster","hand","happy","harbor","hard","harsh","harvest","hat","have","hawk","hazard","head","health","heart","heavy","hedgehog","height","hello","helmet","help","hen","hero","hidden","high","hill","hint","hip","hire","history","hobby","hockey","hold","hole","holiday","hollow","home","honey","hood","hope","horn","horror","horse","hospital","host","hotel","hour","hover","hub","huge","human","humble","humor","hundred","hungry","hunt","hurdle","hurry","hurt","husband","hybrid","ice","icon","idea","identify","idle","ignore","ill","illegal","illness","image","imitate","immense","immune","impact","impose","improve","impulse","inch","include","income","increase","index","indicate","indoor","industry","infant","inflict","inform","inhale","inherit","initial","inject","injury","inmate","inner","innocent","input","inquiry","insane","insect","inside","inspire","install","intact","interest","into","invest","invite","involve","iron","island","isolate","issue","item","ivory","jacket","jaguar","jar","jazz","jealous","jeans","jelly","jewel","job","join","joke","journey","joy","judge","juice","jump","jungle","junior","junk","just","kangaroo","keen","keep","ketchup","key","kick","kid","kidney","kind","kingdom","kiss","kit","kitchen","kite","kitten","kiwi","knee","knife","knock","know","lab","label","labor","ladder","lady","lake","lamp","language","laptop","large","later","latin","laugh","laundry","lava","law","lawn","lawsuit","layer","lazy","leader","leaf","learn","leave","lecture","left","leg","legal","legend","leisure","lemon","lend","length","lens","leopard","lesson","letter","level","liar","liberty","library","license","life","lift","light","like","limb","limit","link","lion","liquid","list","little","live","lizard","load","loan","lobster","local","lock","logic","lonely","long","loop","lottery","loud","lounge","love","loyal","lucky","luggage","lumber","lunar","lunch","luxury","lyrics","machine","mad","magic","magnet","maid","mail","main","major","make","mammal","man","manage","mandate","mango","mansion","manual","maple","marble","march","margin","marine","market","marriage","mask","mass","master","match","material","math","matrix","matter","maximum","maze","meadow","mean","measure","meat","mechanic","medal","media","melody","melt","member","memory","mention","menu","mercy","merge","merit","merry","mesh","message","metal","method","middle","midnight","milk","million","mimic","mind","minimum","minor","minute","miracle","mirror","misery","miss","mistake","mix","mixed","mixture","mobile","model","modify","mom","moment","monitor","monkey","monster","month","moon","moral","more","morning","mosquito","mother","motion","motor","mountain","mouse","move","movie","much","muffin","mule","multiply","muscle","museum","mushroom","music","must","mutual","myself","mystery","myth","naive","name","napkin","narrow","nasty","nation","nature","near","neck","need","negative","neglect","neither","nephew","nerve","nest","net","network","neutral","never","news","next","nice","night","noble","noise","nominee","noodle","normal","north","nose","notable","note","nothing","notice","novel","now","nuclear","number","nurse","nut","oak","obey","object","oblige","obscure","observe","obtain","obvious","occur","ocean","october","odor","off","offer","office","often","oil","okay","old","olive","olympic","omit","once","one","onion","online","only","open","opera","opinion","oppose","option","orange","orbit","orchard","order","ordinary","organ","orient","original","orphan","ostrich","other","outdoor","outer","output","outside","oval","oven","over","own","owner","oxygen","oyster","ozone","pact","paddle","page","pair","palace","palm","panda","panel","panic","panther","paper","parade","parent","park","parrot","party","pass","patch","path","patient","patrol","pattern","pause","pave","payment","peace","peanut","pear","peasant","pelican","pen","penalty","pencil","people","pepper","perfect","permit","person","pet","phone","photo","phrase","physical","piano","picnic","picture","piece","pig","pigeon","pill","pilot","pink","pioneer","pipe","pistol","pitch","pizza","place","planet","plastic","plate","play","please","pledge","pluck","plug","plunge","poem","poet","point","polar","pole","police","pond","pony","pool","popular","portion","position","possible","post","potato","pottery","poverty","powder","power","practice","praise","predict","prefer","prepare","present","pretty","prevent","price","pride","primary","print","priority","prison","private","prize","problem","process","produce","profit","program","project","promote","proof","property","prosper","protect","proud","provide","public","pudding","pull","pulp","pulse","pumpkin","punch","pupil","puppy","purchase","purity","purpose","purse","push","put","puzzle","pyramid","quality","quantum","quarter","question","quick","quit","quiz","quote","rabbit","raccoon","race","rack","radar","radio","rail","rain","raise","rally","ramp","ranch","random","range","rapid","rare","rate","rather","raven","raw","razor","ready","real","reason","rebel","rebuild","recall","receive","recipe","record","recycle","reduce","reflect","reform","refuse","region","regret","regular","reject","relax","release","relief","rely","remain","remember","remind","remove","render","renew","rent","reopen","repair","repeat","replace","report","require","rescue","resemble","resist","resource","response","result","retire","retreat","return","reunion","reveal","review","reward","rhythm","rib","ribbon","rice","rich","ride","ridge","rifle","right","rigid","ring","riot","ripple","risk","ritual","rival","river","road","roast","robot","robust","rocket","romance","roof","rookie","room","rose","rotate","rough","round","route","royal","rubber","rude","rug","rule","run","runway","rural","sad","saddle","sadness","safe","sail","salad","salmon","salon","salt","salute","same","sample","sand","satisfy","satoshi","sauce","sausage","save","say","scale","scan","scare","scatter","scene","scheme","school","science","scissors","scorpion","scout","scrap","screen","script","scrub","sea","search","season","seat","second","secret","section","security","seed","seek","segment","select","sell","seminar","senior","sense","sentence","series","service","session","settle","setup","seven","shadow","shaft","shallow","share","shed","shell","sheriff","shield","shift","shine","ship","shiver","shock","shoe","shoot","shop","short","shoulder","shove","shrimp","shrug","shuffle","shy","sibling","sick","side","siege","sight","sign","silent","silk","silly","silver","similar","simple","since","sing","siren","sister","situate","six","size","skate","sketch","ski","skill","skin","skirt","skull","slab","slam","sleep","slender","slice","slide","slight","slim","slogan","slot","slow","slush","small","smart","smile","smoke","smooth","snack","snake","snap","sniff","snow","soap","soccer","social","sock","soda","soft","solar","soldier","solid","solution","solve","someone","song","soon","sorry","sort","soul","sound","soup","source","south","space","spare","spatial","spawn","speak","special","speed","spell","spend","sphere","spice","spider","spike","spin","spirit","split","spoil","sponsor","spoon","sport","spot","spray","spread","spring","spy","square","squeeze","squirrel","stable","stadium","staff","stage","stairs","stamp","stand","start","state","stay","steak","steel","stem","step","stereo","stick","still","sting","stock","stomach","stone","stool","story","stove","strategy","street","strike","strong","struggle","student","stuff","stumble","style","subject","submit","subway","success","such","sudden","suffer","sugar","suggest","suit","summer","sun","sunny","sunset","super","supply","supreme","sure","surface","surge","surprise","surround","survey","suspect","sustain","swallow","swamp","swap","swarm","swear","sweet","swift","swim","swing","switch","sword","symbol","symptom","syrup","system","table","tackle","tag","tail","talent","talk","tank","tape","target","task","taste","tattoo","taxi","teach","team","tell","ten","tenant","tennis","tent","term","test","text","thank","that","theme","then","theory","there","they","thing","this","thought","three","thrive","throw","thumb","thunder","ticket","tide","tiger","tilt","timber","time","tiny","tip","tired","tissue","title","toast","tobacco","today","toddler","toe","together","toilet","token","tomato","tomorrow","tone","tongue","tonight","tool","tooth","top","topic","topple","torch","tornado","tortoise","toss","total","tourist","toward","tower","town","toy","track","trade","traffic","tragic","train","transfer","trap","trash","travel","tray","treat","tree","trend","trial","tribe","trick","trigger","trim","trip","trophy","trouble","truck","true","truly","trumpet","trust","truth","try","tube","tuition","tumble","tuna","tunnel","turkey","turn","turtle","twelve","twenty","twice","twin","twist","two","type","typical","ugly","umbrella","unable","unaware","uncle","uncover","under","undo","unfair","unfold","unhappy","uniform","unique","unit","universe","unknown","unlock","until","unusual","unveil","update","upgrade","uphold","upon","upper","upset","urban","urge","usage","use","used","useful","useless","usual","utility","vacant","vacuum","vague","valid","valley","valve","van","vanish","vapor","various","vast","vault","vehicle","velvet","vendor","venture","venue","verb","verify","version","very","vessel","veteran","viable","vibrant","vicious","victory","video","view","village","vintage","violin","virtual","virus","visa","visit","visual","vital","vivid","vocal","voice","void","volcano","volume","vote","voyage","wage","wagon","wait","walk","wall","walnut","want","warfare","warm","warrior","wash","wasp","waste","water","wave","way","wealth","weapon","wear","weasel","weather","web","wedding","weekend","weird","welcome","west","wet","whale","what","wheat","wheel","when","where","whip","whisper","wide","width","wife","wild","will","win","window","wine","wing","wink","winner","winter","wire","wisdom","wise","wish","witness","wolf","woman","wonder","wood","wool","word","work","world","worry","worth","wrap","wreck","wrestle","wrist","write","wrong","yard","year","yellow","you","young","youth","zebra","zero","zone","zoo"];
       const EMOJIS = ["😀","😂","😍","🥰","😎","🤔","😤","😭","🥺","😅","🙏","👍","👎","❤️","🔥","✅","⚡","🎉","👀","💀","🤝","🚀","💡","🔒","⚠️","📎","📁","🛡️","🌐","💬"];
 
       // ==================== CRYPTO ENGINE ====================
@@ -56,6 +56,23 @@
           const b = crypto.getRandomValues(new Uint8Array(16));
           const c = Array.from(b).map(b => b.toString(16).padStart(2, "0")).join("");
           return `GL-${c.slice(0, 8)}-${c.slice(8, 16)}-${c.slice(16, 24)}-${c.slice(24, 32)}`.toUpperCase();
+        },
+        // URL-safe base64 encode (replaces deprecated unescape/escape)
+        _base64Encode(str) {
+          try {
+            return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g,
+              (_, p1) => String.fromCharCode(parseInt(p1, 16))));
+          } catch (e) {
+            return btoa(str);
+          }
+        },
+        _base64Decode(str) {
+          try {
+            return decodeURIComponent(Array.from(atob(str)).map(c =>
+              '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+          } catch (e) {
+            return atob(str);
+          }
         },
         async deriveKeyFromSeed(words) {
           const enc = new TextEncoder();
@@ -103,10 +120,10 @@
             v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
             i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
           };
-          return { encoded: btoa(unescape(encodeURIComponent(JSON.stringify(bundle)))), pc, dc, bundle };
+          return { encoded: CryptoEngine._base64Encode(JSON.stringify(bundle)), pc, dc, bundle };
         },
         async processOffer(encodedOffer, identity) {
-          const bundle = JSON.parse(decodeURIComponent(escape(atob(encodedOffer))));
+          const bundle = JSON.parse(CryptoEngine._base64Decode(encodedOffer));
           const pc = new RTCPeerConnection({
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
@@ -128,19 +145,19 @@
             v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
             i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
           };
-          return { encoded: btoa(unescape(encodeURIComponent(JSON.stringify(answerBundle)))), peerInfo: bundle, pc };
+          return { encoded: CryptoEngine._base64Encode(JSON.stringify(answerBundle)), peerInfo: bundle, pc };
         },
         async processAnswer(encodedAnswer, pc) {
-          const bundle = JSON.parse(decodeURIComponent(escape(atob(encodedAnswer))));
+          const bundle = JSON.parse(CryptoEngine._base64Decode(encodedAnswer));
           await pc.setRemoteDescription({ type: bundle.t, sdp: bundle.s });
           for (const c of bundle.i) { try { await pc.addIceCandidate(c); } catch(e) {} }
           return bundle;
         },
         isManualSignal(str) {
-          if (!str || str.startsWith('GL-')) return false;
-          try { const d = JSON.parse(decodeURIComponent(escape(atob(str)))); return d.v === 2 && d.s && d.t; } catch { return false; }
-        },
-        decode(str) { try { return JSON.parse(decodeURIComponent(escape(atob(str)))); } catch { return null; } },
+            if (!str || str.startsWith('GL-')) return false;
+            try { const d = JSON.parse(CryptoEngine._base64Decode(str)); return d.v === 2 && d.s && d.t; } catch { return false; }
+          },
+          decode(str) { try { return JSON.parse(CryptoEngine._base64Decode(str)); } catch { return null; } },
       };
 
       // ==================== PEER CACHE (localStorage) ====================
@@ -401,10 +418,16 @@
 
       // ==================== MAIN APP ====================
       function GhostLink() {
-        // WebCrypto check
+        // WebCrypto check — must be on HTTPS or localhost
         if (!crypto?.subtle) {
           return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center', padding: 20 }}>
-            <div><div style={{ fontSize: 24, marginBottom: 8 }}>WebCrypto Required</div><div style={{ fontSize: 13, color: '#8a8a9a' }}>Your browser doesn't support the Web Crypto API. Use a modern browser with HTTPS.</div></div>
+            <div>
+              <div style={{ fontSize: 24, marginBottom: 8 }}>WebCrypto Required</div>
+              <div style={{ fontSize: 13, color: '#8a8a9a', maxWidth: 400, lineHeight: 1.6 }}>
+                This app requires Web Crypto API (HTTPS or localhost).<br/>
+                Try <span style={{ color: '#00ffa3' }}>http://localhost:8080</span> instead of 127.0.0.1.
+              </div>
+            </div>
           </div>;
         }
 
@@ -572,6 +595,7 @@
         const [playbackProgress, setPlaybackProgress] = useState({});
         const mediaRecorderRef = useRef(null);
         const recordingTimerRef = useRef(null);
+        const audioContextRef = useRef(null);
         const waveformCanvasRef = useRef(null);
 
         // Roadmap / Planned Features modal
@@ -658,7 +682,10 @@
         const probeSignaling = async (wsUrl) => {
           try {
             const httpUrl = wsUrl.replace('ws://', 'http://').replace('wss://', 'https://');
-            const resp = await fetch(httpUrl + '/health', { signal: AbortSignal.timeout(2000) });
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2000);
+            const resp = await fetch(httpUrl + '/health', { signal: controller.signal });
+            clearTimeout(timer);
             const data = await resp.json();
             const ok = data.status === 'ok';
             if (ok) setSignalingAvailable(true);
@@ -983,9 +1010,9 @@
         }, [identity]);
 
         // ==================== ACTIONS ====================
-        const initSetup = () => {
+        const initSetup = async () => {
           if (!displayName.trim()) return;
-          const seed = generateSeedPhrase();
+          const seed = await generateSeedPhrase();
           setPendingSeed(seed);
           setSeedPhrase(seed);
           setSetupStep("seed");
@@ -1205,14 +1232,23 @@
           a.click(); URL.revokeObjectURL(url);
         };
 
-        const generateSeedPhrase = () => {
-          const arr = new Uint32Array(12);
-          crypto.getRandomValues(arr);
-          return Array.from(arr).map(n => BIP39_WORDS[n % BIP39_WORDS.length]);
+        const generateSeedPhrase = async () => {
+          const entropy = crypto.getRandomValues(new Uint8Array(16));
+          const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', entropy));
+          const bits = [];
+          for (let i = 0; i < 16; i++) for (let b = 7; b >= 0; b--) bits.push((entropy[i] >> b) & 1);
+          for (let i = 0; i < 4; i++) bits.push((hash[i >> 3] >> (7 - (i & 7))) & 1);
+          const words = [];
+          for (let i = 0; i < 12; i++) {
+            let idx = 0;
+            for (let j = 0; j < 11; j++) idx = (idx << 1) | bits[i * 11 + j];
+            words.push(BIP39_WORDS[idx]);
+          }
+          return words;
         };
 
         const openRecovery = () => {
-          if (!seedPhrase) setSeedPhrase(generateSeedPhrase());
+          if (!seedPhrase) generateSeedPhrase().then(setSeedPhrase);
           setRecoveryStep("view");
           setVerifyInput("");
           setVerifyWords(["", "", ""]);
@@ -1677,6 +1713,14 @@
         // ---- Voice Messages with Waveform ----
         const startRecording = async () => {
           try {
+            if (!window.isSecureContext && window.location.hostname !== 'localhost') {
+              addToast('Microphone requires HTTPS or localhost', 'error');
+              return;
+            }
+            if (!navigator.mediaDevices) {
+              addToast('Microphone not available', 'error');
+              return;
+            }
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
             const recorder = new MediaRecorder(stream, { mimeType });
@@ -1684,7 +1728,9 @@
             const waveformData = [];
 
             // Setup audio analysis for waveform
+            if (audioContextRef.current) audioContextRef.current.close();
             const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            audioContextRef.current = audioContext;
             const source = audioContext.createMediaStreamSource(stream);
             const analyser = audioContext.createAnalyser();
             analyser.fftSize = 64;
@@ -1751,6 +1797,10 @@
         const stopRecording = () => {
           if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
             mediaRecorderRef.current.stop();
+          }
+          if (audioContextRef.current) {
+            audioContextRef.current.close().catch(() => {});
+            audioContextRef.current = null;
           }
         };
 
@@ -2169,7 +2219,7 @@
                     background: t.type === 'error' ? '#ff444422' : t.type === 'success' ? '#00ffa322' : '#ffffff11',
                     color: t.type === 'error' ? '#ff4466' : t.type === 'success' ? '#00ffa3' : '#c0c0c8',
                     border: `1px solid ${t.type === 'error' ? '#ff444433' : t.type === 'success' ? '#00ffa333' : '#ffffff15'}`,
-                    maxWidth: 320, backdropFilter: 'blur(12px)'
+                    maxWidth: 320, WebkitBackdropFilter: 'blur(12px)', backdropFilter: 'blur(12px)'
                   }}>
                     {t.message}
                   </div>
@@ -2309,7 +2359,7 @@
                         <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{fmtSize(f.size)} · {f.from} · {f.chunks} chunks</div>
                       </div>
                       {f.url ? (
-                        <a href={f.url} download={f.name} style={{ 
+                        <a href={f.url} download={f.name} onClick={() => setTimeout(() => URL.revokeObjectURL(f.url), 1000)} style={{ 
                           display: "flex", alignItems: "center", justifyContent: "center",
                           width: 32, height: 32, borderRadius: 6, flexShrink: 0,
                           background: `${th.accent}15`, color: th.accent,
@@ -2396,7 +2446,7 @@
               ) : (
                 <>
                   {/* ── CHAT HEADER ── */}
-                  <div style={{ padding: isMobile ? "10px 12px" : "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, backdropFilter: "blur(12px)", flexShrink: 0 }}>
+                  <div style={{ padding: isMobile ? "10px 12px" : "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, WebkitBackdropFilter: "blur(12px)", backdropFilter: "blur(12px)", flexShrink: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 11 }}>
                       {/* Mobile back button */}
                       {isMobile && (
@@ -2794,7 +2844,7 @@
 
             {/* ══════ BLOCK INFO MODAL ══════ */}
             {showBlockInfo && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowBlockInfo(null)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowBlockInfo(null)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 540, width: "100%", animation: "fadeInScale 0.2s ease", maxHeight: "85vh", overflowY: "auto" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2836,7 +2886,7 @@
 
             {/* ══════ CHAIN EXPLORER ══════ */}
             {showChainExplorer && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowChainExplorer(false); setActiveTab("chat"); }}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 580, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <div>
@@ -2876,7 +2926,7 @@
 
             {/* ══════ INVITE MODAL (Hybrid Signaling) ══════ */}
             {showInvite && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); }}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3101,7 +3151,7 @@
 
             {/* ══════ PEER INFO MODAL ══════ */}
             {showPeerInfo && activePeer && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowPeerInfo(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowPeerInfo(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 420, width: "100%", animation: "fadeInScale 0.2s ease", textAlign: "center" }}>
                   <div style={{ width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg, ${activePeer.color}, ${activePeer.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, fontWeight: 700, margin: "0 auto 14px", border: `2px solid ${th.accent}25` }}>{activePeer.avatar}</div>
                   <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{activePeer.name}</div>
@@ -3130,7 +3180,7 @@
 
             {/* ══════ SETTINGS MODAL ══════ */}
             {showSettings && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowSettings(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowSettings(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 500, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3328,7 +3378,7 @@
 
             {/* ══════ RECOVERY MODAL ══════ */}
             {showRecovery && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(16px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 200, padding: isMobile ? 0 : 16 }} onClick={() => setShowRecovery(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", WebkitBackdropFilter: "blur(16px)", backdropFilter: "blur(16px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 200, padding: isMobile ? 0 : 16 }} onClick={() => setShowRecovery(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: isMobile ? "20px 20px 0 0" : 20, padding: isMobile ? "20px 14px" : 28, maxWidth: 520, width: "100%", maxHeight: "92vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
 
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
@@ -3378,7 +3428,7 @@
                       </div>
                       <div style={{ display: "flex", gap: 8 }}>
                         <Btn small ghost onClick={() => navigator.clipboard?.writeText((seedPhrase || []).join(" "))} style={{ flex: 1 }}><I t="copy" s={13} /> Copy Phrase</Btn>
-                        <Btn small ghost onClick={() => { setSeedPhrase(generateSeedPhrase()); }} style={{ flex: 1 }}><I t="recover" s={13} /> Regenerate</Btn>
+                        <Btn small ghost onClick={() => { generateSeedPhrase().then(setSeedPhrase); }} style={{ flex: 1 }}><I t="recover" s={13} /> Regenerate</Btn>
                       </div>
                       <div style={{ marginTop: 16, fontSize: 10, color: "#3a3a4a", lineHeight: 1.6 }}>
                         <strong style={{ color: "#5a5a6a" }}>Layer 2 — Shamir's Secret Sharing:</strong> Your wrapped key is split into 5 fragments (3-of-5 threshold). Distribute fragments to trusted peers — no single peer can reconstruct your key.
@@ -3584,7 +3634,7 @@
 
             {/* ══════ CONTACT VERIFICATION CEREMONY MODAL ══════ */}
             {showVerificationCeremony && verificationPeer && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowVerificationCeremony(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", WebkitBackdropFilter: "blur(16px)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowVerificationCeremony(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: 20, padding: 28, maxWidth: 460, width: "100%", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3627,7 +3677,7 @@
 
             {/* ══════ GROUP CHAT CREATOR MODAL ══════ */}
             {showGroupCreator && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowGroupCreator(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowGroupCreator(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: 18, padding: 28, maxWidth: 480, width: "100%", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3675,7 +3725,7 @@
 
             {/* ══════ TURN SERVER CONFIG MODAL ══════ */}
             {showTurnConfig && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowTurnConfig(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setShowTurnConfig(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent3}18`, borderRadius: 18, padding: 28, maxWidth: 480, width: "100%", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
@@ -3727,7 +3777,7 @@
 
             {/* ══════ ROADMAP / PLANNED FEATURES MODAL ══════ */}
             {showRoadmap && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowRoadmap(false)}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", WebkitBackdropFilter: "blur(16px)", backdropFilter: "blur(16px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 16 }} onClick={() => setShowRoadmap(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#0d0d14", border: `1px solid ${th.accent}22`, borderRadius: 20, padding: 28, maxWidth: 560, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

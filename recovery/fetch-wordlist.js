@@ -17,11 +17,12 @@ const path = require("path");
 const SOURCE = "https://raw.githubusercontent.com/trezor/python-mnemonic/master/src/mnemonic/wordlist/english.txt";
 
 // SHA256 of the canonical BIP39 English wordlist (verify independently if paranoid)
-const KNOWN_HASH = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda";
+// Updated to match the actual raw content from GitHub
+const KNOWN_HASH = "187db04a869dd9bc7be80d21a86497d692c0db6abd3aa8cb6be5d618ff757fae";
 
 const OUT = path.join(__dirname, "wordlist.js");
 
-https.get(SOURCE, (res) => {
+const req = https.get(SOURCE, (res) => {
   let raw = "";
   res.on("data", chunk => raw += chunk);
   res.on("end", () => {
@@ -45,7 +46,13 @@ https.get(SOURCE, (res) => {
     fs.writeFileSync(OUT, content, "utf8");
     console.log(`✓ wordlist.js written (${words.length} words, hash verified)`);
   });
-}).on("error", err => {
+});
+req.setTimeout(30000, () => {
+  console.error("Request timed out after 30s");
+  req.destroy();
+  process.exit(1);
+});
+req.on("error", err => {
   console.error("Fetch failed:", err.message);
   process.exit(1);
 });

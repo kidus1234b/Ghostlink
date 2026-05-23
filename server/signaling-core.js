@@ -196,8 +196,8 @@ function createSignalingServer(options = {}) {
     } else {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -312,9 +312,14 @@ function createSignalingServer(options = {}) {
 
     ws.on('close', () => {
       clearTimeout(handshakeTimer);
-      if (peerId) {
-        log('info', 'peer disconnected', { peerId });
-        cleanupPeer(peerId);
+      try {
+        if (peerId) {
+          log('info', 'peer disconnected', { peerId });
+          cleanupPeer(peerId);
+        }
+      } catch (e) {
+        log('error', 'cleanupPeer error on close', { peerId, error: e.message });
+      } finally {
         wsPeer.delete(ws);
       }
     });
