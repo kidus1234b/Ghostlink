@@ -462,26 +462,6 @@ Ghostlink/
 
 -----
 
-## Development
-
-Built entirely from **Termux on Android** using Claude Code with the Anthropic API. No PC was used.
-
-```bash
-# Clone
-git clone https://github.com/kidus1234b/Ghostlink.git
-cd Ghostlink
-
-# Edit
-nano index.html
-
-# Test
-python3 -m http.server 8000
-
-# Push
-git add . && git commit -m "your message" && git push
-```
-
------
 
 ## License
 
