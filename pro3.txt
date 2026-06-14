@@ -1,0 +1,418 @@
+GhostLink now supports:
+
+* encrypted WebRTC P2P
+* voice messages
+* secure markdown
+* notifications
+* blockchain-based message history
+
+Next phase:
+Build a production-grade offline Pro licensing and encrypted team workspace system.
+
+CRITICAL REQUIREMENTS:
+
+* Zero server dependency
+* Fully offline validation after activation
+* No external SDKs
+* No external payment systems
+* No third-party libraries
+* Preserve zero-trust principles
+
+The entire implementation must remain compatible with:
+
+* single-file React 18 + Babel architecture
+* existing crypto engine
+* existing blockchain chain verification
+* existing WebRTC networking
+
+═══════════════════════════════════════
+PHASE 1 — LICENSE SYSTEM ARCHITECTURE
+═══════════════════════════════════════
+
+Build a secure offline-capable license validation engine.
+
+Create:
+
+* LicenseManager
+* LicenseValidator
+* DeviceFingerprintManager
+* FeatureGateManager
+* WorkspaceManager
+
+Requirements:
+
+* async-safe
+* modular
+* isolated from UI rendering
+* memory-safe
+* tamper-aware
+
+═══════════════════════════════════════
+LICENSE FORMAT
+═══════════════════════════════════════
+
+License format:
+GHOST-XXXX-XXXX-XXXX-XXXX-XXXX
+
+Internally encoded payload:
+{
+version,
+tier,
+expiresAt,
+issuedAt,
+salt,
+nonce,
+signature
+}
+
+Encoding:
+
+* compact binary payload
+* base32 output
+* checksum support
+
+Validation:
+
+1. parse format
+2. decode payload
+3. verify checksum
+4. verify HMAC-SHA256 signature
+5. verify expiry
+6. verify device binding
+7. return normalized license object
+
+Use:
+crypto.subtle.sign(
+"HMAC",
+key,
+data
+)
+
+═══════════════════════════════════════
+IMPORTANT SECURITY NOTE
+═══════════════════════════════════════
+
+The HMAC secret WILL exist client-side.
+
+Assume attackers can reverse engineer it eventually.
+
+Therefore:
+
+* add layered obfuscation
+* split secret fragments
+* runtime reconstruction
+* anti-trivial-string-search measures
+
+BUT:
+Do NOT pretend this is perfectly secure.
+Document clearly:
+offline licensing is deterrence, not absolute protection.
+
+Implement integrity friction, not fake invulnerability.
+
+═══════════════════════════════════════
+DEVICE BINDING
+═══════════════════════════════════════
+
+Bind licenses to device fingerprint:
+SHA256(pubKeyHex)
+
+Requirements:
+
+* deterministic
+* privacy-preserving
+* no hardware fingerprinting
+* no browser fingerprint abuse
+
+Storage:
+localStorage.gl_license
+
+Structure:
+{
+key,
+tier,
+activatedAt,
+expiresAt,
+fingerprint,
+signatureVersion
+}
+
+Add:
+
+* corruption recovery
+* malformed license handling
+* expired license fallback
+* grace period support optional
+
+═══════════════════════════════════════
+PHASE 2 — FEATURE GATING
+═══════════════════════════════════════
+
+Implement centralized feature gating.
+
+Do NOT scatter:
+if (isPro)
+
+throughout the app.
+
+Instead create:
+FeatureGateManager.can(featureName)
+
+Features:
+
+* unlimited_peers
+* large_file_transfer
+* full_export
+* team_workspaces
+* pro_themes
+
+Free tier restrictions:
+
+* max 5 peers
+* max 25MB transfers
+* limited export depth
+
+Requirements:
+
+* all limits enforced centrally
+* impossible to bypass accidentally
+* UI reflects locked state cleanly
+
+═══════════════════════════════════════
+UPGRADE EXPERIENCE
+═══════════════════════════════════════
+
+When a free user hits a limit:
+show GhostLink Pro modal.
+
+Requirements:
+
+* elegant
+* privacy-respecting
+* non-aggressive
+* no dark patterns
+
+Include:
+
+* triggered limit explanation
+* Pro features
+* pricing tiers
+* activation flow
+* renewal flow
+
+Activation:
+mailto:ghostlink@proton.me
+
+Pre-fill:
+
+* device fingerprint
+* current version
+* requested plan
+
+═══════════════════════════════════════
+PHASE 3 — HIDDEN DEV LICENSE CONSOLE
+═══════════════════════════════════════
+
+Add hidden generator console:
+Ctrl + Shift + G pressed 3 times within 2 seconds.
+
+Requirements:
+
+* invisible in production UI
+* no discoverable menu
+* no accidental trigger
+* isolated state
+
+Generator fields:
+
+* tier
+* duration
+* lifetime toggle
+
+Output:
+signed valid license key.
+
+Add:
+
+* key preview
+* expiry preview
+* checksum validation
+* copy button
+
+═══════════════════════════════════════
+PHASE 4 — TEAM WORKSPACES
+═══════════════════════════════════════
+
+Build encrypted collaborative workspaces.
+
+Workspace structure:
+{
+id,
+name,
+chain,
+members,
+encryptedVault,
+workspaceKey,
+createdAt
+}
+
+Each workspace:
+
+* has its own blockchain chain
+* has independent encryption context
+* has separate member permissions
+
+═══════════════════════════════════════
+WORKSPACE KEY SYSTEM
+═══════════════════════════════════════
+
+On workspace creation:
+
+* generate random 256-bit AES workspace key
+* encrypt workspace key individually per member
+* NEVER transmit raw workspace key
+
+Invite structure:
+{
+workspaceId,
+workspaceName,
+encryptedWorkspaceKey,
+inviter,
+signature
+}
+
+Encryption:
+recipient public key only.
+
+═══════════════════════════════════════
+WORKSPACE FEATURES
+═══════════════════════════════════════
+
+Implement:
+
+* shared message chain
+* shared encrypted vault
+* member presence
+* workspace file transfer
+* member roles
+
+Roles:
+
+* owner
+* admin
+* member
+
+Admins can:
+
+* remove members
+* rotate workspace key
+* revoke compromised users
+
+═══════════════════════════════════════
+KEY ROTATION
+═══════════════════════════════════════
+
+When member removed:
+
+* rotate workspace key
+* redistribute new encrypted keys
+* invalidate old access
+
+Requirements:
+
+* forward secrecy preservation
+* minimal disruption
+* async-safe updates
+
+═══════════════════════════════════════
+PHASE 5 — PRO THEMES
+═══════════════════════════════════════
+
+Add gated themes:
+
+* Stealth
+* Carbon
+
+Requirements:
+
+* locked state visible
+* lock icon overlay
+* upgrade prompt on click
+
+Do NOT:
+
+* partially apply locked themes
+* leak premium assets unintentionally
+
+═══════════════════════════════════════
+PHASE 6 — DATA EXPORT
+═══════════════════════════════════════
+
+Free:
+last 500 chain blocks.
+
+Pro:
+full export.
+
+Export format:
+encrypted JSON archive.
+
+Include:
+
+* integrity hashes
+* metadata versioning
+* workspace chains
+
+═══════════════════════════════════════
+PHASE 7 — PERFORMANCE & HARDENING
+═══════════════════════════════════════
+
+Prevent:
+
+* license parsing crashes
+* malformed key exploits
+* storage corruption
+* replayed workspace invites
+* stale revoked workspace keys
+* memory leaks
+
+Optimize:
+
+* workspace sync
+* member lookup
+* feature gating checks
+* theme switching
+
+═══════════════════════════════════════
+SELF VALIDATION
+═══════════════════════════════════════
+
+Verify:
+
+1. Pro license activates correctly
+2. Expired license downgrades safely
+3. Device mismatch rejects activation
+4. Free peer limits trigger upgrade flow
+5. Workspace invite decrypts correctly
+6. Removed member loses workspace access
+7. Pro themes unlock properly
+8. chain.verify() still passes
+9. Workspace chain.verify() passes
+10. No uncaught Promise rejections
+
+═══════════════════════════════════════
+IMPORTANT
+═══════════════════════════════════════
+
+Do NOT:
+
+* weaken crypto
+* trust localStorage blindly
+* trust client input
+* expose raw workspace keys
+* add server dependencies
+* add external libraries
+
+Code quality target:
+secure production-grade encrypted collaboration software.
+

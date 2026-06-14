@@ -120,7 +120,7 @@ class FileTransfer extends EventEmitter {
       size: file.size || buffer.byteLength,
       type: file.type || 'application/octet-stream',
       totalChunks,
-      hash: await this._crypto.sha256(new TextEncoder().encode(file.name + file.size)),
+      hash: await this._crypto.sha256(file.name + String(file.size)),
     };
 
     const state = new TransferState(id, 'send', peerId, meta);
@@ -269,4 +269,8 @@ class FileTransfer extends EventEmitter {
   }
 }
 
-window.FileTransfer = FileTransfer;
+if (typeof globalThis !== 'undefined') {
+  globalThis.FileTransfer = FileTransfer;
+  globalThis.GhostLinkP2P = globalThis.GhostLinkP2P || {};
+  globalThis.GhostLinkP2P.FileTransfer = FileTransfer;
+}

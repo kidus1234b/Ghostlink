@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>License System Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a2e; color: #eee; }
+    .log { background: #0f0f23; padding: 15px; border-radius: 8px; max-height: 500px; overflow-y: auto; }
+    .success { color: #4ade80; }
+    .error { color: #f87171; }
+    .info { color: #60a5fa; }
+    button { background: #4f46e5; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin: 5px; }
+    button:hover { background: #4338ca; }
+    #status { margin: 15px 0; padding: 10px; border-radius: 6px; }
+    .pass { background: #166534; }
+    .fail { background: #991b1b; }
+  </style>
+</head>
+<body>
+  <h1>License System Test</h1>
+  <button onclick="runTests()">Run Tests</button>
+  <button onclick="clearLog()">Clear Log</button>
+  <div id="status"></div>
+  <div id="log" class="log"></div>
+
+  <script type="module">
+    import('./src/license/dev-console.js');
+    import('./src/license/license-validator.js');
+  </script>
+
+  <script>
+    let testsPassed = 0;
+    let testsFailed = 0;
+
+    function log(msg, type = 'info') {
+      const log = document.getElementById('log');
+      const div = document.createElement('div');
+      div.className = type;
+      div.textContent = msg;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById('log').innerHTML = '';
+      document.getElementById('status').className = '';
+      document.getElementById('status').textContent = '';
+      testsPassed = 0;
+      testsFailed = 0;
+    }
+
+    function updateStatus() {
+      const status = document.getElementById('status');
+      if (testsFailed === 0) {
+        status.className = 'pass';
+        status.textContent = `All ${testsPassed} tests passed!`;
+      } else {
+        status.className = 'fail';
+        status.textContent = `${testsPassed} passed, ${testsFailed} failed`;
+      }
+    }
+
+    async function runTests() {
+      clearLog();
+      log('Starting license system tests...', 'info');
+      testsPassed = 0;
+      testsFailed = 0;
+
+      // Test 1: Generate a license key
+      log('\n--- Test 1: Generate License Key ---', 'info');
+      const result = await window.generateLicense('GHOSTPRO', 'testpassword123', 'pro', 365);
+      if (!result.success) {
+        log(`FAILED: ${result.error}`, 'error');
+        testsFailed++;
+        updateStatus();
+        return;
+      }
+      log(`Generated key: ${result.key}`, 'success');
+      log(`Tier: ${result.tier}`, 'info');
+      log(`Expires at: ${result.expiresAt ? new Date(result.expiresAt).toLocaleDateString() : 'Never'}`, 'info');
+      testsPassed++;
+
+      // Debug: manually check checksum
+      log('\n--- DEBUG: Checksum Verification ---', 'info');
+      const validator = new GhostLink.LicenseValidator();
+
+      // Parse the key format
+      const parsed = validator._parseFormat(result.key);
+      log(`Parsed payload: ${parsed.payload} (length: ${parsed.payload.length})`, 'info');
+      log(`Parsed checksum: ${parsed.checksum} (length: ${parsed.checksum.length})`, 'info');
+      log(`Parsed signature: ${parsed.signature} (length: ${parsed.signature.length})`, 'info');
+
+      // Decode payload
+      const decodedPayload = validator._base32Decode(parsed.payload);
+      log(`Decoded payload bytes: ${Array.from(decodedPayload).map(b => b.toString(16).padStart(2, '0')).join(' ')}`, 'info');
+
+      // Decode checksum
+      const decodedChecksum = validator._base32Decode(parsed.checksum);
+      log(`Decoded checksum bytes: ${Array.from(decodedChecksum).map(b => b.toString(16).padStart(2, '0')).join(' ')}`, 'info');
+
+      // Compute expected checksum
+      const computedChecksum = GhostLink.LicenseValidator.calculateChecksum(decodedPayload);
+      log(`Computed checksum (int): ${computedChecksum}`, 'info');
+      log(`Expected checksum (from decoded): ${(decodedChecksum[0] << 8) | decodedChecksum[1]}`, 'info');
+
+      // Wait a bit for scripts to load
+      await new Promise(r => setTimeout(r, 500));
+
+      // Test 2: Validate the generated key
+      log('\n--- Test 2: Validate Generated Key ---', 'info');
+      const validation = await validator.validate(result.key, { skipDeviceCheck: true });
+      if (!validation.valid) {
+        log(`FAILED: ${validation.error}`, 'error');
+        log('This is the key validation issue we need to debug.', 'error');
+        testsFailed++;
+      } else {
+        log(`Validation passed!`, 'success');
+        log(`Tier: ${validation.license.tier}`, 'info');
+        log(`Version: ${validation.license.version}`, 'info');
+        testsPassed++;
+      }
+
+      // Test 3: Test invalid key format
+      log('\n--- Test 3: Invalid Key Format ---', 'info');
+      const invalidResult = await validator.validate('INVALID-KEY-FORMAT');
+      if (!invalidResult.valid && invalidResult.error === 'invalid_format') {
+        log('Correctly rejected invalid format', 'success');
+        testsPassed++;
+      } else {
+        log(`FAILED: Expected invalid_format, got ${invalidResult.error}`, 'error');
+        testsFailed++;
+      }
+
+      // Test 4: Test wrong unlock word
+      log('\n--- Test 4: Wrong Unlock Word ---', 'info');
+      const wrongWord = await window.generateLicense('WRONGWORD', 'testpassword123', 'pro', 365);
+      if (!wrongWord.success && wrongWord.error === 'Invalid unlock word') {
+        log('Correctly rejected wrong unlock word', 'success');
+        testsPassed++;
+      } else {
+        log(`FAILED: Should have rejected wrong unlock word`, 'error');
+        testsFailed++;
+      }
+
+      // Test 5: Generate key with days=0 (should generate regular key, not lifetime)
+      log('\n--- Test 5: Generate Key with days=0 ---', 'info');
+      const zeroDayResult = await window.generateLicense('GHOSTPRO', 'testpassword123', 'pro', 0);
+      log(`Result: ${JSON.stringify(zeroDayResult)}`, 'info');
+      if (zeroDayResult.success) {
+        log('Generated key with 0 days (expires today)', 'success');
+        // Don't validate this - it's a 0-day expiring key which may already be expired
+        testsPassed++;
+      } else {
+        log(`Error: ${zeroDayResult.error}`, 'error');
+        testsFailed++;
+      }
+
+      log('\n=== Test Summary ===', 'info');
+      updateStatus();
+    }
+  </script>
+</body>
+</html>

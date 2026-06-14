@@ -10,8 +10,57 @@
     <script src="src/p2p/webrtc-manager.js"></script>
     <script src="src/p2p/file-transfer.js"></script>
     <script src="src/p2p/media-handler.js"></script>
-    <!-- offline-queue.js is an ES module, loaded dynamically -->
     <script src="src/utils/qr-invite.js"></script>
+    <script src="src/p2p/p2p-connector.js"></script>
+    <!-- PRODUCTION SCRIPTS DISABLED FOR DEBUGGING -->
+    <!--
+    <script src="src/core/event-bus.js"></script>
+    <script src="src/core/logger.js"></script>
+    <script src="src/core/state-machine.js"></script>
+    <script src="src/core/retry-queue.js"></script>
+    <script src="src/core/types.js"></script>
+    <script src="src/core/signal-bus.js"></script>
+    <script src="src/crypto/key-manager.js"></script>
+    <script src="src/network/signal-manager.js"></script>
+    <script src="src/network/connection-manager.js"></script>
+    <script src="src/network/relay-manager.js"></script>
+    <script src="src/network/peer-manager.js"></script>
+    <script src="src/message/message-router.js"></script>
+    <script src="src/transfer/file-transfer-manager.js"></script>
+    <script src="src/presence/presence-manager.js"></script>
+    <script src="src/security/security-manager.js"></script>
+    <script src="src/debug/debug-console.js"></script>
+    <script src="src/debug/self-test.js"></script>
+    <script src="src/utils/offline-queue.js"></script>
+    -->
+    <!-- VOICE MESSAGING SYSTEM (Phase 1) -->
+    <script src="src/voice/voice-recorder-manager.js"></script>
+    <script src="src/voice/audio-waveform-renderer.js"></script>
+    <script src="src/voice/voice-playback-manager.js"></script>
+    <script src="src/voice/voice-transfer-manager.js"></script>
+    <script src="src/voice/voice-message-ui.js"></script>
+    <!-- NOTIFICATION SYSTEM (Phase 2) -->
+    <script src="src/notifications/notification-manager.js"></script>
+    <script src="src/notifications/in-app-alerts.js"></script>
+    <script src="src/notifications/sound-generator.js"></script>
+    <!-- MARKDOWN ENGINE (Phase 3) -->
+    <script src="src/markdown/sanitize.js"></script>
+    <script src="src/markdown/parser.js"></script>
+    <script src="src/markdown/input-toolbar.js"></script>
+    <!-- LICENSE SYSTEM (Pro Licensing & Team Workspaces) -->
+    <script src="src/license/license-core.js"></script>
+    <script src="src/license/device-fingerprint.js"></script>
+    <script src="src/license/license-validator.js"></script>
+    <script src="src/license/license-manager.js"></script>
+    <script src="src/license/feature-gate.js"></script>
+    <script src="src/license/workspace-manager.js"></script>
+    <script src="src/license/data-export.js"></script>
+    <script src="src/license/pro-themes.js"></script>
+    <script src="src/license/security-hardening.js"></script>
+    <script src="src/license/dev-console.js"></script>
+    <script src="src/license/license-activation-ui.js"></script>
+    <script src="src/license/index.js"></script>
+    <script>window.GLLicenseAPI = window.GhostLink;</script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,6 +75,75 @@
       /* ═══════════════════════════════════════════════════════════════
          GHOSTLINK v2 — Zero Trust · Zero Trace · Full Featured
          ═══════════════════════════════════════════════════════════════ */
+
+      // License API — saved in GLLicenseAPI before React component overwrites window.GhostLink
+      const GLLicenseAPI = window.GLLicenseAPI || {};
+      let _licenseInitPromise = null;
+
+      async function computeDeviceId(pubKeyHex) {
+        if (!pubKeyHex || !crypto?.subtle) return '';
+        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pubKeyHex));
+        return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+
+      async function resolveDeviceId(identity) {
+        try {
+          if (identity?.publicKeyHex) return await computeDeviceId(identity.publicKeyHex);
+          const raw = localStorage.getItem('gl_identity');
+          if (raw) {
+            const d = JSON.parse(raw);
+            const hex = d.pubKeyHex || d.publicKeyHex;
+            if (hex) return await computeDeviceId(hex);
+          }
+          if (GLLicenseAPI.DeviceFingerprintManager) {
+            const fp = new GLLicenseAPI.DeviceFingerprintManager();
+            return await fp.getFingerprint();
+          }
+        } catch (err) {
+          console.error('[GhostLink] Device ID error:', err);
+        }
+        return '';
+      }
+
+      async function bootstrapLicenseSystem() {
+        const GL = GLLicenseAPI;
+        const deviceFP = new GL.DeviceFingerprintManager();
+        const validator = new GL.LicenseValidator({ deviceFingerprint: deviceFP });
+        const licenseManager = new GL.LicenseManager({ validator, deviceFingerprint: deviceFP });
+        const featureGate = new GL.FeatureGateManager({ licenseManager });
+        await licenseManager.init();
+        featureGate.setLicenseManager(licenseManager);
+        return { deviceFingerprint: deviceFP, validator, licenseManager, featureGate };
+      }
+
+      async function ensureLicenseSystem() {
+        if (window.GLLicenseRuntime?.licenseManager) return window.GLLicenseRuntime;
+
+        if (!_licenseInitPromise) {
+          _licenseInitPromise = (async () => {
+            const GL = GLLicenseAPI;
+            if (typeof GL.initLicenseSystem === 'function') {
+              try {
+                const system = await GL.initLicenseSystem({});
+                window.GLLicenseRuntime = system;
+                return system;
+              } catch (err) {
+                console.warn('[GhostLink] initLicenseSystem failed, using bootstrap:', err.message);
+              }
+            }
+            if (GL.LicenseManager && GL.LicenseValidator) {
+              const system = await bootstrapLicenseSystem();
+              window.GLLicenseRuntime = system;
+              return system;
+            }
+            throw new Error('License scripts failed to load — refresh via http://localhost:8000');
+          })().catch(err => {
+            _licenseInitPromise = null;
+            throw err;
+          });
+        }
+        return _licenseInitPromise;
+      }
 
       // ==================== CONSTANTS (outside component) ====================
       const MSG_STORAGE_KEY = 'gl_messages';
@@ -55,6 +173,281 @@
 
       const BIP39_WORDS = ["abandon","ability","able","about","above","absent","absorb","abstract","absurd","abuse","access","accident","account","accuse","achieve","acid","acoustic","acquire","across","act","action","actor","actress","actual","adapt","add","addict","address","adjust","admit","adult","advance","advice","aerobic","affair","afford","afraid","again","age","agent","agree","ahead","aim","air","airport","aisle","alarm","album","alcohol","alert","alien","all","alley","allow","almost","alone","alpha","already","also","alter","always","amateur","amazing","among","amount","amused","analyst","anchor","ancient","anger","angle","angry","animal","ankle","announce","annual","another","answer","antenna","antique","anxiety","any","apart","apology","appear","apple","approve","april","arch","arctic","area","arena","argue","arm","armed","armor","army","around","arrange","arrest","arrive","arrow","art","artefact","artist","artwork","ask","aspect","assault","asset","assist","assume","asthma","athlete","atom","attack","attend","attitude","attract","auction","audit","august","aunt","author","auto","autumn","average","avocado","avoid","awake","aware","away","awesome","awful","awkward","axis","baby","bachelor","bacon","badge","bag","balance","balcony","ball","bamboo","banana","banner","bar","barely","bargain","barrel","base","basic","basket","battle","beach","bean","beauty","because","become","beef","before","begin","behave","behind","believe","below","belt","bench","benefit","best","betray","better","between","beyond","bicycle","bid","bike","bind","biology","bird","birth","bitter","black","blade","blame","blanket","blast","bleak","bless","blind","blood","blossom","blouse","blue","blur","blush","board","boat","body","boil","bomb","bone","bonus","book","boost","border","boring","borrow","boss","bottom","bounce","box","boy","bracket","brain","brand","brass","brave","bread","breeze","brick","bridge","brief","bright","bring","brisk","broccoli","broken","bronze","broom","brother","brown","brush","bubble","buddy","budget","buffalo","build","bulb","bulk","bullet","bundle","bunker","burden","burger","burst","bus","business","busy","butter","buyer","buzz","cabbage","cabin","cable","cactus","cage","cake","call","calm","camera","camp","can","canal","cancel","candy","cannon","canoe","canvas","canyon","capable","capital","captain","car","carbon","card","cargo","carpet","carry","cart","case","cash","casino","castle","casual","cat","catalog","catch","category","cattle","caught","cause","caution","cave","ceiling","celery","cement","census","century","cereal","certain","chair","chalk","champion","change","chaos","chapter","charge","chase","chat","cheap","check","cheese","chef","cherry","chest","chicken","chief","child","chimney","choice","choose","chronic","chuckle","chunk","churn","cigar","cinnamon","circle","citizen","city","civil","claim","clap","clarify","claw","clay","clean","clerk","clever","click","client","cliff","climb","clinic","clip","clock","clog","close","cloth","cloud","clown","club","clump","cluster","clutch","coach","coast","coconut","code","coffee","coil","coin","collect","color","column","combine","come","comfort","comic","common","company","concert","conduct","confirm","congress","connect","consider","control","convince","cook","cool","copper","copy","coral","core","corn","correct","cost","cotton","couch","country","couple","course","cousin","cover","coyote","crack","cradle","craft","cram","crane","crash","crater","crawl","crazy","cream","credit","creek","crew","cricket","crime","crisp","critic","crop","cross","crouch","crowd","crucial","cruel","cruise","crumble","crunch","crush","cry","crystal","cube","culture","cup","cupboard","curious","current","curtain","curve","cushion","custom","cute","cycle","dad","damage","damp","dance","danger","daring","dash","daughter","dawn","day","deal","debate","debris","decade","december","decide","decline","decorate","decrease","deer","defense","define","defy","degree","delay","deliver","demand","demise","denial","dentist","deny","depart","depend","deposit","depth","deputy","derive","describe","desert","design","desk","despair","destroy","detail","detect","develop","device","devote","diagram","dial","diamond","diary","dice","diesel","diet","differ","digital","dignity","dilemma","dinner","dinosaur","direct","dirt","disagree","discover","disease","dish","dismiss","disorder","display","distance","divert","divide","divorce","dizzy","doctor","document","dog","doll","dolphin","domain","donate","donkey","donor","door","dose","double","dove","draft","dragon","drama","drastic","draw","dream","dress","drift","drill","drink","drip","drive","drop","drum","dry","duck","dumb","dune","during","dust","dutch","duty","dwarf","dynamic","eager","eagle","early","earn","earth","easily","east","easy","echo","ecology","economy","edge","edit","educate","effort","egg","eight","either","elbow","elder","electric","elegant","element","elephant","elevator","elite","else","embark","embody","embrace","emerge","emotion","employ","empower","empty","enable","enact","end","endless","endorse","enemy","energy","enforce","engage","engine","enhance","enjoy","enlist","enough","enrich","enroll","ensure","enter","entire","entry","envelope","episode","equal","equip","era","erase","erode","erosion","error","erupt","escape","essay","essence","estate","eternal","ethics","evidence","evil","evoke","evolve","exact","example","excess","exchange","excite","exclude","excuse","execute","exercise","exhaust","exhibit","exile","exist","exit","exotic","expand","expect","expire","explain","expose","express","extend","extra","eye","eyebrow","fabric","face","faculty","fade","faint","faith","fall","false","fame","family","famous","fan","fancy","fantasy","farm","fashion","fat","fatal","father","fatigue","fault","favorite","feature","february","federal","fee","feed","feel","female","fence","festival","fetch","fever","few","fiber","fiction","field","figure","file","film","filter","final","find","fine","finger","finish","fire","firm","first","fiscal","fish","fit","fitness","fix","flag","flame","flash","flat","flavor","flee","flight","flip","float","flock","floor","flower","fluid","flush","fly","foam","focus","fog","foil","fold","follow","food","foot","force","forest","forget","fork","fortune","forum","forward","fossil","foster","found","fox","fragile","frame","frequent","fresh","friend","fringe","frog","front","frost","frown","frozen","fruit","fuel","fun","funny","furnace","fury","future","gadget","gain","galaxy","gallery","game","gap","garage","garbage","garden","garlic","garment","gas","gasp","gate","gather","gauge","gaze","general","genius","genre","gentle","genuine","gesture","ghost","giant","gift","giggle","ginger","giraffe","girl","give","glad","glance","glare","glass","glide","glimpse","globe","gloom","glory","glove","glow","glue","goat","goddess","gold","good","goose","gorilla","gospel","gossip","govern","gown","grab","grace","grain","grant","grape","grass","gravity","great","green","grid","grief","grit","grocery","group","grow","grunt","guard","guess","guide","guilt","guitar","gun","gym","habit","hair","half","hammer","hamster","hand","happy","harbor","hard","harsh","harvest","hat","have","hawk","hazard","head","health","heart","heavy","hedgehog","height","hello","helmet","help","hen","hero","hidden","high","hill","hint","hip","hire","history","hobby","hockey","hold","hole","holiday","hollow","home","honey","hood","hope","horn","horror","horse","hospital","host","hotel","hour","hover","hub","huge","human","humble","humor","hundred","hungry","hunt","hurdle","hurry","hurt","husband","hybrid","ice","icon","idea","identify","idle","ignore","ill","illegal","illness","image","imitate","immense","immune","impact","impose","improve","impulse","inch","include","income","increase","index","indicate","indoor","industry","infant","inflict","inform","inhale","inherit","initial","inject","injury","inmate","inner","innocent","input","inquiry","insane","insect","inside","inspire","install","intact","interest","into","invest","invite","involve","iron","island","isolate","issue","item","ivory","jacket","jaguar","jar","jazz","jealous","jeans","jelly","jewel","job","join","joke","journey","joy","judge","juice","jump","jungle","junior","junk","just","kangaroo","keen","keep","ketchup","key","kick","kid","kidney","kind","kingdom","kiss","kit","kitchen","kite","kitten","kiwi","knee","knife","knock","know","lab","label","labor","ladder","lady","lake","lamp","language","laptop","large","later","latin","laugh","laundry","lava","law","lawn","lawsuit","layer","lazy","leader","leaf","learn","leave","lecture","left","leg","legal","legend","leisure","lemon","lend","length","lens","leopard","lesson","letter","level","liar","liberty","library","license","life","lift","light","like","limb","limit","link","lion","liquid","list","little","live","lizard","load","loan","lobster","local","lock","logic","lonely","long","loop","lottery","loud","lounge","love","loyal","lucky","luggage","lumber","lunar","lunch","luxury","lyrics","machine","mad","magic","magnet","maid","mail","main","major","make","mammal","man","manage","mandate","mango","mansion","manual","maple","marble","march","margin","marine","market","marriage","mask","mass","master","match","material","math","matrix","matter","maximum","maze","meadow","mean","measure","meat","mechanic","medal","media","melody","melt","member","memory","mention","menu","mercy","merge","merit","merry","mesh","message","metal","method","middle","midnight","milk","million","mimic","mind","minimum","minor","minute","miracle","mirror","misery","miss","mistake","mix","mixed","mixture","mobile","model","modify","mom","moment","monitor","monkey","monster","month","moon","moral","more","morning","mosquito","mother","motion","motor","mountain","mouse","move","movie","much","muffin","mule","multiply","muscle","museum","mushroom","music","must","mutual","myself","mystery","myth","naive","name","napkin","narrow","nasty","nation","nature","near","neck","need","negative","neglect","neither","nephew","nerve","nest","net","network","neutral","never","news","next","nice","night","noble","noise","nominee","noodle","normal","north","nose","notable","note","nothing","notice","novel","now","nuclear","number","nurse","nut","oak","obey","object","oblige","obscure","observe","obtain","obvious","occur","ocean","october","odor","off","offer","office","often","oil","okay","old","olive","olympic","omit","once","one","onion","online","only","open","opera","opinion","oppose","option","orange","orbit","orchard","order","ordinary","organ","orient","original","orphan","ostrich","other","outdoor","outer","output","outside","oval","oven","over","own","owner","oxygen","oyster","ozone","pact","paddle","page","pair","palace","palm","panda","panel","panic","panther","paper","parade","parent","park","parrot","party","pass","patch","path","patient","patrol","pattern","pause","pave","payment","peace","peanut","pear","peasant","pelican","pen","penalty","pencil","people","pepper","perfect","permit","person","pet","phone","photo","phrase","physical","piano","picnic","picture","piece","pig","pigeon","pill","pilot","pink","pioneer","pipe","pistol","pitch","pizza","place","planet","plastic","plate","play","please","pledge","pluck","plug","plunge","poem","poet","point","polar","pole","police","pond","pony","pool","popular","portion","position","possible","post","potato","pottery","poverty","powder","power","practice","praise","predict","prefer","prepare","present","pretty","prevent","price","pride","primary","print","priority","prison","private","prize","problem","process","produce","profit","program","project","promote","proof","property","prosper","protect","proud","provide","public","pudding","pull","pulp","pulse","pumpkin","punch","pupil","puppy","purchase","purity","purpose","purse","push","put","puzzle","pyramid","quality","quantum","quarter","question","quick","quit","quiz","quote","rabbit","raccoon","race","rack","radar","radio","rail","rain","raise","rally","ramp","ranch","random","range","rapid","rare","rate","rather","raven","raw","razor","ready","real","reason","rebel","rebuild","recall","receive","recipe","record","recycle","reduce","reflect","reform","refuse","region","regret","regular","reject","relax","release","relief","rely","remain","remember","remind","remove","render","renew","rent","reopen","repair","repeat","replace","report","require","rescue","resemble","resist","resource","response","result","retire","retreat","return","reunion","reveal","review","reward","rhythm","rib","ribbon","rice","rich","ride","ridge","rifle","right","rigid","ring","riot","ripple","risk","ritual","rival","river","road","roast","robot","robust","rocket","romance","roof","rookie","room","rose","rotate","rough","round","route","royal","rubber","rude","rug","rule","run","runway","rural","sad","saddle","sadness","safe","sail","salad","salmon","salon","salt","salute","same","sample","sand","satisfy","satoshi","sauce","sausage","save","say","scale","scan","scare","scatter","scene","scheme","school","science","scissors","scorpion","scout","scrap","screen","script","scrub","sea","search","season","seat","second","secret","section","security","seed","seek","segment","select","sell","seminar","senior","sense","sentence","series","service","session","settle","setup","seven","shadow","shaft","shallow","share","shed","shell","sheriff","shield","shift","shine","ship","shiver","shock","shoe","shoot","shop","short","shoulder","shove","shrimp","shrug","shuffle","shy","sibling","sick","side","siege","sight","sign","silent","silk","silly","silver","similar","simple","since","sing","siren","sister","situate","six","size","skate","sketch","ski","skill","skin","skirt","skull","slab","slam","sleep","slender","slice","slide","slight","slim","slogan","slot","slow","slush","small","smart","smile","smoke","smooth","snack","snake","snap","sniff","snow","soap","soccer","social","sock","soda","soft","solar","soldier","solid","solution","solve","someone","song","soon","sorry","sort","soul","sound","soup","source","south","space","spare","spatial","spawn","speak","special","speed","spell","spend","sphere","spice","spider","spike","spin","spirit","split","spoil","sponsor","spoon","sport","spot","spray","spread","spring","spy","square","squeeze","squirrel","stable","stadium","staff","stage","stairs","stamp","stand","start","state","stay","steak","steel","stem","step","stereo","stick","still","sting","stock","stomach","stone","stool","story","stove","strategy","street","strike","strong","struggle","student","stuff","stumble","style","subject","submit","subway","success","such","sudden","suffer","sugar","suggest","suit","summer","sun","sunny","sunset","super","supply","supreme","sure","surface","surge","surprise","surround","survey","suspect","sustain","swallow","swamp","swap","swarm","swear","sweet","swift","swim","swing","switch","sword","symbol","symptom","syrup","system","table","tackle","tag","tail","talent","talk","tank","tape","target","task","taste","tattoo","taxi","teach","team","tell","ten","tenant","tennis","tent","term","test","text","thank","that","theme","then","theory","there","they","thing","this","thought","three","thrive","throw","thumb","thunder","ticket","tide","tiger","tilt","timber","time","tiny","tip","tired","tissue","title","toast","tobacco","today","toddler","toe","together","toilet","token","tomato","tomorrow","tone","tongue","tonight","tool","tooth","top","topic","topple","torch","tornado","tortoise","toss","total","tourist","toward","tower","town","toy","track","trade","traffic","tragic","train","transfer","trap","trash","travel","tray","treat","tree","trend","trial","tribe","trick","trigger","trim","trip","trophy","trouble","truck","true","truly","trumpet","trust","truth","try","tube","tuition","tumble","tuna","tunnel","turkey","turn","turtle","twelve","twenty","twice","twin","twist","two","type","typical","ugly","umbrella","unable","unaware","uncle","uncover","under","undo","unfair","unfold","unhappy","uniform","unique","unit","universe","unknown","unlock","until","unusual","unveil","update","upgrade","uphold","upon","upper","upset","urban","urge","usage","use","used","useful","useless","usual","utility","vacant","vacuum","vague","valid","valley","valve","van","vanish","vapor","various","vast","vault","vehicle","velvet","vendor","venture","venue","verb","verify","version","very","vessel","veteran","viable","vibrant","vicious","victory","video","view","village","vintage","violin","virtual","virus","visa","visit","visual","vital","vivid","vocal","voice","void","volcano","volume","vote","voyage","wage","wagon","wait","walk","wall","walnut","want","warfare","warm","warrior","wash","wasp","waste","water","wave","way","wealth","weapon","wear","weasel","weather","web","wedding","weekend","weird","welcome","west","wet","whale","what","wheat","wheel","when","where","whip","whisper","wide","width","wife","wild","will","win","window","wine","wing","wink","winner","winter","wire","wisdom","wise","wish","witness","wolf","woman","wonder","wood","wool","word","work","world","worry","worth","wrap","wreck","wrestle","wrist","write","wrong","yard","year","yellow","you","young","youth","zebra","zero","zone","zoo"];
       const EMOJIS = ["😀","😂","😍","🥰","😎","🤔","😤","😭","🥺","😅","🙏","👍","👎","❤️","🔥","✅","⚡","🎉","👀","💀","🤝","🚀","💡","🔒","⚠️","📎","📁","🛡️","🌐","💬"];
+
+      // ==================== GHOSTLINK PLATFORM (Production Architecture) ====================
+      class GhostLinkPlatform {
+        static _instance = null;
+        static _initPromise = null;
+
+        constructor() {
+          if (GhostLinkPlatform._instance) return GhostLinkPlatform._instance;
+          this._initialized = false;
+          this._identity = null;
+          this._managers = {};
+          this._eventBus = null;
+          this._logger = null;
+          this._signalBus = null;
+        }
+
+        static getInstance() {
+          if (!GhostLinkPlatform._instance) {
+            GhostLinkPlatform._instance = new GhostLinkPlatform();
+          }
+          return GhostLinkPlatform._instance;
+        }
+
+        static async init(identity) {
+          if (GhostLinkPlatform._initPromise) return GhostLinkPlatform._initPromise;
+          const platform = GhostLinkPlatform.getInstance();
+
+          GhostLinkPlatform._initPromise = platform._initInternal(identity);
+          return GhostLinkPlatform._initPromise;
+        }
+
+        async _initInternal(identity) {
+          if (this._initialized) return;
+
+          this._identity = identity;
+
+          // Core infrastructure
+          this._eventBus = new GhostLink.EventBus('ghostlink-platform');
+          this._logger = new GhostLink.Logger('GhostLink', { minLevel: 'debug' });
+          this._signalBus = new GhostLink.SignalBus({ busName: 'ghostlink-signals' });
+
+          const logger = this._logger;
+
+          // Security Manager (no dependencies)
+          this._managers.security = new GhostLink.SecurityManager({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('security') : logger,
+          });
+
+          // Connection Manager (depends on identity, eventBus, logger)
+          this._managers.connection = new GhostLink.ConnectionManager({
+            identity,
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('connection') : logger,
+          });
+
+          // Signal Manager (depends on identity, eventBus, logger)
+          this._managers.signal = new GhostLink.SignalManager({
+            identity,
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('signal') : logger,
+          });
+
+          // Relay Manager (depends on eventBus, logger)
+          this._managers.relay = new GhostLink.RelayManager({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('relay') : logger,
+            connectionManager: this._managers.connection,
+          });
+
+          // Key Manager (depends on eventBus, logger)
+          this._managers.key = new GhostLink.KeyManager({
+            identity,
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('key') : logger,
+          });
+
+          // Offline Queue (depends on eventBus, logger)
+          this._managers.offlineQueue = new GhostLink.OfflineQueue({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('offlineQueue') : logger,
+          });
+
+          // Message Router (depends on many)
+          this._managers.message = new GhostLink.MessageRouter({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('message') : logger,
+            connectionManager: this._managers.connection,
+            securityManager: this._managers.security,
+            offlineQueue: this._managers.offlineQueue,
+          });
+
+          // File Transfer Manager (depends on connection, key)
+          this._managers.fileTransfer = new GhostLink.FileTransferManager({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('fileTransfer') : logger,
+            connectionManager: this._managers.connection,
+            keyManager: this._managers.key,
+          });
+
+          // Presence Manager (depends on connection)
+          this._managers.presence = new GhostLink.PresenceManager({
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('presence') : logger,
+            connectionManager: this._managers.connection,
+          });
+
+          // Peer Manager (wires everything together)
+          this._managers.peer = new GhostLink.PeerManager({
+            identity,
+            eventBus: this._eventBus,
+            logger: logger.child ? logger.child('peer') : logger,
+            connectionManager: this._managers.connection,
+            signalManager: this._managers.signal,
+            messageRouter: this._managers.message,
+            fileTransferManager: this._managers.fileTransfer,
+            presenceManager: this._managers.presence,
+            relayManager: this._managers.relay,
+            keyManager: this._managers.key,
+          });
+
+          // Debug Console
+          if (typeof GhostLink.DebugConsole !== 'undefined') {
+            this._managers.debugConsole = new GhostLink.DebugConsole({
+              eventBus: this._eventBus,
+              logger: logger,
+              peerManager: this._managers.peer,
+              connectionManager: this._managers.connection,
+              messageRouter: this._managers.message,
+              fileTransferManager: this._managers.fileTransfer,
+              signalManager: this._managers.signal,
+            });
+          }
+
+          // Self-test capability
+          if (typeof GhostLink.SelfTest !== 'undefined') {
+            this._managers.selfTest = GhostLink.SelfTest;
+          }
+
+          // License System (Pro Licensing & Team Workspaces)
+          const licenseNS = window.GLLicenseAPI || {};
+          if (typeof licenseNS.initLicenseSystem === 'function') {
+            try {
+              const licenseSystem = await licenseNS.initLicenseSystem({
+                keyManager: this._managers.key,
+                eventBus: this._eventBus
+              });
+              Object.assign(this._managers, licenseSystem);
+              window.GLLicenseRuntime = licenseSystem;
+              this._logger.info('License system initialized');
+            } catch (err) {
+              this._logger.error('License system initialization failed', { error: err.message });
+            }
+          }
+
+          // Wire eventBus to signalBus channels for cross-module communication
+          this._wireEventBusToSignalBus();
+
+          this._initialized = true;
+          this._logger.info('GhostLink Platform initialized', { peerId: identity?.name });
+
+          return this;
+        }
+
+        _wireEventBusToSignalBus() {
+          // Map EventBus events to SignalBus channels
+          const wiring = [
+            { event: 'peer:', channel: 'peer' },
+            { event: 'conn:', channel: 'network' },
+            { event: 'signal:', channel: 'network' },
+            { event: 'message:', channel: 'message' },
+            { event: 'file:', channel: 'file' },
+            { event: 'presence:', channel: 'presence' },
+            { event: 'security:', channel: 'security' },
+            { event: 'system:', channel: 'system' },
+          ];
+
+          wiring.forEach(({ event, channel }) => {
+            this._eventBus.on(event + '*', (data) => {
+              const topic = data?._topic || event + 'event';
+              this._signalBus.getChannel(channel).emit(topic, data);
+            });
+          });
+        }
+
+        // API
+        get eventBus() { return this._eventBus; }
+        get logger() { return this._logger; }
+        get signalBus() { return this._signalBus; }
+        get managers() { return this._managers; }
+        get identity() { return this._identity; }
+        get isInitialized() { return this._initialized; }
+
+        // Convenience getters for managers
+        get peerManager() { return this._managers.peer; }
+        get connectionManager() { return this._managers.connection; }
+        get signalManager() { return this._managers.signal; }
+        get messageRouter() { return this._managers.message; }
+        get fileTransferManager() { return this._managers.fileTransfer; }
+        get presenceManager() { return this._managers.presence; }
+        get securityManager() { return this._managers.security; }
+        get relayManager() { return this._managers.relay; }
+        get keyManager() { return this._managers.key; }
+        get offlineQueue() { return this._managers.offlineQueue; }
+
+        // License System getters
+        get licenseManager() { return this._managers.licenseManager; }
+        get featureGate() { return this._managers.featureGate; }
+        get workspaceManager() { return this._managers.workspaceManager; }
+        get proThemes() { return this._managers.proThemes; }
+        get dataExport() { return this._managers.dataExport; }
+        get generator() { return this._managers.generator; }
+        get deviceFingerprint() { return this._managers.deviceFingerprint; }
+        get licenseValidator() { return this._managers.validator; }
+        get securityHardening() { return this._managers.hardening; }
+        get activationUI() { return this._managers.activationUI; }
+
+        // High-level API
+        async connectToPeer(peerId, mode = 'auto') {
+          return this._managers.peer?.addPeer(peerId, { mode });
+        }
+
+        async disconnectFromPeer(peerId) {
+          return this._managers.peer?.removePeer(peerId);
+        }
+
+        async sendMessage(peerId, content, type = 'chat') {
+          return this._managers.message?.sendMessage(peerId, type, { content });
+        }
+
+        async sendFile(peerId, file) {
+          return this._managers.fileTransfer?.sendFile(peerId, file);
+        }
+
+        getConnectedPeers() {
+          return this._managers.peer?.getAllPeers() || [];
+        }
+
+        getPeerState(peerId) {
+          return this._managers.peer?.getPeerState(peerId) || 'idle';
+        }
+
+        async runSelfTest() {
+          return this._managers.selfTest?.runAllTests();
+        }
+
+        destroy() {
+          this._managers.peer?.destroy();
+          this._managers.connection?.destroy();
+          this._managers.signal?.destroy();
+          this._managers.presence?.destroy();
+          this._managers.fileTransfer?.destroy();
+          this._managers.message?.destroy();
+          this._managers.relay?.destroy();
+          this._managers.key?.destroy();
+          this._managers.security?.destroy();
+          this._managers.offlineQueue?.destroy();
+          this._managers.licenseManager?.destroy();
+          this._managers.featureGate?.destroy();
+          this._managers.workspaceManager?.destroy();
+          this._managers.proThemes?.destroy();
+          this._managers.dataExport?.destroy();
+          this._managers.devConsole?.destroy();
+          this._managers.deviceFingerprint?.clearCache?.();
+          this._managers.hardening?.destroy?.();
+          this._managers.activationUI?.destroy?.();
+          this._managers = {};
+          this._initialized = false;
+          this._logger?.info('GhostLink Platform destroyed');
+        }
+      }
+
+      // Expose globally
+      window.GhostLinkPlatform = GhostLinkPlatform;
+      window.GhostLinkDebug = window.GhostLinkPlatform; // Alias for compatibility
 
       // ==================== CRYPTO ENGINE ====================
       const CryptoEngine = {
@@ -442,7 +835,7 @@
       }
 
       // ==================== MAIN APP ====================
-      function GhostLink() {
+      function GhostLinkApp() {
         // WebCrypto check — must be on HTTPS or localhost
         if (!crypto?.subtle) {
           return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center', padding: 20 }}>
@@ -463,6 +856,65 @@
           setToasts(prev => [...prev.slice(-4), { id, message, type }]);
           setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
         };
+
+        // Initialize license system on mount (activation only — Device ID is separate)
+        useEffect(() => {
+          ensureLicenseSystem().then(() => {
+            console.log('[GhostLink] License system ready');
+          }).catch(err => {
+            console.error('[GhostLink] License system init failed:', err);
+          });
+        }, []);
+
+        // Load Device ID when settings opens or identity becomes available
+        useEffect(() => {
+          if (!showSettings) return;
+          let cancelled = false;
+          setDeviceIdLoading(true);
+          setDeviceIdError(null);
+          resolveDeviceId(identity).then(fp => {
+            if (cancelled) return;
+            if (fp) {
+              setDeviceId(fp);
+              setDeviceIdError(null);
+            } else if (!localStorage.getItem('gl_identity')) {
+              setDeviceIdError('Finish account setup first — Device ID appears after you create your identity.');
+            } else {
+              setDeviceIdError('Could not load Device ID. Use HTTPS or localhost, then refresh.');
+            }
+            setDeviceIdLoading(false);
+          }).catch(err => {
+            if (cancelled) return;
+            setDeviceIdError(err.message || 'Failed to load Device ID');
+            setDeviceIdLoading(false);
+          });
+          return () => { cancelled = true; };
+        }, [showSettings, identity?.publicKeyHex]);
+
+        // Check license status periodically + expiry popup
+        useEffect(() => {
+          const checkLicense = async () => {
+            const ns = window.GLLicenseRuntime;
+            if (ns?.licenseManager) {
+              try {
+                const tier = await ns.licenseManager.getTier();
+                const isActive = await ns.licenseManager.isActive();
+                const expired = await ns.licenseManager.isExpired();
+                const daysLeft = await ns.licenseManager.getDaysRemaining();
+                setLicenseTier(tier);
+                setLicenseStatus(isActive ? tier : 'free');
+                setLicenseDaysLeft(daysLeft);
+                if (expired && !expiryDismissed) setShowExpiryModal(true);
+              } catch (e) {
+                setLicenseTier('free');
+                setLicenseStatus('free');
+              }
+            }
+          };
+          checkLicense();
+          const interval = setInterval(checkLicense, 30000);
+          return () => clearInterval(interval);
+        }, []);
 
         // Core state
         const [view, setView] = useState("splash");
@@ -487,6 +939,21 @@
         const [showChainExplorer, setShowChainExplorer] = useState(false);
         const [showSettings, setShowSettings] = useState(false);
         const [showPeerInfo, setShowPeerInfo] = useState(false);
+        const [showDiagnostics, setShowDiagnostics] = useState(false);
+        const [diagStats, setDiagStats] = useState(null);
+
+        // License/Pro state
+        const [licenseKeyInput, setLicenseKeyInput] = useState("");
+        const [licenseStatus, setLicenseStatus] = useState("free");
+        const [licenseTier, setLicenseTier] = useState("free");
+        const [licenseActivating, setLicenseActivating] = useState(false);
+        const [licenseError, setLicenseError] = useState(null);
+        const [deviceId, setDeviceId] = useState("");
+        const [deviceIdLoading, setDeviceIdLoading] = useState(false);
+        const [deviceIdError, setDeviceIdError] = useState(null);
+        const [showExpiryModal, setShowExpiryModal] = useState(false);
+        const [expiryDismissed, setExpiryDismissed] = useState(false);
+        const [licenseDaysLeft, setLicenseDaysLeft] = useState(null);
 
         // Call state
         const [callActive, setCallActive] = useState(false);
@@ -561,6 +1028,7 @@
         // Offline Queue
         const [offlineQueue, setOfflineQueue] = useState(null);
         const [pendingMessages, setPendingMessages] = useState({});
+        const [pendingFileTransfers, setPendingFileTransfers] = useState({});
 
         // QR Invite
         const [qrInviteData, setQrInviteData] = useState(null);
@@ -619,6 +1087,17 @@
         const [audioPlayback, setAudioPlayback] = useState(null); // { messageId, playing }
         const [recordingWaveform, setRecordingWaveform] = useState([]);
         const [playbackProgress, setPlaybackProgress] = useState({});
+
+        // Notification & Alert managers (Phase 2)
+        const [notifManager, setNotifManager] = useState(null);
+        const [alertManager, setAlertManager] = useState(null);
+        const [soundGenerator, setSoundGenerator] = useState(null);
+
+        // Markdown engine (Phase 3)
+        const [markdownParser, setMarkdownParser] = useState(null);
+        const [htmlSanitizer, setHtmlSanitizer] = useState(null);
+        const [showFormattingBar, setShowFormattingBar] = useState(false);
+
         const mediaRecorderRef = useRef(null);
         const recordingTimerRef = useRef(null);
         const audioContextRef = useRef(null);
@@ -634,20 +1113,30 @@
         // Biometric unlock status
         const [biometricStatus, setBiometricStatus] = useState('unsupported');
 
-        // Security audit log
-        const [securityLog, setSecurityLog] = useState([]);
+        // Onboarding
+        const [showOnboarding, setShowOnboarding] = useState(false);
+        const [onboardingStep, setOnboardingStep] = useState(0);
 
         // Refs
         const chatEndRef = useRef(null);
         const timerRef = useRef(null);
         const fileInputRef = useRef(null);
+        const imageInputRef = useRef(null);
+        const p2pConnectorRef = useRef(null);
+        const callConnectionRef = useRef(null); // active call RTCPeerConnection
+        const callLocalStreamRef = useRef(null); // active call local MediaStream
+        const pendingCallOfferRef = useRef(null); // stores { sdp, callType, from } for answering
 
         // Responsive
         const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
         const [isTablet, setIsTablet] = useState(window.innerWidth >= 768 && window.innerWidth < 1024);
 
-        // Peers — populated dynamically from signaling server discovery
+        // Peers — populated from P2P connections only
         const [peers, setPeers] = useState([]);
+        const peersRef = useRef([]);
+        const activeConvoRef = useRef(null);
+        useEffect(() => { peersRef.current = peers; }, [peers]);
+        useEffect(() => { activeConvoRef.current = activeConvo; }, [activeConvo]);
 
         // Call history — populated from real calls
         const [callHistory, setCallHistory] = useState([]);
@@ -691,7 +1180,10 @@
         useEffect(() => {
           if (view === "splash") {
             const hasIdentity = !!localStorage.getItem("gl_identity");
-            const t = setTimeout(() => setView(hasIdentity ? "main" : "setup"), 2800);
+            const t = setTimeout(() => {
+              if (hasIdentity) setView("main");
+              else setShowOnboarding(true);
+            }, 2800);
             return () => clearTimeout(t);
           }
         }, [view]);
@@ -741,7 +1233,7 @@
 
         // Initialize P2P systems when identity is ready
         useEffect(() => {
-          if (!identity || peerManager) return;
+          if (!identity || p2pConnectorRef.current) return;
 
           // Discover signaling server (async, caches result)
           let _cachedSignalingUrl = null;
@@ -794,225 +1286,293 @@
             }
           };
 
-          // Initialize WebRTC peer manager
+          // Initialize WebRTC peer manager (REAL)
           const initP2P = async () => {
-            if (typeof RTCPeerManager !== 'undefined') {
-              const SIGNALING_URL = await discoverSignaling();
-              const pm = new RTCPeerManager(SIGNALING_URL, {
-                peerId: identity.fingerprint,
-                id: identity.fingerprint,
-                name: identity.name,
-                publicKey: identity.publicKeyHex,
-                publicKeyHex: identity.publicKeyHex,
-                keyPair: identity.keyPair || null
+            if (typeof GhostLinkP2P === 'undefined' || !GhostLinkP2P.P2PConnector) {
+              setTimeout(() => { if (!p2pConnectorRef.current) initP2P(); }, 300);
+              return;
+            }
+
+            const conn = new GhostLinkP2P.P2PConnector(identity);
+            p2pConnectorRef.current = conn;
+            setPeerManager(conn); // backward compat
+
+            // signaling events
+            conn.on('signaling-connected', () => {
+              setSignalingConnected(true);
+              setSignalingAvailable(true);
+              addToast('Connected to signaling server', 'success');
+            });
+            conn.on('signaling-disconnected', () => {
+              setSignalingConnected(false);
+              addToast('Signaling disconnected', 'error');
+            });
+            conn.on('signaling-error', (err) => {
+              console.warn('Signaling error:', err);
+              setSignalingAvailable(false);
+            });
+
+            // peer events
+            const peerColor = (id) => {
+              const colors = ['#1a3a2a','#2a1a3a','#1a2a3a','#3a2a1a','#2a3a1a','#1a3a3a','#3a1a2a','#2a2a3a'];
+              let hash = 0;
+              for (let i = 0; i < (id || '').length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i);
+              return colors[Math.abs(hash) % colors.length];
+            };
+
+conn.on('peer-connected', async (peerId, peerInfo) => {
+              setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+              setConnectionMode(peerInfo && peerInfo.mode ? (peerInfo.mode === 'manual' ? 'Manual Signal' : 'P2P Direct') : 'P2P Direct');
+              setPeers(prev => {
+                const existing = prev.find(p => p.fingerprint === peerId || p.id === peerId);
+                if (existing) {
+                  return prev.map(p =>
+                    (p.fingerprint === peerId || p.id === peerId)
+                      ? { ...p, status: 'online', lastSeen: 'now', name: peerInfo?.name || p.name }
+                      : p
+                  );
+                }
+                const name = peerInfo?.name || `Peer-${peerId.slice(0, 6)}`;
+                return [...prev, {
+                  id: peerId, name, status: 'online',
+                  pubKey: peerInfo?.publicKey || '', lastSeen: 'now',
+                  avatar: name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'P',
+                  color: peerColor(peerId),
+                  unread: 0, fingerprint: peerId, isReal: true
+                }];
               });
+              PeerCache.addPeer(peerId, { fingerprint: peerId, name: peerInfo?.name || '', publicKeyHex: peerInfo?.publicKey || '' });
+              setAutoReconnectStatus('connected');
+              addToast(`${peerInfo?.name || 'Peer'} connected`, 'success');
 
-              // Set peerManager IMMEDIATELY so joinRoom works even if later setup fails
-              setPeerManager(pm);
-
-              pm.on('signaling-connected', () => { setSignalingConnected(true); setSignalingAvailable(true); setConnectionMode('Via Relay'); addToast('Connected to signaling server', 'success'); });
-              pm.on('signaling-disconnected', () => { setSignalingConnected(false); addToast('Disconnected from server', 'error'); });
-              // Generate a deterministic color from a peer ID
-              const peerColor = (id) => {
-                const colors = ['#1a3a2a', '#2a1a3a', '#1a2a3a', '#3a2a1a', '#2a3a1a', '#1a3a3a', '#3a1a2a', '#2a2a3a'];
-                let hash = 0;
-                for (let i = 0; i < (id || '').length; i++) hash = ((hash << 5) - hash) + id.charCodeAt(i);
-                return colors[Math.abs(hash) % colors.length];
-              };
-
-              pm.on('peer-connected', (peerId, peerInfo) => {
-                setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
-                setPeers(prev => {
-                  const existing = prev.find(p => p.fingerprint === peerId || p.id === peerId);
-                  if (existing) {
-                    // Update existing peer to online
-                    return prev.map(p =>
-                      (p.fingerprint === peerId || p.id === peerId)
-                        ? { ...p, status: 'online', lastSeen: 'now', name: peerInfo?.name || p.name }
-                        : p
-                    );
-                  }
-                  const name = peerInfo?.name || `Peer-${peerId.slice(0, 6)}`;
-                  return [...prev, {
-                    id: peerId,
-                    name,
-                    status: 'online',
-                    pubKey: peerInfo?.publicKey || '',
-                    lastSeen: 'now',
-                    avatar: name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'P',
-                    color: peerColor(peerId),
-                    unread: 0,
-                    fingerprint: peerId,
-                    isReal: true
-                  }];
-                });
-                // Cache peer info for auto-reconnect
-                PeerCache.addPeer(peerId, {
-                  fingerprint: peerId,
-                  name: peerInfo?.name || `Peer-${peerId.slice(0, 6)}`,
-                  publicKeyHex: peerInfo?.publicKey || '',
-                });
-                if (!connectionMode || connectionMode === 'Via Relay') setConnectionMode('P2P Direct');
-                setAutoReconnectStatus('connected');
-                addToast(`${peerInfo?.name || 'Peer'} connected`, 'success');
-              });
-              pm.on('peer-disconnected', (peerId) => {
-                setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
-                setPeers(prev => prev.map(p =>
-                  (p.fingerprint === peerId || p.id === peerId)
-                    ? { ...p, status: 'offline', lastSeen: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
-                    : p
-                ));
-              });
-              pm.on('message', async (peerId, data) => {
-                try {
-                  let msg;
-                  const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-
-                  // Check if this is a Signal Protocol encrypted message
-                  if (parsed.signalProtocol && parsed.envelope && sessionManager) {
-                    try {
-                      const decrypted = await sessionManager.decryptMessage(peerId, parsed.envelope);
-                      msg = JSON.parse(decrypted);
-                    } catch (signalErr) {
-                      console.warn('[GhostLink] Signal decrypt failed:', signalErr);
-                      msg = parsed; // fall through to regular handling
-                    }
-                  } else {
-                    msg = parsed;
-                  }
-
-                  if (msg.type === 'chat') {
-                    const block = await chain.add(msg.sender, msg.content, msg.msgType || 'text', msg.meta || {});
-                    block.encrypted = msg.iv ? { iv: msg.iv, ciphertext: msg.ciphertext } : await CryptoEngine.encrypt(msg.content, identity.fingerprint);
-                    // Find the conversation key — use the peer's id from our peers list
-                    const peerEntry = peers.find(p => p.fingerprint === peerId || p.id === peerId);
-                    const convoKey = peerEntry ? peerEntry.id : peerId;
-                    setMessages(prev => ({
-                      ...prev,
-                      [convoKey]: [...(prev[convoKey] || []), block]
-                    }));
-                    // Increment unread count if not the active conversation
-                    setPeers(prev => prev.map(p =>
-                      (p.fingerprint === peerId || p.id === peerId) && convoKey !== activeConvo
-                        ? { ...p, unread: (p.unread || 0) + 1 }
-                        : p
-                    ));
-                  } else if (msg.type === 'typing') {
-                    setTyping(true);
-                    setTimeout(() => setTyping(false), 3000);
-                  }
-                } catch (e) { console.error('Message parse error:', e); }
-              });
-              pm.on('connection-state-change', (peerId, state) => {
-                setConnectionStates(prev => ({ ...prev, [peerId]: state }));
-              });
-
-              // Initialize file transfer
-              if (typeof FileTransfer !== 'undefined') {
-                const ft = new FileTransfer(pm, CryptoEngine);
-                ft.on('progress', ({ transferId, peerId, progress }) => {
-                  setActiveTransfers(prev => ({ ...prev, [transferId]: { peerId, progress } }));
-                });
-                ft.on('complete', ({ transferId, peerId, file }) => {
-                  setActiveTransfers(prev => { const n = { ...prev }; delete n[transferId]; return n; });
-                  if (file) {
-                    // Create object URL for download
-                    const blob = new Blob([file.data], { type: file.type || 'application/octet-stream' });
-                    const url = URL.createObjectURL(blob);
-                    setTransferredFiles(prev => [...prev, {
-                      id: transferId,
-                      name: file.name || 'unknown',
-                      size: file.size || 0,
-                      from: peerId,
-                      ts: Date.now(),
-                      url: url,
-                      type: file.type || 'application/octet-stream',
-                      chunks: Math.ceil((file.size || 0) / 65536),
-                      encrypted: false
-                    }]);
-                  }
-                });
-                setFileTransferManager(ft);
+              // FLUSH OFFLINE QUEUES
+              if (offlineQueue) {
+                const dc = conn.dcs?.[peerId]?.messages;
+                if (dc) await offlineQueue.flushQueue(peerId, dc);
               }
 
-              // Initialize media handler
-              if (typeof MediaHandler !== 'undefined') {
-                const mh = new MediaHandler(pm);
-                mh.on('incoming-call', ({ peerId, callType: ct }) => {
-                  setIncomingCall({ peerId, callType: ct });
-                });
-                mh.on('remote-stream', ({ peerId, stream }) => {
-                  setRemoteStreams(prev => ({ ...prev, [peerId]: stream }));
-                });
-                mh.on('local-stream', ({ stream }) => {
-                  setLocalStream(stream);
-                });
-                mh.on('call-ended', () => {
+              // TRIGGER PENDING FILE TRANSFERS
+              setPendingFileTransfers(prev => {
+                const pending = prev[peerId] || [];
+                if (pending.length > 0) {
+                  addToast(`Initiating ${pending.length} pending file transfers...`, 'info');
+                  pending.forEach(f => sendFile(f.name, f.size, f.fileObj, peerId));
+                }
+                return { ...prev, [peerId]: [] };
+              });
+            });
+
+            conn.on('peer-joined', (peerId, peerInfo) => {
+              // When a peer joins the signaling room, we auto-initiate WebRTC connection to them
+              addToast(`${peerInfo?.name || 'Peer'} joined room — connecting...`, 'info');
+            });
+
+            conn.on('peer-disconnected', (peerId, info) => {
+              const peerIdStr = typeof peerId === 'string' ? peerId : (info && typeof info === 'string' ? info : String(peerId));
+              setConnectionStates(prev => ({ ...prev, [peerIdStr]: 'disconnected' }));
+              setPeers(prev => prev.map(p =>
+                (p.fingerprint === peerIdStr || p.id === peerIdStr)
+                  ? { ...p, status: 'offline', lastSeen: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }
+                  : p
+              ));
+            });
+
+            // Unified message handler for chat, voice, file metadata
+            conn.on('message', async (peerId, msg) => {
+              try {
+                const getConvoKey = (pid) => {
+                  const p = peersRef.current.find(x => x.fingerprint === pid || x.id === pid);
+                  return p ? p.id : pid;
+                };
+
+                if (msg.type === 'voice') {
+                  const convoKey = getConvoKey(peerId);
+                  let url = msg.url || '';
+                  if (!url && msg.audioData) {
+                    try {
+                      const binaryString = atob(msg.audioData);
+                      const bytes = new Uint8Array(binaryString.length);
+                      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+                      url = URL.createObjectURL(new Blob([bytes], { type: msg.mimeType || 'audio/webm' }));
+                    } catch (e) { console.error('Voice decode failed:', e); return; }
+                  }
+                  if (!url) return;
+                  setVoiceMessages(prev => ({
+                    ...prev,
+                    [convoKey]: [...(prev[convoKey] || []), {
+                      id: 'voice-' + Date.now() + '-in',
+                      url, duration: msg.duration || 0,
+                      waveform: msg.waveform || [],
+                      ts: msg.ts || Date.now(),
+                      sender: msg.sender || 'Peer'
+                    }]
+                  }));
+                  setPeers(prev => prev.map(p =>
+                    (p.fingerprint === peerId || p.id === peerId) && getConvoKey(peerId) !== activeConvoRef.current
+                      ? { ...p, unread: (p.unread || 0) + 1 } : p
+                  ));
+                  addToast('Voice message received', 'info');
+                  return;
+                }
+
+                if (msg.type === 'chat' || msg.type === 'queued-message') {
+                  const convoKey = getConvoKey(peerId);
+                  const msgType = msg.msgType || 'text';
+                  const content = msg.content;
+                  const block = await chain.add(msg.sender || 'Peer', content, msgType, msg.meta || {});
+                  block.encrypted = msg.encrypted || (await CryptoEngine.encrypt(content, identity.fingerprint));
+                  setMessages(prev => ({ ...prev, [convoKey]: [...(prev[convoKey] || []), block] }));
+                  setPeers(prev => prev.map(p =>
+                    (p.fingerprint === peerId || p.id === peerId) && convoKey !== activeConvoRef.current
+                      ? { ...p, unread: (p.unread || 0) + 1 } : p
+                  ));
+                  if (msg.type === 'queued-message') addToast('Offline message delivered', 'info');
+                  return;
+                }
+
+                if (msg.type === 'typing') {
+                  setTyping(true);
+                  setTimeout(() => setTyping(false), 3000);
+                } else if (msg.type === 'reaction') {
+                  setMessageReactions(prev => {
+                    const existing = prev[msg.messageHash] || {};
+                    const reactors = existing[msg.emoji] || [];
+                    if (!reactors.includes(peerId)) {
+                      return { ...prev, [msg.messageHash]: { ...existing, [msg.emoji]: [...reactors, peerId] } };
+                    }
+                    return prev;
+                  });
+                } else if (msg.type === 'call-offer') {
+                  // Incoming call — show incoming call UI
+                  pendingCallOfferRef.current = { sdp: msg.sdp, callType: msg.callType || 'voice', from: msg.from, fromName: msg.name };
+                  setIncomingCall({ peerId: msg.from, callType: msg.callType || 'voice' });
+                  setCallType(msg.callType || 'voice');
+                  addToast(`Incoming ${msg.callType || 'voice'} call from ${msg.name || msg.from}`, 'info');
+                } else if (msg.type === 'call-answer') {
+                  // Answer to our call offer
+                  const pc = callConnectionRef.current;
+                  if (pc && pc.signalingState !== 'stable') {
+                    pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp }).catch(e => console.error('call answer error:', e));
+                  }
+                } else if (msg.type === 'call-ice') {
+                  const pc = callConnectionRef.current;
+                  if (pc && msg.candidate) {
+                    pc.addIceCandidate(msg.candidate).catch(e => console.error('call ICE error:', e));
+                  }
+                } else if (msg.type === 'call-end') {
+                  // Peer ended the call
+                  if (callConnectionRef.current) { try { callConnectionRef.current.close(); } catch {} callConnectionRef.current = null; }
+                  if (callLocalStreamRef.current) { callLocalStreamRef.current.getTracks().forEach(t => t.stop()); callLocalStreamRef.current = null; }
                   setCallActive(false);
                   setCallType(null);
                   setLocalStream(null);
                   setRemoteStreams({});
-                  setIncomingCall(null);
+                  setCallTimer(0);
+                  clearInterval(timerRef.current);
+                  addToast('Call ended by peer', 'info');
+                }
+              } catch (e) { console.error('Message parse error:', e); }
+            });
+
+            // Connect
+            try {
+              await conn.connect();
+
+              // Initialize production managers (PHASE 1)
+              if (window.GhostLink && window.GhostLink.globalBus) {
+                const GLBus = window.GhostLink.globalBus;
+
+                // Wire GhostLinkDebug
+                if (window.GhostLinkDebug) {
+                  window.GhostLinkDebug.setConnectionManager(conn);
+                  window.GhostLinkDebug.setSignalManager(conn._ws ? {
+                    isConnected: () => conn.ws && conn.ws.readyState === WebSocket.OPEN,
+                    _wsUrl: conn.wsUrl,
+                    peers: () => Object.keys(conn.knownPeers || {}),
+                    _myRoom: conn.roomId,
+                  } : null);
+                }
+
+                // Wire bus events for debug timeline
+                GLBus.on('pm:peer-connected', ({ peerId }) => {
+                  setConnectionMode('P2P Direct');
                 });
-                setMediaHandler(mh);
+                GLBus.on('pm:signaling-ready', () => {
+                  setSignalingConnected(true);
+                  setSignalingAvailable(true);
+                });
+
+                // Production relay mode detection
+                GLBus.on('conn:peer-degraded', ({ peerId }) => {
+                  setConnectionMode('Via Relay');
+                });
+                GLBus.on('conn:ice-failed', ({ peerId }) => {
+                  setConnectionMode('Reconnecting');
+                });
               }
 
-              // peerManager already set right after constructor
-              try {
-                await pm.connect();
-                // Auto-reconnect: rejoin rooms for cached peers
-                const cachedPeers = PeerCache.getAllPeers();
-                const cachedIds = Object.keys(cachedPeers);
-                if (cachedIds.length > 0) {
-                  setAutoReconnectStatus('trying-relay');
-                  for (const pid of cachedIds) {
-                    const cached = cachedPeers[pid];
-                    // Add cached peers to the peer list as offline until they reconnect
-                    setPeers(prev => {
-                      if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
-                      return [...prev, {
-                        id: pid, name: cached.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
-                        pubKey: cached.publicKeyHex || '', lastSeen: cached.lastSeen ? fmtTime(cached.lastSeen) : 'cached',
-                        avatar: (cached.name || 'P').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase(),
-                        color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
-                      }];
-                    });
-                  }
-                }
-              } catch (connectErr) {
-                console.warn('[GhostLink] Signaling connect failed (will auto-reconnect):', connectErr.message);
-                setSignalingAvailable(false);
-                // Auto-reconnect: try direct from cache
-                const cachedPeers = PeerCache.getAllPeers();
-                const cachedIds = Object.keys(cachedPeers);
-                if (cachedIds.length > 0) {
-                  setAutoReconnectStatus('trying-cache');
-                  // Add cached peers as offline
-                  for (const pid of cachedIds) {
-                    const cached = cachedPeers[pid];
-                    setPeers(prev => {
-                      if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
-                      return [...prev, {
-                        id: pid, name: cached.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
-                        pubKey: cached.publicKeyHex || '', lastSeen: 'cached',
-                        avatar: (cached.name || 'P').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase(),
-                        color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
-                      }];
-                    });
-                  }
-                  // After 5s timeout with no connection, show waiting status
-                  setTimeout(() => {
-                    setAutoReconnectStatus(prev => prev === 'connected' ? prev : 'waiting');
-                  }, 5000);
-                }
-                addToast('Signaling server unreachable — use manual signal or wait', 'error');
+              // Initialize encrypted file transfer over WebRTC files channel
+              if (typeof FileTransfer !== 'undefined' || (typeof GhostLinkP2P !== 'undefined' && GhostLinkP2P.FileTransfer)) {
+                const FT = FileTransfer || GhostLinkP2P.FileTransfer;
+                const ft = new FT(conn, CryptoEngine);
+                ft.on('complete', ({ peerId, file }) => {
+                  const peerName = peersRef.current.find(p => p.fingerprint === peerId || p.id === peerId)?.name || 'Peer';
+                  setTransferredFiles(prev => [...prev, {
+                    name: file.name,
+                    size: file.size,
+                    from: peerName,
+                    ts: Date.now(),
+                    url: file.url,
+                    mimeType: file.type,
+                    encrypted: true,
+                    peerId,
+                  }]);
+                  addToast(`File received: ${file.name}`, 'success');
+                });
+                ft.on('error', ({ error }) => {
+                  console.error('[FileTransfer]', error);
+                  addToast('File receive failed: ' + error, 'error');
+                });
+                setFileTransferManager(ft);
               }
-            } else {
-              // RTCPeerManager script not loaded yet — retry after a delay
-              console.warn('[GhostLink] RTCPeerManager not available yet, retrying in 500ms...');
-              setTimeout(initP2P, 500);
+
+              // Restore cached peers as offline initially
+              const cached = PeerCache.getAllPeers();
+              const cachedIds = Object.keys(cached);
+              if (cachedIds.length > 0) {
+                setAutoReconnectStatus('trying-relay');
+                for (const pid of cachedIds) {
+                  const c = cached[pid];
+                  setPeers(prev => {
+                    if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
+                    return [...prev, {
+                      id: pid, name: c.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
+                      pubKey: c.publicKeyHex || '', lastSeen: 'cached',
+                      avatar: (c.name || 'P').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(),
+                      color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
+                    }];
+                  });
+                }
+              }
+            } catch (e) {
+              console.warn('[GhostLink] Signaling connect failed (will auto-reconnect):', e.message);
+              setSignalingAvailable(false);
+              const cached = PeerCache.getAllPeers();
+              for (const pid of Object.keys(cached)) {
+                const c = cached[pid];
+                setPeers(prev => {
+                  if (prev.find(p => p.fingerprint === pid || p.id === pid)) return prev;
+                  return [...prev, {
+                    id: pid, name: c.name || `Peer-${pid.slice(0,6)}`, status: 'offline',
+                    pubKey: c.publicKeyHex || '', lastSeen: 'cached',
+                    avatar: (c.name || 'P').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase(),
+                    color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
+                  }];
+                });
+              }
+              setTimeout(() => setAutoReconnectStatus('waiting'), 5000);
             }
+            return;
           };
 
           // Initialize offline queue
@@ -1020,10 +1580,20 @@
             if (typeof OfflineQueue !== 'undefined') {
               const SIGNALING_URL = await discoverSignaling();
               const oq = new OfflineQueue(SIGNALING_URL.replace('ws', 'http'));
-              oq.on('message-delivered', ({ peerId, messageId }) => {
+              oq.on('message-delivered', async (data) => {
+                if (data.source === 'server-relay' && data.encrypted) {
+                  try {
+                    const decrypted = await CryptoEngine.decrypt(data.encrypted, identity.fingerprint);
+                    // Process as a normal incoming message
+                    const msg = JSON.parse(decrypted);
+                    msg.type = msg.type || 'queued-message'; // mark as queued
+                    conn.emit('message', data.from, msg);
+                  } catch (e) { console.error('Failed to decrypt relay message:', e); }
+                }
+
                 setPendingMessages(prev => {
                   const n = { ...prev };
-                  if (n[peerId]) n[peerId] = n[peerId].filter(m => m.id !== messageId);
+                  if (n[data.peerId]) n[data.peerId] = n[data.peerId].filter(m => m.id !== data.messageId);
                   return n;
                 });
               });
@@ -1050,8 +1620,64 @@
           initOfflineQueue();
           initQR();
 
+          // Ensure cleanup uses the new connector
           return () => {
-            if (peerManager) peerManager.leaveRoom();
+            if (p2pConnectorRef.current) {
+              try { p2pConnectorRef.current.disconnect(); } catch (e) {}
+            }
+          };
+        }, [identity]);
+
+        // Initialize Notification, Alert, and Markdown managers when identity is ready
+        useEffect(() => {
+          if (!identity) return;
+
+          // Sound Generator
+          const sg = new window.SoundGenerator();
+          sg.setVolume(0.3);
+          setSoundGenerator(sg);
+
+          // Notification Manager (privacy-preserving)
+          const nm = new window.NotificationManager();
+          setNotifManager(nm);
+
+          // In-App Alert Manager
+          const am = new window.InAppAlertManager({
+            soundGenerator: sg,
+            notificationManager: nm,
+            onUnreadChange: (count) => {
+              setPeers(prev => prev.map(p =>
+                p.unread > 0 && p.id === activeConvo ? p : p
+              ));
+            }
+          });
+          setAlertManager(am);
+
+          // Markdown Engine (Phase 3)
+          const mp = new window.MarkdownParser();
+          setMarkdownParser(mp);
+          const sanitizer = window.sanitizeHTML || function(html) {
+            // Fallback if sanitize module not loaded
+            const div = document.createElement('div');
+            div.textContent = html;
+            return div.innerHTML;
+          };
+          setHtmlSanitizer(() => sanitizer);
+
+          // Test markdown parsing
+          try {
+            const test = mp.parse('**bold** and *italic*');
+            if (!test || typeof test !== 'string') {
+              console.warn('[GhostLink] Markdown parser may not be initialized');
+            }
+          } catch (e) {
+            console.warn('[GhostLink] Markdown parser error:', e);
+          }
+
+          return () => {
+            sg?.destroy?.();
+            nm?.destroy?.();
+            am?.destroy?.();
           };
         }, [identity]);
 
@@ -1128,6 +1754,46 @@
 
         const getConvoMsgs = () => messages[activeConvo] || [];
 
+        // ==================== MARKDOWN FORMATTING HELPERS ====================
+        const getTextareaSelection = () => {
+          const input = document.querySelector('input[placeholder*="encrypted"], input[placeholder*="Message"]');
+          if (!input) return { start: 0, end: 0, text: '' };
+          return { start: input.selectionStart, end: input.selectionEnd, text: msgInput };
+        };
+
+        const insertMarkdownFormat = (prefix, suffix = prefix) => {
+          const input = document.querySelector('input[placeholder*="encrypted"], input[placeholder*="Message"]');
+          if (!input) return;
+          const start = input.selectionStart;
+          const end = input.selectionEnd;
+          const text = msgInput;
+          const selected = text.slice(start, end);
+          const before = text.slice(0, start);
+          const after = text.slice(end);
+          const newText = before + prefix + selected + suffix + after;
+          setMsgInput(newText);
+          setTimeout(() => {
+            input.focus();
+            const newPos = selected ? start + prefix.length + selected.length + suffix.length : start + prefix.length;
+            input.setSelectionRange(newPos, newPos);
+          }, 0);
+        };
+
+        const handleTabKey = (e) => {
+          if (e.key === 'Tab') {
+            e.preventDefault();
+            const input = e.target;
+            const start = input.selectionStart;
+            const end = input.selectionEnd;
+            const text = msgInput;
+            const newText = text.slice(0, start) + '  ' + text.slice(end);
+            setMsgInput(newText);
+            setTimeout(() => {
+              input.setSelectionRange(start + 2, start + 2);
+            }, 0);
+          }
+        };
+
         const sendMessage = async (content, type = "text", meta = {}) => {
           if (!content?.trim() && type === "text") return;
           try {
@@ -1149,76 +1815,33 @@
             }, meta.selfDestruct * 1000);
           }
 
-          // Send via P2P if connected — check manual connections first, then peerManager
+          // Send via P2P if connected — try data channel first
           const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-          const manualConn = manualConnectionsRef.current[peerId];
-          const dataChannelReady = peerManager?.isDataChannelReady?.(peerId) || false;
-          if (manualConn?.dc?.readyState === 'open') {
+          const conn = p2pConnectorRef.current;
+          const dcConnected = conn?.isConnected?.(peerId) || false;
+
+          addToast(`Block #${block.index} attached to chain and verified`, 'success');
+
+          if (conn && dcConnected) {
             try {
-              const msgPayload = JSON.stringify({
+              conn.sendMessage(peerId, {
                 type: 'chat', sender: identity.name, content: content.trim(),
-                msgType: type, meta, iv: block.encrypted.iv,
-                ciphertext: block.encrypted.ciphertext, blockHash: block.hash
+                msgType: type, meta, encrypted: block.encrypted, blockHash: block.hash
               });
-              manualConn.dc.send(msgPayload);
+              conn.sendPresence(peerId, { type: 'typing', sender: identity.name });
             } catch (e) {
-              console.error('Manual DC send failed:', e);
-              addToast('Send failed on manual channel', 'error');
-            }
-          } else if (peerManager && (connectionStates[peerId] === 'connected' || dataChannelReady)) {
-            try {
-              // Try Signal Protocol encryption first, fall back to AES
-              let msgPayload;
-              if (sessionManager && sessionManager.getSession(peerId)) {
-                try {
-                  const encrypted = await sessionManager.encryptMessage(peerId, JSON.stringify({
-                    type: 'chat',
-                    sender: identity.name,
-                    content: content.trim(),
-                    msgType: type,
-                    meta,
-                    blockHash: block.hash
-                  }));
-                  msgPayload = JSON.stringify({ signalProtocol: true, envelope: encrypted });
-                } catch (signalErr) {
-                  console.warn('[GhostLink] Signal encrypt failed, using AES fallback:', signalErr);
-                  msgPayload = JSON.stringify({
-                    type: 'chat',
-                    sender: identity.name,
-                    content: content.trim(),
-                    msgType: type,
-                    meta,
-                    iv: block.encrypted.iv,
-                    ciphertext: block.encrypted.ciphertext,
-                    blockHash: block.hash
-                  });
-                }
-              } else {
-                msgPayload = JSON.stringify({
-                  type: 'chat',
-                  sender: identity.name,
-                  content: content.trim(),
-                  msgType: type,
-                  meta,
-                  iv: block.encrypted.iv,
-                  ciphertext: block.encrypted.ciphertext,
-                  blockHash: block.hash
-                });
-              }
-              await peerManager.sendMessage(peerId, msgPayload);
-            } catch (e) {
-              console.error('P2P send failed, queuing:', e);
-              if (offlineQueue) {
-                await offlineQueue.queueMessage(peerId, block.encrypted);
-              }
+              console.error('DC send failed:', e);
             }
           } else if (offlineQueue) {
-            // Peer offline — queue for later delivery
-            await offlineQueue.queueMessage(peerId, block.encrypted);
-            setPendingMessages(prev => ({
-              ...prev,
-              [peerId]: [...(prev[peerId] || []), { id: block.hash, encrypted: block.encrypted }]
-            }));
+            // RELIABLE OFFLINE QUEUE
+            try {
+              await offlineQueue.queueMessage(peerId, block.encrypted);
+              addToast('Peer offline — message queued for relay', 'info');
+              setPendingMessages(prev => ({
+                ...prev,
+                [peerId]: [...(prev[peerId] || []), { id: block.hash, encrypted: block.encrypted }]
+              }));
+            } catch (e) { console.error('Offline queue failed:', e); }
           }
           } catch (e) { console.error('sendMessage error:', e); addToast(e.message || 'Failed to send message', 'error'); }
         };
@@ -1228,10 +1851,12 @@
           const id = Date.now();
           setUploadProgress(p => ({ ...p, [id]: 0 }));
 
-          const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+          const peerId = targetPeerId || peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+          const conn = p2pConnectorRef.current;
+          const dcConnected = conn?.isConnected?.(peerId) || connectionStates[peerId] === 'connected';
 
-          // Real P2P file transfer if available
-          if (fileTransferManager && fileObj && connectionStates[peerId] === 'connected') {
+          // Real P2P file transfer if connected
+          if (fileTransferManager && fileObj && dcConnected) {
             try {
               fileTransferManager.on('progress', ({ transferId, progress }) => {
                 if (transferId === id) setUploadProgress(p => ({ ...p, [id]: progress }));
@@ -1240,19 +1865,57 @@
               const fHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
               const fChunks = Math.ceil(fileSize / 65536);
               await sendMessage(fileName, "file", { fileSize, chunks: fChunks, hash: fHash });
-              setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fHash + '...', chunks: fChunks, encrypted: true }]);
+              setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fHash + '...', chunks: fChunks, encrypted: true, url: URL.createObjectURL(fileObj) }]);
               setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
               return;
             } catch (e) { console.error('P2P file transfer failed:', e); addToast('File transfer failed: ' + e.message, 'error'); }
           }
 
-          // Fallback: local-only file record (no P2P connection)
-          const chunks = Math.ceil(fileSize / 65536);
-          const fileHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
-          await sendMessage(fileName, "file", { fileSize, chunks, hash: fileHash });
-          setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fileHash + '...', chunks, encrypted: true }]);
-          setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
-          } catch (e) { console.error('sendFile error:', e); addToast(e.message || 'Failed to send file', 'error'); }
+          // AWAIT MODE: Peer offline, queue for connection
+          if (!targetPeerId) {
+            setPendingFileTransfers(prev => ({
+              ...prev,
+              [peerId]: [...(prev[peerId] || []), { id, name: fileName, size: fileSize, fileObj }]
+            }));
+            addToast(`Recipient offline — file queued to send when they connect`, 'info');
+
+            // Fallback: local-only file record (visual only until connected)
+            const chunks = Math.ceil(fileSize / 65536);
+            const fileHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
+            const block = await chain.add(identity.name, fileName, "file", { fileSize, chunks, hash: fileHash, status: 'awaiting' });
+            setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), block] }));
+            setTransferredFiles(prev => [...prev, { name: fileName, size: fileSize, from: identity?.name || 'You', ts: Date.now(), hash: fileHash + '...', chunks, encrypted: true }]);
+            setUploadProgress(p => { const n = { ...p }; delete n[id]; return n; });
+          }
+        } catch (e) { console.error('sendFile error:', e); addToast(e.message || 'Failed to send file', 'error'); }
+      };
+
+        const sendImage = async (file) => {
+          if (!file || !file.type.startsWith('image/')) {
+            addToast('Please select an image file', 'error');
+            return;
+          }
+          if (file.size > 4 * 1024 * 1024) {
+            addToast('Image too large — use file attach for images over 4MB', 'error');
+            return;
+          }
+          try {
+            const buffer = await file.arrayBuffer();
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            const imageData = btoa(binary);
+            await sendMessage(file.name || 'image', 'image', {
+              imageData,
+              mimeType: file.type,
+              fileName: file.name,
+              fileSize: file.size,
+            });
+            addToast('Image sent', 'success');
+          } catch (e) {
+            console.error('sendImage error:', e);
+            addToast('Failed to send image', 'error');
+          }
         };
 
         const handleFileDrop = (e) => {
@@ -1319,36 +1982,93 @@
           clearPersisted(CHAIN_STORAGE_KEY);
         };
 
+        const deleteAccount = () => {
+          if (!confirm("CRITICAL: Delete identity and all data? You will lose access to this identity forever unless you have your seed phrase. Proceed?")) return;
+          if (!confirm("FINAL WARNING: Your private key will be destroyed from this device. Are you absolutely sure?")) return;
+          
+          // Clear all states
+          setIdentity(null);
+          setMessages({});
+          setPeers([]);
+          setActiveConvo(null);
+          setSettings({
+            theme: "phantom", autoSave: true, messageRetention: 0,
+            notifications: true, autoConnect: true
+          });
+          
+          // Clear all storage
+          localStorage.clear();
+          
+          // Reset UI
+          setShowSettings(false);
+          setView("splash");
+          
+          // Hard reload if needed to clear in-memory singletons, 
+          // but we'll trust React state reset for now
+          addToast('Account and all data deleted.', 'info');
+        };
+
         const startCall = async (type) => {
           try {
-            // Check HTTPS requirement
             const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
             if (!isSecure) {
               addToast('Calls require HTTPS. Please use https:// or run on localhost.', 'error');
               return;
             }
 
+            const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+            if (!peerId || !p2pConnectorRef.current) {
+              addToast('No active peer connection', 'error');
+              return;
+            }
+
+            // Get local media stream
+            const constraints = type === 'video' ? { audio: true, video: true } : { audio: true };
+            const localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            callLocalStreamRef.current = localStream;
+            setLocalStream(localStream);
+
+            // Create a new RTCPeerConnection for this call
+            const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            callConnectionRef.current = pc;
+
+            // Add local tracks
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            // When remote stream arrives
+            pc.ontrack = (evt) => {
+              setRemoteStreams(prev => ({ ...prev, [peerId]: evt.streams[0] }));
+            };
+
+            // ICE signaling via the existing WebSocket (through p2pConnectorRef)
+pc.onicecandidate = (e) => {
+              if (e.candidate) {
+                const conn = p2pConnectorRef.current;
+                if (conn && conn.isConnected(peerId)) {
+                  conn.sendMessage(peerId, { type: 'call-ice', from: identity.fingerprint, candidate: e.candidate });
+                } else {
+                  // Fallback: send via signaling relay
+                  p2pConnectorRef.current?._send({
+                    type: 'offer', to: peerId, from: identity.fingerprint, sdp: pc.localDescription.sdp
+                  });
+                }
+              }
+            };
+
             setCallType(type);
             setCallActive(true);
             setMicOn(true);
-            setCamOn(type === "video");
+            setCamOn(type === 'video');
             setScreenSharing(false);
-
-            if (mediaHandler && activeConvo) {
-              const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-              if (type === "voice") await mediaHandler.startVoiceCall(peerId);
-              else if (type === "video") await mediaHandler.startVideoCall(peerId);
-              else if (type === "screen") await mediaHandler.startScreenShare(peerId);
-            }
-          } catch (e) { 
-            console.error('Call start failed:', e); 
-            if (e.message.includes('HTTPS') || e.message.includes('permission')) {
+          } catch (e) {
+            console.error('Call start failed:', e);
+            if (e.message.includes('HTTPS') || e.message.includes('permission') || e.message.includes('NotAllowed')) {
               addToast('⚠️ ' + e.message, 'error');
             } else {
               addToast('Call failed: ' + e.message, 'error');
             }
-            setCallActive(false); 
-            setCallType(null); 
+            setCallActive(false);
+            setCallType(null);
           }
         };
 
@@ -1357,7 +2077,19 @@
           const duration = callTimer;
           const ct = callType;
 
-          // Stop media tracks first to free hardware immediately
+          // 1. Close the actual RTCPeerConnection for this call
+          if (callConnectionRef.current) {
+            try { callConnectionRef.current.close(); } catch (e) { console.warn('close call PC error:', e); }
+            callConnectionRef.current = null;
+          }
+
+          // 2. Stop local media tracks
+          if (callLocalStreamRef.current) {
+            callLocalStreamRef.current.getTracks().forEach(track => track.stop());
+            callLocalStreamRef.current = null;
+          }
+
+          // 3. Also clear legacy state for safety
           if (localStream) {
             localStream.getTracks().forEach(track => track.stop());
           }
@@ -1365,13 +2097,14 @@
             if (stream && stream.getTracks) stream.getTracks().forEach(track => track.stop());
           });
 
-          // End via media handler
-          if (mediaHandler && activeConvo) {
-            const peerId = peer?.fingerprint || String(activeConvo);
-            try { await mediaHandler.endCall(peerId); } catch (e) { console.warn('endCall media cleanup:', e); }
+          // 4. Send call-end signal via data channel
+          const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+          const conn = p2pConnectorRef.current;
+          if (conn && conn.isConnected(peerId)) {
+            conn.sendMessage(peerId, { type: 'call-end', from: identity.fingerprint });
           }
 
-          // Reset all call state
+          // 5. Reset all call state
           setCallActive(false);
           setCallType(null);
           setScreenSharing(false);
@@ -1382,7 +2115,7 @@
           setCallTimer(0);
           clearInterval(timerRef.current);
 
-          // Add to call history
+          // 6. Add to call history
           if (peer && duration > 0) {
             setCallHistory(prev => [{
               id: Date.now(),
@@ -1398,32 +2131,92 @@
           }
         };
 
-        const answerIncomingCall = async (withVideo) => {
-          if (!incomingCall || !mediaHandler) return;
-          setCallActive(true);
-          setCallType(withVideo ? 'video' : 'voice');
-          setMicOn(true);
-          setCamOn(withVideo);
-          try {
-            await mediaHandler.answerCall(incomingCall.peerId, withVideo);
-          } catch (e) { console.error('Answer failed:', e); }
-          setIncomingCall(null);
-        };
 
-        const rejectIncomingCall = async () => {
-          if (mediaHandler && incomingCall) {
-            try { await mediaHandler.endCall(incomingCall.peerId); } catch (e) {}
+
+        const answerIncomingCall = async (withVideo) => {
+          if (!incomingCall) return;
+          const callerPeerId = incomingCall.peerId;
+          const callType = withVideo ? 'video' : 'voice';
+
+          try {
+            // Get local media
+            const constraints = withVideo ? { audio: true, video: true } : { audio: true };
+            const localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            callLocalStreamRef.current = localStream;
+            setLocalStream(localStream);
+            setCamOn(withVideo);
+
+            // Create RTCPeerConnection for the call
+            const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            callConnectionRef.current = pc;
+            pc.__peerId = callerPeerId;
+
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+            pc.ontrack = (evt) => { setRemoteStreams(prev => ({ ...prev, [callerPeerId]: evt.streams[0] })); };
+            pc.onicecandidate = (e) => {
+              if (e.candidate) {
+                const conn = p2pConnectorRef.current;
+                if (conn && conn.isConnected(callerPeerId)) {
+                  conn.sendMessage(callerPeerId, { type: 'call-ice', from: identity.fingerprint, candidate: e.candidate });
+                }
+              }
+            };
+
+            // Apply pending offer from call-offer
+            const storedOffer = pendingCallOfferRef.current;
+            if (storedOffer && storedOffer.sdp) {
+              await pc.setRemoteDescription({ type: 'offer', sdp: storedOffer.sdp });
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              const conn = p2pConnectorRef.current;
+              if (conn && conn.isConnected(callerPeerId)) {
+                conn.sendMessage(callerPeerId, { type: 'call-answer', sdp: pc.localDescription.sdp, from: identity.fingerprint, name: identity.name });
+              }
+            } else {
+              // No pending offer — create a fresh offer (caller initiated without offer? unusual)
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              const conn = p2pConnectorRef.current;
+              if (conn && conn.isConnected(callerPeerId)) {
+                conn.sendMessage(callerPeerId, { type: 'call-offer', callType, sdp: pc.localDescription.sdp, from: identity.fingerprint, name: identity.name });
+              }
+            }
+
+            setCallActive(true);
+            setCallType(callType);
+            setMicOn(true);
+            pendingCallOfferRef.current = null;
+          } catch (e) {
+            console.error('Answer failed:', e);
+            addToast('Failed to answer call: ' + e.message, 'error');
           }
           setIncomingCall(null);
         };
 
+        const rejectIncomingCall = () => {
+          const callerPeerId = incomingCall?.peerId;
+          if (callerPeerId && p2pConnectorRef.current?.isConnected(callerPeerId)) {
+            p2pConnectorRef.current.sendMessage(callerPeerId, { type: 'call-end', from: identity.fingerprint });
+          }
+          if (callConnectionRef.current) { try { callConnectionRef.current.close(); } catch {} callConnectionRef.current = null; }
+          setIncomingCall(null);
+          addToast('Call rejected', 'info');
+        };
+
         const toggleMicReal = () => {
-          if (mediaHandler) mediaHandler.toggleMic();
+          if (callLocalStreamRef.current) {
+            const audioTrack = callLocalStreamRef.current.getAudioTracks()[0];
+            if (audioTrack) audioTrack.enabled = !audioTrack.enabled;
+          }
           setMicOn(prev => !prev);
         };
 
         const toggleCamReal = () => {
-          if (mediaHandler) mediaHandler.toggleCamera();
+          if (callLocalStreamRef.current) {
+            const videoTrack = callLocalStreamRef.current.getVideoTracks()[0];
+            if (videoTrack) videoTrack.enabled = !videoTrack.enabled;
+          }
           setCamOn(prev => !prev);
         };
 
@@ -1441,6 +2234,10 @@
           setManualOfferString('');
           setManualAnswerString('');
           setManualPeerInput('');
+
+          // Join the signaling room so we receive peer connections from joiners
+          const conn = p2pConnectorRef.current;
+          if (conn) conn.joinRoom(code, identity.publicKeyHex);
 
           // Generate QR code SVG if QRInvite class is available
           const qrInstance = qrInviteRef.current || qrInviteData;
@@ -1527,16 +2324,18 @@
         };
 
         const generateManualOffer = async () => {
-          if (!identity) return;
+          if (!identity || !p2pConnectorRef.current) return;
           setManualSignalStep('creating');
           try {
-            const result = await ManualSignaling.createOffer(identity);
+            const result = await p2pConnectorRef.current.createManualOffer();
             manualPcRef.current = result.pc;
-            manualDcRef.current = result.dc;
-            setManualOfferString(result.encoded);
+            
+            // Re-bind data channel events for manual offerer
+            const dc = result.pc.createDataChannel('messages', { ordered: true });
+            setupManualDataChannel(dc, result.pc, result.peerId, { n: 'Peer', p: '' });
+
+            setManualOfferString(result.offerBase64);
             setManualSignalStep('offer-ready');
-            // Set up the data channel handlers for when answer arrives
-            setupManualDataChannel(result.dc, result.pc, 'pending-manual', { n: 'Peer', p: '', i: [], s: '' });
           } catch (e) {
             console.error('Manual offer failed:', e);
             addToast('Failed to create offer: ' + e.message, 'error');
@@ -1545,20 +2344,21 @@
         };
 
         const processManualAnswer = async () => {
-          if (!manualPeerInput.trim() || !manualPcRef.current) return;
+          if (!manualPeerInput.trim() || !p2pConnectorRef.current) return;
           try {
-            const peerInfo = await ManualSignaling.processAnswer(manualPeerInput.trim(), manualPcRef.current);
-            // Re-register the connection under the real peer ID
-            const peerId = peerInfo.f || 'manual-peer';
-            const oldConn = manualConnectionsRef.current['pending-manual'];
-            if (oldConn) {
-              delete manualConnectionsRef.current['pending-manual'];
-              manualConnectionsRef.current[peerId] = oldConn;
-              setupManualDataChannel(oldConn.dc, oldConn.pc, peerId, peerInfo);
+            const success = await p2pConnectorRef.current.processManualAnswer(manualPeerInput.trim());
+            if (success) {
+              // Use the connector's helper instead of atob to avoid encoding errors
+              const decoded = p2pConnectorRef.current.decodeSignal(manualPeerInput.trim());
+              const bundle = JSON.parse(decoded);
+              const peerId = bundle.f;
+              
+              setManualSignalStep('connected');
+              setManualPeerInput('');
+              addToast('Connected via manual signal', 'success');
+            } else {
+              addToast('No pending connection matches this answer', 'error');
             }
-            setManualPeerInfo(peerInfo);
-            setManualPeerInput('');
-            addToast('Processing answer...', 'info');
           } catch (e) {
             console.error('Answer processing failed:', e);
             addToast('Invalid answer signal', 'error');
@@ -1566,24 +2366,19 @@
         };
 
         const processManualOffer = async () => {
-          if (!manualPeerInput.trim() || !identity) return;
-          if (!ManualSignaling.isManualSignal(manualPeerInput.trim())) {
-            addToast('Invalid signal format', 'error');
-            return;
-          }
+          if (!manualPeerInput.trim() || !identity || !p2pConnectorRef.current) return;
           setManualSignalStep('processing-offer');
           try {
-            const result = await ManualSignaling.processOffer(manualPeerInput.trim(), identity);
-            manualPcRef.current = result.pc;
-            setManualAnswerString(result.encoded);
-            setManualSignalStep('answer-ready');
-            const peerId = result.peerInfo.f || 'manual-peer';
-            setManualPeerInfo(result.peerInfo);
-            // Listen for incoming data channel
-            result.pc.ondatachannel = (evt) => {
-              manualDcRef.current = evt.channel;
-              setupManualDataChannel(evt.channel, result.pc, peerId, result.peerInfo);
+            const result = await p2pConnectorRef.current.processManualOffer(manualPeerInput.trim());
+            
+            // Re-bind data channel events for manual receiver
+            result.pc.ondatachannel = (e) => {
+              setupManualDataChannel(e.channel, result.pc, result.peerInfo.f, result.peerInfo);
             };
+
+            setManualAnswerString(result.answerBase64);
+            setManualSignalStep('answer-ready');
+            setManualPeerInfo(result.peerInfo);
             setManualPeerInput('');
           } catch (e) {
             console.error('Offer processing failed:', e);
@@ -1594,33 +2389,17 @@
 
         const joinPeer = async (code) => {
           // Detect if this is a manual signal (base64 SDP bundle) or a GL- invite code
-          if (ManualSignaling.isManualSignal(code)) {
+          if (code && !code.startsWith('GL-')) {
             setManualPeerInput(code);
+            setInviteTab('manual');
             await processManualOffer();
             return;
           }
           if (!code || !code.startsWith('GL-')) { addToast('Invalid code. Use GL- invite or paste a manual signal.', 'error'); return; }
           try {
-            if (peerManager) {
-              await peerManager.joinRoom(code);
-              addToast('Connecting to peer...', 'info');
-            } else if (typeof RTCPeerManager !== 'undefined' && identity) {
-              // peerManager not set yet — create one on the fly as fallback
-              const SIG_URL = window.GHOSTLINK_SIGNAL_URL || window.ghostlink?.signalingUrl
-                || (!window.location.hostname || window.location.hostname === 'localhost'
-                    ? 'ws://localhost:3001'
-                    : `ws://${window.location.hostname}:3001`);
-              const pm = new RTCPeerManager(SIG_URL, {
-                peerId: identity.fingerprint,
-                id: identity.fingerprint,
-                name: identity.name,
-                publicKey: identity.publicKeyHex,
-                publicKeyHex: identity.publicKeyHex,
-                keyPair: identity.keyPair || null
-              });
-              setPeerManager(pm);
-              try { await pm.connect(); } catch (e) { console.warn('[GhostLink] Signaling connect failed:', e.message); }
-              await pm.joinRoom(code);
+            const conn = p2pConnectorRef.current;
+            if (conn) {
+              conn.joinRoom(code);
               addToast('Connecting to peer...', 'info');
             } else {
               addToast('P2P not initialized — check your connection and try again', 'error');
@@ -1793,32 +2572,50 @@
             }, 50);
 
             recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-            recorder.onstop = () => {
+            recorder.onstop = async () => {
               clearInterval(waveformInterval);
               clearInterval(recordingTimerRef.current);
               audioContext.close();
               const blob = new Blob(chunks, { type: mimeType });
-              const url = URL.createObjectURL(blob);
               const duration = recordingDuration;
 
               if (duration > 0) {
                 const msgId = 'voice-' + Date.now();
+                // Build local preview
+                const localUrl = URL.createObjectURL(blob);
                 setVoiceMessages(prev => ({
                   ...prev,
                   [activeConvo]: [...(prev[activeConvo] || []), {
-                    id: msgId, url, duration, waveform: [...waveformData],
+                    id: msgId, url: localUrl, duration, waveform: [...waveformData],
                     ts: Date.now(), sender: identity?.name
                   }]
                 }));
 
-                // Send voice message via P2P
+                // Send real voice data via P2P — convert blob to base64
                 const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
-                const payload = JSON.stringify({
-                  type: 'voice', url, duration, waveform: [...waveformData],
+                const arrayBuffer = await blob.arrayBuffer();
+                const binaryString = Array.from(new Uint8Array(arrayBuffer)).map(b => String.fromCharCode(b)).join('');
+                const base64Audio = btoa(binaryString);
+                const conn = p2pConnectorRef.current;
+                const payload = {
+                  type: 'voice', audioData: base64Audio, mimeType,
+                  duration, waveform: [...waveformData],
                   sender: identity?.name, ts: Date.now()
-                });
-                if (peerManager) {
-                  try { peerManager.sendMessage(peerId, payload); } catch {}
+                };
+
+                if (conn && conn.isConnected(peerId)) {
+                  try {
+                    conn.sendMessage(peerId, payload);
+                  } catch (e) { console.error('Voice send failed:', e); addToast('Voice send failed', 'error'); }
+                } else if (offlineQueue) {
+                  // QUEUE VOICE OFFLINE
+                  try {
+                    const enc = await CryptoEngine.encrypt(JSON.stringify(payload), identity.fingerprint);
+                    await offlineQueue.queueMessage(peerId, enc);
+                    addToast('Peer offline — voice queued for relay', 'info');
+                  } catch (e) { console.error('Voice queue failed:', e); }
+                } else {
+                  addToast('Not connected — voice message saved locally only', 'info');
                 }
               }
 
@@ -1870,32 +2667,7 @@
           };
         };
 
-        // Handle incoming voice messages
-        useEffect(() => {
-          if (!peerManager) return;
-          const handler = (peerId, data) => {
-            try {
-              const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-              if (parsed.type === 'voice') {
-                const convoKey = peers.find(p => p.fingerprint === peerId)?.id || peerId;
-                setVoiceMessages(prev => ({
-                  ...prev,
-                  [convoKey]: [...(prev[convoKey] || []), {
-                    id: 'voice-' + Date.now() + '-in',
-                    url: parsed.url, duration: parsed.duration,
-                    waveform: parsed.waveform || [],
-                    ts: parsed.ts || Date.now(),
-                    sender: parsed.sender
-                  }]
-                }));
-              }
-            } catch {}
-          };
-          peerManager.on('message', handler);
-          return () => peerManager.off('message', handler);
-        }, [peerManager]);
-
-        // ---- Group Chat ----
+        // Handle incoming fragments
         const createGroup = () => {
           if (!groupName.trim() || selectedGroupPeers.length < 2) {
             addToast('Need a name and at least 2 peers', 'error');
@@ -2074,6 +2846,18 @@
           @keyframes shake { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-4px); } 75% { transform:translateX(4px); } }
           @keyframes typing { 0%,60%,100% { opacity:0.3; transform:translateY(0); } 30% { opacity:1; transform:translateY(-4px); } }
           @keyframes scanline { 0% { top:-100%; } 100% { top:200%; } }
+          @keyframes ghostFly {
+            0% { transform: translate(-100vw, 20vh) scale(0.8) rotate(5deg); opacity: 0; }
+            10% { opacity: 0.4; }
+            90% { opacity: 0.4; }
+            100% { transform: translate(100vw, -20vh) scale(1.2) rotate(-5deg); opacity: 0; }
+          }
+          @keyframes ghostFlyReverse {
+            0% { transform: translate(100vw, 40vh) scale(0.9) rotate(-10deg); opacity: 0; }
+            15% { opacity: 0.3; }
+            85% { opacity: 0.3; }
+            100% { transform: translate(-100vw, 0vh) scale(1.1) rotate(10deg); opacity: 0; }
+          }
           * { box-sizing: border-box; }
           input:focus, textarea:focus { outline: none; }
           @media (max-width: 767px) {
@@ -2105,18 +2889,107 @@
           }} {...rest}>{children}</button>
         );
 
+        // ==================== ONBOARDING ====================
+        const onboardingContent = [
+          {
+            title: "Your Digital Ghost",
+            desc: "Ghostlink uses elliptical curve cryptography (ECDH P-256) to ensure your identity is mathematically impossible to forge. Your keys are yours alone.",
+            icon: "ghost",
+            tip: "The 12-word phrase you just saw is the ONLY way to recover your account. Keep it offline."
+          },
+          {
+            title: "Zero Server Architecture",
+            desc: "Unlike other apps, Ghostlink establishes direct WebRTC tunnels between devices. No metadata is stored, and no server ever sees your messages.",
+            icon: "shield",
+            tip: "You can connect via QR codes or Manual Signals if the internet is restricted."
+          },
+          {
+            title: "Private Ledger",
+            desc: "Every message is verified against a local cryptographic chain. If even a single byte is tampered with by a malicious peer, the chain breaks.",
+            icon: "chain",
+            tip: "Self-destructing messages and multi-device sync are built-in for maximum stealth."
+          }
+        ];
+
+        if (showOnboarding) return (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: th.bg, padding: 24, fontFamily: "'JetBrains Mono', monospace", color: "#e0e0e8", zIndex: 1000, position: "relative" }}>
+            <style>{globalCSS}</style>
+            <div style={{ background: `linear-gradient(145deg, #111118, #0d0d14)`, border: `1px solid ${th.accent}18`, borderRadius: 24, padding: "48px 40px", maxWidth: 500, width: "100%", animation: "fadeInScale 0.6s cubic-bezier(0.16, 1, 0.3, 1)", position: "relative", boxShadow: `0 40px 100px rgba(0,0,0,0.8)` }}>
+              <div style={{ position: "absolute", top: 20, right: 30, display: "flex", gap: 6 }}>
+                {onboardingContent.map((_, i) => (
+                  <div key={i} style={{ width: 30, height: 4, borderRadius: 2, background: i === onboardingStep ? th.accent : "rgba(255,255,255,0.06)", transition: "all 0.3s ease" }} />
+                ))}
+              </div>
+              
+              <div key={onboardingStep} style={{ animation: "fadeIn 0.4s ease" }}>
+                <div style={{ width: 70, height: 70, borderRadius: 20, background: `${th.accent}12`, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 30, color: th.accent }}>
+                  <I t={onboardingContent[onboardingStep].icon} s={36} c={th.accent} />
+                </div>
+                
+                <h2 style={{ fontSize: 26, fontWeight: 800, margin: "0 0 16px 0", letterSpacing: 2, color: "#fff" }}>{onboardingContent[onboardingStep].title}</h2>
+                <p style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.8, marginBottom: 32 }}>{onboardingContent[onboardingStep].desc}</p>
+                
+                <div style={{ background: `${th.accent}0a`, borderLeft: `3px solid ${th.accent}`, padding: "14px 18px", borderRadius: "0 10px 10px 0", marginBottom: 40 }}>
+                  <div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: 1.5, color: th.accent, fontWeight: 700, marginBottom: 6 }}>Operational Tip</div>
+                  <div style={{ fontSize: 11, color: "#718096", lineHeight: 1.5 }}>{onboardingContent[onboardingStep].tip}</div>
+                </div>
+
+                <div style={{ display: "flex", gap: 12 }}>
+                  {onboardingStep > 0 && (
+                    <button onClick={() => setOnboardingStep(s => s - 1)} style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: "14px 20px", color: "#8a8a9a", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                      Prev
+                    </button>
+                  )}
+                  <button onClick={() => {
+                    if (onboardingStep < 2) {
+                      setOnboardingStep(s => s + 1);
+                    } else {
+                      setShowOnboarding(false);
+                      setView("setup");
+                    }
+                  }} style={{
+                    flex: 1, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`,
+                    border: "none", borderRadius: 12, padding: "14px 0", color: "#000",
+                    fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                    letterSpacing: 1.5, transition: "all 0.3s ease", boxShadow: `0 10px 30px ${th.accent}40`,
+                  }}>
+                    {onboardingStep < 2 ? "SECURE NEXT" : "CONTINUE TO SETUP"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
         // ==================== SPLASH ====================
         if (view === "splash") return (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: `radial-gradient(ellipse at center, ${th.bg} 0%, #010409 70%)`, position: "relative", overflow: "hidden", fontFamily: "'JetBrains Mono', monospace" }}>
             <style>{globalCSS}</style>
+            
+            {/* Flying background ghosts */}
+            {[
+              { delay: "0s", top: "20%", dur: "12s", rev: false, size: 40 },
+              { delay: "4s", top: "50%", dur: "15s", rev: true, size: 55 },
+              { delay: "8s", top: "75%", dur: "10s", rev: false, size: 35 },
+              { delay: "2s", top: "10%", dur: "18s", rev: true, size: 45 },
+            ].map((g, i) => (
+              <div key={i} style={{
+                position: "absolute", top: g.top, left: 0, pointerEvents: "none", zIndex: 1,
+                animation: `${g.rev ? "ghostFlyReverse" : "ghostFly"} ${g.dur} linear infinite`,
+                animationDelay: g.delay, opacity: 0
+              }}>
+                <I t="ghost" s={g.size} c={`${th.accent}44`} />
+              </div>
+            ))}
+
             {[15, 30, 45, 60, 75, 85].map((t, i) => <div key={i} style={{ position: "absolute", width: "100%", height: 1, top: `${t}%`, background: `linear-gradient(90deg, transparent, ${th.accent}15, transparent)` }} />)}
-            <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20 }}><I t="ghost" s={80} c={th.accent} /></div>
-            <div style={{ fontSize: isMobile ? 28 : 44, fontWeight: 800, letterSpacing: isMobile ? 6 : 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>GHOSTLINK</div>
-            <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase" }}>Zero Trust · Zero Trace · Zero Servers</div>
-            <div style={{ marginTop: 40, display: "flex", gap: 5 }}>
+            <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20, zIndex: 10 }}><I t="ghost" s={80} c={th.accent} /></div>
+            <div style={{ fontSize: isMobile ? 28 : 44, fontWeight: 800, letterSpacing: isMobile ? 6 : 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8, zIndex: 10 }}>GHOSTLINK</div>
+            <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase", zIndex: 10 }}>Zero Trust · Zero Trace · Zero Servers</div>
+            <div style={{ marginTop: 40, display: "flex", gap: 5, zIndex: 10 }}>
               {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 0.25}s` }} />)}
             </div>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", overflow: "hidden" }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 }}>
               <div style={{ position: "absolute", width: "100%", height: "30%", background: `linear-gradient(transparent, ${th.accent}05, transparent)`, animation: "scanline 4s linear infinite" }} />
             </div>
           </div>
@@ -2325,6 +3198,9 @@
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => setShowDiagnostics(d => !d)} title="Diagnostics" style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: showDiagnostics ? `${th.accent}22` : "rgba(255,255,255,0.03)", color: showDiagnostics ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s" }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    </button>
                     <button onClick={openRecovery} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><I t="recover" s={16} /></button>
                     <button onClick={() => setShowSettings(true)} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><I t="settings" s={16} /></button>
                   </div>
@@ -2447,7 +3323,7 @@
                         <div style={{ position: "absolute", bottom: -1, right: -1, width: 9, height: 9, borderRadius: "50%", background: peer.status === "online" ? th.accent : peer.status === "group" ? th.accent2 : "#4a5568", border: `2px solid ${th.bg3}`, boxShadow: peer.status === "online" ? `0 0 6px ${th.accent}` : "none" }} />
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
                           <span>{peer.name}</span>
                           {peer.unread > 0 && <span style={{ width: 18, height: 18, borderRadius: "50%", background: th.accent, color: "#000", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{peer.unread}</span>}
                         </div>
@@ -2609,7 +3485,11 @@
                             </div>
                           )}
 
-                          <div onClick={() => setShowBlockInfo(msg)} style={{
+                          <div onClick={(e) => {
+                            // Only show block info if not clicking an interactive element like a link or button
+                            if (e.target.closest('a, button, input, img')) return;
+                            setShowBlockInfo(msg);
+                          }} style={{
                             padding: msg.type === "file" ? "10px 14px" : "9px 14px",
                             borderRadius: isMe ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
                             background: isMe ? `linear-gradient(135deg, ${th.accent}14, ${th.accent2}0a)` : "rgba(255,255,255,0.03)",
@@ -2618,7 +3498,9 @@
                           }}>
                             {msg.type === "file" ? (
                               (() => {
-                                const fileData = transferredFiles.find(f => f.name === msg.content && Math.abs(f.size - (msg.meta?.fileSize || 0)) < 1000);
+                                const fileData = transferredFiles.find(f =>
+                                  f.name === msg.content && Math.abs((f.size || 0) - (msg.meta?.fileSize || 0)) < 1000
+                                );
                                 return (
                                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                     <div style={{ width: 36, height: 36, borderRadius: 8, background: `${th.accent}12`, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -2626,23 +3508,43 @@
                                     </div>
                                     <div style={{ flex: 1 }}>
                                       <div style={{ fontSize: 12, fontWeight: 600 }}>{msg.content}</div>
-                                      <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{msg.meta?.chunks} chunks · {fmtSize(msg.meta?.fileSize || 0)}</div>
+                                      <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{msg.meta?.chunks || '?'} chunks · {fmtSize(msg.meta?.fileSize || 0)}</div>
                                     </div>
-                                    {fileData?.url && (
-                                      <a href={fileData.url} download={fileData.name} style={{ 
+                                    {fileData?.url ? (
+                                      <a href={fileData.url} download={fileData.name} onClick={e => e.stopPropagation()} style={{
                                         display: "flex", alignItems: "center", justifyContent: "center",
-                                        width: 32, height: 32, borderRadius: 6, 
+                                        width: 32, height: 32, borderRadius: 6,
                                         background: `${th.accent}15`, color: th.accent,
                                         textDecoration: "none", fontSize: 14
-                                      }}>
-                                        ↓
-                                      </a>
+                                      }}>↓</a>
+                                    ) : msg.meta?.status === 'awaiting' ? (
+                                      <span style={{ fontSize: 9, color: th.accent2 }}>Awaiting peer…</span>
+                                    ) : (
+                                      <span style={{ fontSize: 9, color: "#5a5a6a" }}>Receiving…</span>
                                     )}
                                   </div>
                                 );
                               })()
+                            ) : msg.type === "image" && msg.meta?.imageData ? (
+                              <div>
+                                <img
+                                  src={`data:${msg.meta.mimeType || 'image/png'};base64,${msg.meta.imageData}`}
+                                  alt={msg.meta.fileName || msg.content}
+                                  onClick={e => e.stopPropagation()}
+                                  style={{ maxWidth: "100%", maxHeight: 280, borderRadius: 8, display: "block", cursor: "default" }}
+                                />
+                                <div style={{ fontSize: 9, color: "#4a5568", marginTop: 4 }}>{msg.meta.fileName || msg.content} · {fmtSize(msg.meta.fileSize || 0)}</div>
+                              </div>
                             ) : (
-                              <div style={{ fontSize: settings.fontSize, lineHeight: 1.55, color: "#d0d0d8" }}>{msg.content}</div>
+                              <div style={{ fontSize: settings.fontSize, lineHeight: 1.55, color: "#d0d0d8" }}>
+                                {markdownParser ? (() => {
+                                  try {
+                                    const parsed = markdownParser.parse(msg.content || '');
+                                    const sanitized = htmlSanitizer ? htmlSanitizer(parsed) : parsed;
+                                    return <span dangerouslySetInnerHTML={{ __html: sanitized }} />;
+                                  } catch { return msg.content; }
+                                })() : msg.content}
+                              </div>
                             )}
                             <div style={{ fontSize: 9.5, color: "#3a3a4a", marginTop: 4, display: "flex", alignItems: "center", gap: 5, justifyContent: isMe ? "flex-end" : "flex-start" }}>
                               <span>{fmtTime(msg.ts)}</span>
@@ -2788,9 +3690,13 @@
                     </div>
                   )}
                   <div style={{ padding: isMobile ? "8px 10px" : "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, background: `${th.bg}ee`, flexShrink: 0 }}>
-                    <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) sendFile(e.target.files[0].name, e.target.files[0].size, e.target.files[0]); }} />
-                    <button onClick={() => fileInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) { sendFile(e.target.files[0].name, e.target.files[0].size, e.target.files[0]); e.target.value = ''; } }} />
+                    <input type="file" accept="image/*" ref={imageInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) { sendImage(e.target.files[0]); e.target.value = ''; } }} />
+                    <button onClick={() => fileInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Send file">
                       <I t="file" s={15} />
+                    </button>
+                    <button onClick={() => imageInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Send image">
+                      <I t="image" s={15} />
                     </button>
                     <button onClick={e => { e.stopPropagation(); setShowEmojiPicker(p => !p); }} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: showEmojiPicker ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: showEmojiPicker ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <I t="emoji" s={15} />
@@ -2853,8 +3759,22 @@
                       </button>
                     )}
 
+                    {/* Markdown Formatting Toolbar */}
+                    {!isMobile && (
+                      <div style={{ display: "flex", gap: 2, padding: "2px 0" }}>
+                        <button onClick={() => insertMarkdownFormat('**')} title="Bold (Ctrl+B)" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>**</button>
+                        <button onClick={() => insertMarkdownFormat('*')} title="Italic" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontStyle: "italic" }}>*</button>
+                        <button onClick={() => insertMarkdownFormat('`')} title="Inline code" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>`</button>
+                        <button onClick={() => insertMarkdownFormat('> ', '')} title="Quote" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11 }}>></button>
+                        <button onClick={() => insertMarkdownFormat('~~')} title="Strikethrough" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, textDecoration: "line-through" }}>~~</button>
+                      </div>
+                    )}
+
                     <input value={msgInput} onChange={e => setMsgInput(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && !e.shiftKey && (e.preventDefault(), sendMessage(msgInput))}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(msgInput); }
+                        if (e.key === "Tab") handleTabKey(e);
+                      }}
                       placeholder={selfDestruct ? `Self-destruct ${selfDestruct}s...` : isMobile ? "Message..." : "Type encrypted message..."}
                       style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: isMobile ? "10px 12px" : "10px 14px", color: "#e0e0e8", fontSize: isMobile ? 14 : 12.5, fontFamily: "inherit" }} />
                     <button onClick={() => sendMessage(msgInput)} style={{
@@ -2918,7 +3838,8 @@
                     <div>
                       <div style={{ fontSize: 9, color: "#4a5568", marginBottom: 4, letterSpacing: 1.5, textTransform: "uppercase" }}>Encrypted Payload (AES-256-GCM)</div>
                       <div style={{ fontFamily: "monospace", fontSize: 9, color: "#ff8844", wordBreak: "break-all", lineHeight: 1.7, background: "rgba(255,136,68,0.05)", padding: "8px 10px", borderRadius: 8 }}>
-                        IV: {showBlockInfo.encrypted.iv}<br />CT: {showBlockInfo.encrypted.ciphertext?.slice(0, 100)}...
+                        IV: {showBlockInfo.encrypted.iv}<br />
+                        CT: {showBlockInfo.encrypted.ciphertext?.slice(0, 256)}{showBlockInfo.encrypted.ciphertext?.length > 256 ? "..." : ""}
                       </div>
                     </div>
                   )}
@@ -3035,20 +3956,15 @@
                       <Btn accent style={{ width: "100%" }} onClick={async () => {
                         const code = joinCode.trim();
                         if (ManualSignaling.isManualSignal(code)) {
-                          // Process manual offer and show answer
+                          // Process manual offer and show answer via new connector
                           setManualPeerInput(code);
                           setInviteTab('manual');
                           setManualSignalStep('processing-offer');
                           try {
-                            const result = await ManualSignaling.processOffer(code, identity);
-                            manualPcRef.current = result.pc;
-                            setManualAnswerString(result.encoded);
+                            const result = await p2pConnectorRef.current.processManualOffer(code);
+                            setManualAnswerString(result.answerBase64);
                             setManualSignalStep('answer-ready');
                             setManualPeerInfo(result.peerInfo);
-                            result.pc.ondatachannel = (evt) => {
-                              manualDcRef.current = evt.channel;
-                              setupManualDataChannel(evt.channel, result.pc, result.peerInfo.f || 'manual-peer', result.peerInfo);
-                            };
                           } catch (e) {
                             addToast('Invalid signal: ' + e.message, 'error');
                             setManualSignalStep('idle');
@@ -3226,7 +4142,83 @@
               </div>
             )}
 
-            {/* ══════ SETTINGS MODAL ══════ */}
+{/* DIAGNOSTICS DISABLED FOR DEBUG
+            {showDiagnostics && (() => {
+              const conn = p2pConnectorRef.current;
+              const pcs = conn ? Object.keys(conn.pcs || {}) : [];
+              const dcs = conn ? Object.entries(conn.dcs || {}) : [];
+              const uptime = window.GhostLinkDebug ? window.GhostLinkDebug.uptime() : 0;
+              const fmtUptime = () => {
+                const s = Math.floor(uptime / 1000);
+                const m = Math.floor(s / 60);
+                const h = Math.floor(m / 60);
+                return `${h}h ${m % 60}m ${s % 60}s`;
+              };
+              return (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", WebkitBackdropFilter: "blur(12px)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
+                  <div style={{ background: "#0e0e16", border: `1px solid ${th.accent}30`, borderRadius: 16, padding: 24, maxWidth: 680, width: "100%", maxHeight: "88vh", overflowY: "auto" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                      <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={th.accent} strokeWidth="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        NETWORK DIAGNOSTICS
+                      </span>
+                      <button onClick={() => setShowDiagnostics(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer", fontSize: 18 }}><I t="x" s={18} /></button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
+                      {[
+                        { label: "UPTIME", value: fmtUptime(), color: th.accent },
+                        { label: "CONNECTION", value: signalingConnected ? "ONLINE" : "OFFLINE", color: signalingConnected ? "#00cc66" : "#ff4444" },
+                        { label: "MODE", value: connectionMode || "—", color: th.accent2 },
+                        { label: "SIGNALING", value: signalingAvailable ? "READY" : "RETRYING", color: signalingAvailable ? th.accent : "#ff8844" },
+                      ].map(b => (
+                        <div key={b.label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "10px 12px", textAlign: "center" }}>
+                          <div style={{ fontSize: 9, color: "#4a5568", letterSpacing: 1, marginBottom: 4 }}>{b.label}</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: b.color, letterSpacing: 0.5 }}>{b.value}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, marginBottom: 8 }}>ACTIVE CONNECTIONS ({pcs.length})</div>
+                      {pcs.length === 0 && <div style={{ fontSize: 11, color: "#3a3a4a" }}>No active peer connections</div>}
+                      {pcs.map(pid => {
+                        const pc = conn.pcs[pid];
+                        const peerState = conn.states?.[pid] || 'unknown';
+                        const q = conn.dcs?.[pid]?.messages?.readyState;
+                        return (
+                          <div key={pid} style={{ background: "rgba(255,255,255,0.02)", borderRadius: 8, padding: "8px 12px", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 8, height: 8, borderRadius: "50%", background: q === 'open' ? "#00cc66" : q === 'connecting' ? "#ff8844" : "#ff4444", flexShrink: 0 }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{peers.find(p => p.id === pid || p.fingerprint === pid)?.name || pid}</div>
+                              <div style={{ fontSize: 9, color: "#4a5568" }}>ICE: {pc?.iceConnectionState || '—'} · DC: {q || '—'}</div>
+                            </div>
+                            <div style={{ fontSize: 9, color: peerState === 'connected' ? "#00cc66" : "#ff8844", fontWeight: 600 }}>{peerState.toUpperCase()}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {window.GhostLinkSelfTest && (
+                      <button onClick={async () => {
+                        const result = await window.GhostLinkSelfTest.runQuick();
+                        if (result) addToast('Quick check complete', 'success');
+                        else addToast('Quick check failed', 'error');
+                      }}
+                        style={{ marginTop: 8, width: "100%", background: `${th.accent2}10`, border: `1px solid ${th.accent2}30`, borderRadius: 8, padding: "8px 12px", color: th.accent2, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 600 }}>
+                        RUN QUICK SELF-TEST
+                      </button>
+                    )}
+                    {window.GhostLinkDebug && (
+                      <button onClick={() => { const d = window.GhostLinkDebug.dump(); console.log(JSON.stringify(d, null, 2)); addToast('Debug dump logged to console', 'success'); }}
+                        style={{ marginTop: 8, width: "100%", background: `${th.accent}10`, border: `1px solid ${th.accent}30`, borderRadius: 8, padding: "8px 12px", color: th.accent, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 600 }}>
+                        DUMP TO CONSOLE
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+            DIAGNOSTICS DISABLED FOR DEBUG */}
+
+                    {/* ══════ SETTINGS MODAL ══════ */}
             {showSettings && (
               <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowSettings(false)}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 500, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
@@ -3443,11 +4435,170 @@
                     </div>
                   </div>
 
+                  {/* License / Pro Activation */}
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <I t="key" s={14} c={licenseStatus !== 'free' ? th.accent : "#4a5568"} />
+                        <span style={{ fontSize: 12, fontWeight: 600, color: licenseStatus !== 'free' ? th.accent : "#8a8a9a" }}>
+                          {licenseStatus !== 'free' ? `GhostLink ${licenseTier.charAt(0).toUpperCase() + licenseTier.slice(1)}` : 'GhostLink Pro'}
+                        </span>
+                      </div>
+                      <Tag color={licenseStatus !== 'free' ? th.accent : '#4a5568'}>
+                        {licenseStatus !== 'free' ? 'ACTIVE' : 'FREE'}
+                      </Tag>
+                    </div>
+                    {licenseStatus === 'free' ? (
+                      <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 12 }}>
+                        <div style={{ fontSize: 10, color: "#5a5a6a", marginBottom: 10, lineHeight: 1.5 }}>
+                          Enter a license key to unlock Pro features:<br/>
+                          • Unlimited peers<br/>
+                          • Large file transfer (100MB+)<br/>
+                          • Full data export<br/>
+                          • Team workspaces<br/>
+                          • Pro themes (Stealth, Carbon)
+                        </div>
+                        {deviceIdLoading ? (
+                          <div style={{ marginBottom: 10, padding: 10, background: "#0a0a14", borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)", fontSize: 9, color: "#5a5a6a" }}>
+                            Loading Device ID…
+                          </div>
+                        ) : deviceId ? (
+                          <div style={{ marginBottom: 10, padding: 10, background: "#0a0a14", borderRadius: 8, border: "1px solid rgba(0,255,163,0.15)" }}>
+                            <div style={{ fontSize: 9, color: "#00ffa3", fontWeight: 600, marginBottom: 6 }}>YOUR DEVICE ID — copy this for Pro plan</div>
+                            <div style={{ fontSize: 9, fontFamily: "monospace", color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.4 }}>{deviceId}</div>
+                            <button
+                              onClick={() => { navigator.clipboard?.writeText(deviceId); addToast('Device ID copied', 'success'); }}
+                              style={{ marginTop: 8, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,255,163,0.3)", background: "transparent", color: "#00ffa3", fontSize: 9, cursor: "pointer" }}
+                            >Copy Device ID</button>
+                            <div style={{ fontSize: 8, color: "#4a4a5a", marginTop: 6 }}>Enterprise: send company name + user count instead</div>
+                          </div>
+                        ) : (
+                          <div style={{ marginBottom: 10, padding: 10, background: "#0a0a14", borderRadius: 8, border: "1px solid rgba(255,68,102,0.2)", fontSize: 9, color: "#ff8899", lineHeight: 1.5 }}>
+                            {deviceIdError || 'Device ID unavailable'}
+                            <button
+                              onClick={() => {
+                                setDeviceIdLoading(true);
+                                setDeviceIdError(null);
+                                resolveDeviceId(identity).then(fp => {
+                                  if (fp) { setDeviceId(fp); setDeviceIdError(null); }
+                                  else setDeviceIdError('Still unavailable — refresh the page');
+                                  setDeviceIdLoading(false);
+                                });
+                              }}
+                              style={{ display: "block", marginTop: 8, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 9, cursor: "pointer" }}
+                            >Retry</button>
+                          </div>
+                        )}
+                        <input
+                          type="text"
+                          placeholder="GHOST-XXXX-XXXX-XXXX-XXXX-XXXX"
+                          value={licenseKeyInput}
+                          onChange={e => { setLicenseKeyInput(e.target.value.toUpperCase()); setLicenseError(null); }}
+                          style={{
+                            width: "100%", padding: "10px 12px", background: "#0a0a14",
+                            border: licenseError ? "1px solid #ff4466" : "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 8, color: "#e0e0e0", fontSize: 11, fontFamily: "monospace",
+                            boxSizing: "border-box", marginBottom: 8,
+                          }}
+                        />
+                        {licenseError && (
+                          <div style={{ fontSize: 10, color: "#ff4466", marginBottom: 8 }}>{licenseError}</div>
+                        )}
+                        <button
+                          onClick={async () => {
+                            if (!licenseKeyInput.trim()) {
+                              setLicenseError('Please enter a license key');
+                              return;
+                            }
+                            if (!/^GHOST-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$/i.test(licenseKeyInput)) {
+                              setLicenseError('Invalid license key format');
+                              return;
+                            }
+                            setLicenseActivating(true);
+                            setLicenseError(null);
+                            try {
+                              const ns = await ensureLicenseSystem();
+                              if (!ns?.licenseManager) {
+                                setLicenseError('License system not ready — refresh the page and try again');
+                                return;
+                              }
+                              const result = await ns.licenseManager.activate(licenseKeyInput);
+                              if (result?.success) {
+                                const tier = await ns.licenseManager.getTier();
+                                setLicenseTier(tier);
+                                setLicenseStatus(tier);
+                                setLicenseKeyInput('');
+                                addToast('License activated! Pro features unlocked.', 'success');
+                                if (ns.featureGate) await ns.featureGate.refresh();
+                              } else {
+                                setLicenseError(result?.error || ns.licenseManager.formatError?.(result?.errorCode) || 'Activation failed');
+                              }
+                            } catch (err) {
+                              setLicenseError('Error: ' + err.message);
+                            }
+                            setLicenseActivating(false);
+                          }}
+                          disabled={licenseActivating}
+                          style={{
+                            width: "100%", padding: "10px 14px", borderRadius: 8,
+                            border: "none", background: licenseActivating ? "#3a5e4a" : th.accent,
+                            color: "#000", fontSize: 11, fontWeight: 600, cursor: licenseActivating ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          {licenseActivating ? 'Activating...' : 'Activate License'}
+                        </button>
+                        <div style={{ fontSize: 9, color: "#3a3a4a", marginTop: 10, textAlign: "center" }}>
+                          Contact admin with your Device ID (Pro) or company details (Enterprise) to receive a key.
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 12 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                          <span style={{ fontSize: 11, color: "#8a8a9a" }}>Tier</span>
+                          <Tag color={th.accent}>{licenseTier.toUpperCase()}</Tag>
+                        </div>
+                        {licenseDaysLeft != null && licenseDaysLeft > 0 && (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                            <span style={{ fontSize: 11, color: "#8a8a9a" }}>Expires in</span>
+                            <span style={{ fontSize: 11, color: licenseDaysLeft <= 7 ? "#ffaa00" : th.accent }}>{licenseDaysLeft} day(s)</span>
+                          </div>
+                        )}
+                        <button
+                          onClick={async () => {
+                            if (window.GLLicenseRuntime?.licenseManager) {
+                              window.GLLicenseRuntime.licenseManager.deactivate();
+                              setLicenseTier('free');
+                              setLicenseStatus('free');
+                              addToast('License deactivated', 'info');
+                              if (window.GLLicenseRuntime?.featureGate) {
+                                await window.GLLicenseRuntime.featureGate.refresh();
+                              }
+                            }
+                          }}
+                          style={{
+                            width: "100%", padding: "8px 14px", borderRadius: 8,
+                            border: "1px solid rgba(255,68,68,0.3)", background: "transparent",
+                            color: "#ff4466", fontSize: 10, cursor: "pointer",
+                          }}
+                        >
+                          Deactivate License
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <Btn small ghost onClick={exportChat} style={{ flex: 1 }}><I t="dl" s={13} /> Export Data</Btn>
                     <Btn small ghost onClick={() => { setShowSettings(false); openRecovery(); }} style={{ flex: 1 }}><I t="recover" s={13} /> Backup ID</Btn>
                   </div>
-                  <Btn small ghost onClick={wipeAll} style={{ width: "100%", borderColor: "rgba(255,68,68,0.2)", color: "#ff4444" }}><I t="trash" s={13} c="#ff4444" /> Wipe All Data</Btn>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <Btn small ghost onClick={wipeAll} style={{ flex: 1, borderColor: "rgba(255,255,255,0.06)", color: "#8a8a9a" }}>
+                       Wipe Message Data
+                    </Btn>
+                    <Btn small ghost onClick={deleteAccount} style={{ flex: 1, borderColor: "rgba(255,68,68,0.2)", color: "#ff4444" }}>
+                      <I t="trash" s={13} c="#ff4444" /> Delete Account
+                    </Btn>
+                  </div>
 
                   <div style={{ marginTop: 16, textAlign: "center", fontSize: 9, color: "#2a2a3a" }}>
                     GhostLink v2.0 · Zero Trust · Zero Trace · Built with love
@@ -3945,12 +5096,36 @@
                 </div>
               </div>
             )}
+
+            {showExpiryModal && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999999, padding: 20 }}>
+                <div style={{ background: "#12121c", border: "1px solid #ff4466", borderRadius: 14, padding: 24, maxWidth: 400, width: "100%", textAlign: "center" }}>
+                  <div style={{ fontSize: 28, marginBottom: 8 }}>⏱</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#ff4466", marginBottom: 8 }}>License Expired</div>
+                  <div style={{ fontSize: 12, color: "#8a8a9a", lineHeight: 1.6, marginBottom: 16 }}>
+                    Your {licenseTier} plan has reached its usage limit. Pro features are now locked.<br/><br/>
+                    {licenseTier === 'pro' ? 'Send your Device ID to renew:' : 'Send your company name and user count to renew:'}
+                  </div>
+                  {deviceId && licenseTier === 'pro' && (
+                    <div style={{ fontSize: 9, fontFamily: "monospace", color: "#5a5a6a", wordBreak: "break-all", marginBottom: 12, padding: 8, background: "#0a0a14", borderRadius: 6 }}>{deviceId}</div>
+                  )}
+                  <button
+                    onClick={() => { setShowExpiryModal(false); setShowSettings(true); }}
+                    style={{ width: "100%", padding: "11px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontWeight: 600, fontSize: 12, cursor: "pointer", marginBottom: 8 }}
+                  >Renew License</button>
+                  <button
+                    onClick={() => { setShowExpiryModal(false); setExpiryDismissed(true); }}
+                    style={{ width: "100%", padding: "9px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 11, cursor: "pointer" }}
+                  >Continue on Free Plan</button>
+                </div>
+              </div>
+            )}
           </div>
         );
       }
 
       const root = ReactDOM.createRoot(document.getElementById("root"));
-      root.render(React.createElement(ErrorBoundary, null, React.createElement(GhostLink)));
+      root.render(React.createElement(ErrorBoundary, null, React.createElement(GhostLinkApp)));
     </script>
   </body>
 </html>

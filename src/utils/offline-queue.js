@@ -567,3 +567,7 @@ class OfflineQueue {
 }
 
 window.OfflineQueue = OfflineQueue;
+if (typeof globalThis !== 'undefined') {
+  globalThis.GhostLink = globalThis.GhostLink || {};
+  globalThis.GhostLink.OfflineQueue = OfflineQueue;
+}
