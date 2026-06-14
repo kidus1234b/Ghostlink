@@ -70,7 +70,11 @@ Every major messaging app — even the “secure” ones — stores metadata on 
 
 Single HTML file with React 18 + Babel transpilation. No build step needed.
 
-**Screens:** Splash (ghost animation + loading) → Setup (name + 12-word seed generation) → Main Chat (full interface with sidebar)
+**Screens:** 
+- **Splash**: Flying ghosts animation + dynamic logo loading.
+- **Onboarding (v0.0.1)**: 3-step interactive walkthrough explaining E2EE, P2P architecture, and blockchain integrity BEFORE account setup.
+- **Setup**: Zero-knowledge identity generation (name + BIP39 seed phrase).
+- **Main Chat**: Full direct-communication interface with multi-theme support.
 
 **Features:**
 
@@ -82,6 +86,8 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 - Reply threading and pinned messages
 - Blockchain explorer (view SHA-256 chain per conversation)
 - QR code invite generation (pure SVG, Reed-Solomon error correction)
+- **Manual Signaling (v0.0.1)**: Robust serverless handshake with Unicode-safe Base64 encoding.
+- **Account Deletion (v0.0.1)**: 2-step secure wipe of private keys and local data.
 - Message search across encrypted conversations
 
 ### Desktop App — Electron
@@ -307,6 +313,7 @@ Layer 3: P2P recovery
 |Data theft (device)  |AES-256-GCM encryption at rest with key wrapping    |
 |Backup compromise    |Shamir’s Secret Sharing — single fragment is useless|
 |Identity theft       |BIP39 seed phrase derives all keys deterministically|
+|Data destruction     |2-step secure Account Deletion (wipes hardware storage)|
 |Metadata surveillance|P2P direct — no central logs, no connection records |
 |Replay attacks       |Unique IV per message + blockchain ordering         |
 
