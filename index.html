@@ -4,11 +4,77 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GhostLink v2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        window.errs = [];
+        window.onerror = function(msg, url, line, col, error) {
+          window.errs.push({type: 'error', msg, url, line, col, stack: error?.stack});
+          showDebug();
+          return false;
+        };
+        window.onunhandledrejection = function(event) {
+          window.errs.push({type: 'promise', msg: event.reason?.message || event.reason, stack: event.reason?.stack});
+          showDebug();
+        };
+        const origLog = console.log;
+        const origError = console.error;
+        console.log = function(...args) {
+          origLog.apply(console, args);
+          window.errs.push({type: 'log', text: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')});
+          showDebug();
+        };
+        console.error = function(...args) {
+          origError.apply(console, args);
+          window.errs.push({type: 'error', text: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')});
+          showDebug();
+        };
+        function showDebug() {
+          const errors = window.errs.filter(e => e.type === 'error' || e.type === 'promise');
+          if (errors.length === 0) {
+            const existing = document.getElementById('debug-reporter');
+            if (existing) existing.remove();
+            return;
+          }
+          let div = document.getElementById('debug-reporter');
+          if (!div) {
+            div = document.createElement('div');
+            div.id = 'debug-reporter';
+            div.style.position = 'fixed';
+            div.style.bottom = '0';
+            div.style.left = '0';
+            div.style.right = '0';
+            div.style.height = '300px';
+            div.style.background = '#111';
+            div.style.color = '#ff4466';
+            div.style.fontFamily = 'monospace';
+            div.style.overflow = 'auto';
+            div.style.padding = '10px';
+            div.style.zIndex = '999999';
+            div.style.borderTop = '2px solid red';
+            if (document.body) {
+              document.body.appendChild(div);
+            } else {
+              window.addEventListener('DOMContentLoaded', () => {
+                if (window.errs.filter(e => e.type === 'error' || e.type === 'promise').length > 0) {
+                  document.body.appendChild(div);
+                  showDebug();
+                }
+              });
+              return;
+            }
+          }
+          div.innerHTML = errors.map(e => `<div>[${e.type}] ${e.msg || e.text || ''} ${e.url ? 'in ' + e.url : ''} ${e.line ? 'line ' + e.line + ':' + e.col : ''} ${e.stack ? '<pre>' + e.stack + '</pre>' : ''}</div>`).join('');
+        }
+      })();
+    </script>
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
     <script src="src/crypto/signal-protocol.js"></script>
     <script src="src/p2p/webrtc-manager.js"></script>
-    <script src="src/p2p/file-transfer.js"></script>
+    <script src="src/p2p/file-transfer.js?v=2"></script>
     <script src="src/p2p/media-handler.js"></script>
     <script src="src/utils/qr-invite.js"></script>
     <script src="src/p2p/p2p-connector.js"></script>
@@ -60,8 +126,17 @@
     <script src="src/license/dev-console.js"></script>
     <script src="src/license/license-activation-ui.js"></script>
     <script src="src/license/index.js"></script>
+    <script type="text/babel" src="src/license/workspace-components.js"></script>
     <script>window.GLLicenseAPI = window.GhostLink;</script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+    <script>
+      // Overwrite default react preset to force classic runtime (using React.createElement)
+      // instead of automatic runtime (which generates ES module imports)
+      Babel.registerPreset('react', [
+        Babel.availablePresets['react'],
+        { runtime: 'classic' }
+      ]);
+    </script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       body { background: #0a0a0f; }
@@ -513,7 +588,84 @@
           const data = new Uint8Array(w.data.match(/.{2}/g).map(b => parseInt(b,16)));
           return crypto.subtle.unwrapKey("pkcs8", data, wrapKey, { name: "AES-GCM", iv }, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
         },
+        async decrypt(encObj, key) {
+          const ck = await crypto.subtle.importKey("raw", new TextEncoder().encode(key.padEnd(32, "0").slice(0, 32)), "AES-GCM", false, ["decrypt"]);
+          const iv = new Uint8Array(encObj.iv.match(/.{2}/g).map(b => parseInt(b, 16)));
+          const ct = new Uint8Array(encObj.ciphertext.match(/.{2}/g).map(b => parseInt(b, 16)));
+          const dec = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, ck, ct);
+          return new TextDecoder().decode(dec);
+        },
+        async encryptWithPublicKey(plaintext, pubKeyHex) {
+          const keyBytes = new Uint8Array(pubKeyHex.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+          const recipientPubKey = await crypto.subtle.importKey(
+            "raw",
+            keyBytes,
+            { name: "ECDH", namedCurve: "P-256" },
+            true,
+            []
+          );
+          const ephemeral = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+          const sharedSecret = await crypto.subtle.deriveKey(
+            {
+              name: "ECDH",
+              public: recipientPubKey
+            },
+            ephemeral.privateKey,
+            {
+              name: "AES-GCM",
+              length: 256
+            },
+            true,
+            ["encrypt", "decrypt"]
+          );
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const textBytes = new TextEncoder().encode(plaintext);
+          const ciphertext = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv },
+            sharedSecret,
+            textBytes
+          );
+          const ephemeralRaw = await crypto.subtle.exportKey("raw", ephemeral.publicKey);
+          const ephemeralPubKeyHex = Array.from(new Uint8Array(ephemeralRaw)).map(b => b.toString(16).padStart(2, "0")).join("");
+          return {
+            ephemeralPubKeyHex,
+            ivHex: Array.from(iv).map(b => b.toString(16).padStart(2, "0")).join(""),
+            ciphertextHex: Array.from(new Uint8Array(ciphertext)).map(b => b.toString(16).padStart(2, "0")).join("")
+          };
+        },
+        async decryptWithPrivateKey(encBundle, privateKey) {
+          const ephemeralRawBytes = new Uint8Array(encBundle.ephemeralPubKeyHex.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+          const ephemeralPubKey = await crypto.subtle.importKey(
+            "raw",
+            ephemeralRawBytes,
+            { name: "ECDH", namedCurve: "P-256" },
+            true,
+            []
+          );
+          const sharedSecret = await crypto.subtle.deriveKey(
+            {
+              name: "ECDH",
+              public: ephemeralPubKey
+            },
+            privateKey,
+            {
+              name: "AES-GCM",
+              length: 256
+            },
+            true,
+            ["encrypt", "decrypt"]
+          );
+          const iv = new Uint8Array(encBundle.ivHex.match(/.{2}/g).map(b => parseInt(b, 16)));
+          const ciphertext = new Uint8Array(encBundle.ciphertextHex.match(/.{2}/g).map(b => parseInt(b, 16)));
+          const decryptedBytes = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            sharedSecret,
+            ciphertext
+          );
+          return new TextDecoder().decode(decryptedBytes);
+        },
       };
+      window.CryptoEngine = CryptoEngine;
 
       // ==================== MANUAL SIGNALING (serverless WebRTC) ====================
       const ManualSignaling = {
@@ -852,7 +1004,7 @@
         // Toast notification system
         const [toasts, setToasts] = useState([]);
         const addToast = (message, type = 'info') => {
-          const id = Date.now();
+          const id = Date.now() + '-' + Math.random();
           setToasts(prev => [...prev.slice(-4), { id, message, type }]);
           setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
         };
@@ -1098,6 +1250,22 @@
         const [htmlSanitizer, setHtmlSanitizer] = useState(null);
         const [showFormattingBar, setShowFormattingBar] = useState(false);
 
+        // License Upgrade Gating (Phase 4)
+        const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+        const [upgradeLimitType, setUpgradeLimitType] = useState('pro_themes');
+
+        // Collaborative Team Workspaces (Phase 4)
+        const [workspaces, setWorkspaces] = useState([]);
+        const [workspaceInviteCode, setWorkspaceInviteCode] = useState('');
+        const [workspaceJoinInvite, setWorkspaceJoinInvite] = useState('');
+        const [workspaceCreateName, setWorkspaceCreateName] = useState('');
+        const [showWorkspaceCreate, setShowWorkspaceCreate] = useState(false);
+        const [showWorkspaceJoin, setShowWorkspaceJoin] = useState(false);
+        const [showWorkspaceInviteGen, setShowWorkspaceInviteGen] = useState(false);
+        const [workspaceInviteRecipientPub, setWorkspaceInviteRecipientPub] = useState('');
+        const [inviteWordsInput, setInviteWordsInput] = useState('');
+        const [decryptedWorkspaceMsgs, setDecryptedWorkspaceMsgs] = useState({});
+
         const mediaRecorderRef = useRef(null);
         const recordingTimerRef = useRef(null);
         const audioContextRef = useRef(null);
@@ -1194,10 +1362,223 @@
 
         useEffect(() => {
           if (!showEmojiPicker) return;
-          const close = () => setShowEmojiPicker(false);
-          document.addEventListener("click", close);
-          return () => document.removeEventListener("click", close);
+          const handler = () => setShowEmojiPicker(false);
+          document.addEventListener("click", handler);
+          return () => document.removeEventListener("click", handler);
         }, [showEmojiPicker]);
+
+        // ==================== WORKSPACE LIFECYCLE & SYNC HANDLERS ====================
+        const syncWorkspaces = useCallback(() => {
+          const ns = window.GLLicenseRuntime;
+          if (ns && ns.workspaceManager) {
+            setWorkspaces(ns.workspaceManager.getWorkspaces());
+          }
+        }, []);
+
+        useEffect(() => {
+          syncWorkspaces();
+        }, [licenseStatus, syncWorkspaces]);
+
+        useEffect(() => {
+          const setupLimitListeners = async () => {
+            const ns = await ensureLicenseSystem();
+            if (ns && ns.eventBus) {
+              ns.eventBus.on('gate:limit_reached', (data) => {
+                setUpgradeLimitType(data.limitType);
+                setShowUpgradeModal(true);
+              });
+            }
+          };
+          setupLimitListeners();
+        }, []);
+
+        const isWorkspace = typeof activeConvo === 'string' && activeConvo.startsWith('ws_');
+        const activeWorkspace = useMemo(() => {
+          return isWorkspace ? workspaces.find(w => w.id === activeConvo) : null;
+        }, [isWorkspace, workspaces, activeConvo]);
+
+        useEffect(() => {
+          if (!isWorkspace || !activeWorkspace) return;
+          let cancelled = false;
+          
+          const decryptAll = async () => {
+            const key = activeWorkspace.workspaceKey;
+            const decrypted = {};
+            
+            for (const block of activeWorkspace.chain) {
+              if (block.encrypted) {
+                try {
+                  const plaintext = await CryptoEngine.decrypt(block.encrypted, key);
+                  decrypted[block.ts || block.index] = plaintext;
+                } catch (e) {
+                  decrypted[block.ts || block.index] = "[Decryption Failed - Key Rotated]";
+                }
+              } else {
+                decrypted[block.ts || block.index] = block.content;
+              }
+            }
+            
+            if (!cancelled) {
+              setDecryptedWorkspaceMsgs(prev => ({
+                ...prev,
+                [activeWorkspace.id]: decrypted
+              }));
+            }
+          };
+          
+          decryptAll();
+          return () => { cancelled = true; };
+        }, [activeWorkspace?.chain?.length, activeWorkspace?.workspaceKey, isWorkspace]);
+
+        const handleCreateWorkspace = async () => {
+          const ns = window.GLLicenseRuntime;
+          if (!ns || !ns.workspaceManager) return;
+          
+          const res = await ns.workspaceManager.createWorkspace(workspaceCreateName.trim(), identity.fingerprint);
+          if (res.success) {
+            setWorkspaces(ns.workspaceManager.getWorkspaces());
+            setActiveConvo(res.workspace.id);
+            setShowWorkspaceCreate(false);
+            setWorkspaceCreateName('');
+            addToast('Workspace created successfully', 'success');
+          } else {
+            addToast(res.error || 'Failed to create workspace', 'error');
+          }
+        };
+
+        const handleJoinWorkspace = async () => {
+          const ns = window.GLLicenseRuntime;
+          if (!ns || !ns.workspaceManager) return;
+          
+          const cleanCode = workspaceJoinInvite.trim();
+          if (!cleanCode.startsWith('GLWS-')) {
+            addToast('Invalid workspace invite format. Must start with GLWS-', 'error');
+            return;
+          }
+          
+          try {
+            const inviteObj = JSON.parse(CryptoEngine._base64Decode(cleanCode.slice(5)));
+            
+            let privateKey = null;
+            if (inviteObj.encryptedWorkspaceKey && typeof inviteObj.encryptedWorkspaceKey === 'object' && inviteObj.encryptedWorkspaceKey.ephemeralPubKeyHex) {
+              if (identity.keyPair?.privateKey) {
+                privateKey = identity.keyPair.privateKey;
+              } else {
+                if (!inviteWordsInput.trim()) {
+                  addToast('This secure invite requires your 12-word recovery phrase to decrypt the workspace key.', 'info');
+                  return;
+                }
+                const words = inviteWordsInput.trim().split(/\s+/);
+                if (words.length !== 12) {
+                  addToast('Please enter exactly 12 words.', 'error');
+                  return;
+                }
+                const masterKey = await CryptoEngine.deriveKeyFromSeed(words);
+                const saved = localStorage.getItem("gl_identity");
+                if (!saved) throw new Error("No identity saved locally.");
+                const d = JSON.parse(saved);
+                const wk = d.wrappedPrivKey || d.wrappedKey;
+                privateKey = await CryptoEngine.unwrapPrivKey(wk, masterKey);
+              }
+            }
+            
+            const res = await ns.workspaceManager.acceptInvite(inviteObj, identity.fingerprint, privateKey);
+            if (res.success) {
+              setWorkspaces(ns.workspaceManager.getWorkspaces());
+              setActiveConvo(res.workspace.id);
+              setShowWorkspaceJoin(false);
+              setWorkspaceJoinInvite('');
+              setInviteWordsInput('');
+              addToast(`Joined workspace ${res.workspace.name}`, 'success');
+              
+              // Broadcast to remaining online members that we joined
+              res.workspace.members.forEach(member => {
+                if (member.id !== identity.fingerprint) {
+                  const conn = p2pConnectorRef.current;
+                  if (conn && (conn.isConnected(member.id) || connectionStates[member.id] === 'connected')) {
+                    conn.sendMessage(member.id, {
+                      type: 'workspace-sync',
+                      workspaceId: res.workspace.id,
+                      action: 'new-member',
+                      member: { id: identity.fingerprint, role: 'member', joinedAt: Date.now() }
+                    });
+                  }
+                }
+              });
+            } else {
+              addToast(res.error || 'Failed to join workspace', 'error');
+            }
+          } catch (err) {
+            console.error(err);
+            addToast('Failed to parse or decrypt invite: ' + err.message, 'error');
+          }
+        };
+
+        const handleKickMember = async (memberId) => {
+          const ns = window.GLLicenseRuntime;
+          if (!ns || !ns.workspaceManager || !activeWorkspace) return;
+          
+          if (confirm(`Are you sure you want to remove member ${memberId.slice(0, 8)}? This will rotate the workspace encryption key for forward secrecy.`)) {
+            const res = await ns.workspaceManager.removeMember(activeWorkspace.id, memberId);
+            if (res.success) {
+              setWorkspaces(ns.workspaceManager.getWorkspaces());
+              addToast('Member removed and key rotated successfully', 'success');
+              
+              // Notify remaining online members of removal and key rotation
+              activeWorkspace.members.forEach(member => {
+                if (member.id !== identity.fingerprint && member.id !== memberId) {
+                  const conn = p2pConnectorRef.current;
+                  if (conn && conn.isConnected(member.id)) {
+                    conn.sendMessage(member.id, {
+                      type: 'workspace-sync',
+                      workspaceId: activeWorkspace.id,
+                      action: 'remove-member',
+                      targetId: memberId,
+                      members: activeWorkspace.members,
+                      newKey: res.newWorkspaceKey
+                    });
+                  }
+                }
+              });
+              
+              // Notify the kicked member itself so they auto-delete the workspace
+              const conn = p2pConnectorRef.current;
+              if (conn && conn.isConnected(memberId)) {
+                conn.sendMessage(memberId, {
+                  type: 'workspace-sync',
+                  workspaceId: activeWorkspace.id,
+                  action: 'remove-member',
+                  targetId: memberId
+                });
+              }
+            } else {
+              addToast(res.error || 'Failed to remove member', 'error');
+            }
+          }
+        };
+
+        const handleGenerateWorkspaceInvite = async () => {
+          const ns = window.GLLicenseRuntime;
+          if (!ns || !ns.workspaceManager || !activeWorkspace) return;
+          
+          let pubKeyHex = null;
+          if (showWorkspaceInviteGen === 'secure') {
+            if (!workspaceInviteRecipientPub.trim() || workspaceInviteRecipientPub.trim().length < 20) {
+              addToast('Please enter a valid recipient public key', 'error');
+              return;
+            }
+            pubKeyHex = workspaceInviteRecipientPub.trim();
+          }
+          
+          const res = await ns.workspaceManager.createInvite(activeWorkspace.id, identity.fingerprint, identity.name, pubKeyHex);
+          if (res.success) {
+            const inviteStr = 'GLWS-' + CryptoEngine._base64Encode(JSON.stringify(res.invite));
+            setWorkspaceInviteCode(inviteStr);
+            addToast('Invite generated successfully', 'success');
+          } else {
+            addToast(res.error || 'Failed to generate invite', 'error');
+          }
+        };
 
         useEffect(() => {
           if (callActive) {
@@ -1321,6 +1702,19 @@
             };
 
 conn.on('peer-connected', async (peerId, peerInfo) => {
+              // Block if free plan limit reached (max 5 peers)
+              const runtime = window.GLLicenseRuntime;
+              if (runtime && runtime.featureGate) {
+                const limits = await runtime.featureGate.getLimits();
+                const activeCount = peersRef.current.filter(p => p.status === 'online').length;
+                if (activeCount >= limits.maxPeers) {
+                  conn.removePeer(peerId);
+                  await runtime.featureGate.triggerUpgradeFlow('peers');
+                  addToast(`Connection blocked: Free plan is limited to ${limits.maxPeers} active peers.`, 'error');
+                  return;
+                }
+              }
+
               setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
               setConnectionMode(peerInfo && peerInfo.mode ? (peerInfo.mode === 'manual' ? 'Manual Signal' : 'P2P Direct') : 'P2P Direct');
               setPeers(prev => {
@@ -1470,6 +1864,59 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                   setCallTimer(0);
                   clearInterval(timerRef.current);
                   addToast('Call ended by peer', 'info');
+                } else if (msg.type === 'workspace-chat') {
+                  const wsId = msg.workspaceId;
+                  const ns = window.GLLicenseRuntime;
+                  if (ns && ns.workspaceManager) {
+                    const ws = ns.workspaceManager.getWorkspace(wsId);
+                    if (ws) {
+                      const newMsg = {
+                        sender: msg.sender,
+                        senderId: msg.senderId,
+                        encrypted: msg.encrypted,
+                        type: msg.msgType || 'text',
+                        meta: msg.meta || {},
+                        ts: Date.now()
+                      };
+                      await ns.workspaceManager.addToChain(wsId, newMsg);
+                      setWorkspaces(ns.workspaceManager.getWorkspaces());
+                      if (activeConvoRef.current !== wsId) {
+                        setWorkspaces(prev => prev.map(w => w.id === wsId ? { ...w, unread: (w.unread || 0) + 1 } : w));
+                        addToast(`New message in workspace ${ws.name}`, 'info');
+                      }
+                    }
+                  }
+                } else if (msg.type === 'workspace-sync') {
+                  const wsId = msg.workspaceId;
+                  const ns = window.GLLicenseRuntime;
+                  if (ns && ns.workspaceManager) {
+                    const ws = ns.workspaceManager.getWorkspace(wsId);
+                    if (ws) {
+                      if (msg.action === 'remove-member') {
+                        if (msg.targetId === identity.fingerprint) {
+                          ns.workspaceManager.deleteWorkspace(wsId);
+                          setWorkspaces(ns.workspaceManager.getWorkspaces());
+                          if (activeConvoRef.current === wsId) setActiveConvo(null);
+                          addToast(`You have been removed from workspace ${ws.name}`, 'warning');
+                        } else {
+                          ws.members = msg.members;
+                          if (msg.newKey) ws.workspaceKey = msg.newKey;
+                          ws.updatedAt = Date.now();
+                          await ns.workspaceManager._saveWorkspaces();
+                          setWorkspaces(ns.workspaceManager.getWorkspaces());
+                          addToast(`Workspace ${ws.name} members roster rotated`, 'info');
+                        }
+                      } else if (msg.action === 'new-member') {
+                        if (!ws.members.some(m => m.id === msg.member.id)) {
+                          ws.members.push(msg.member);
+                          ws.updatedAt = Date.now();
+                          await ns.workspaceManager._saveWorkspaces();
+                          setWorkspaces(ns.workspaceManager.getWorkspaces());
+                          addToast(`New member joined workspace ${ws.name}`, 'info');
+                        }
+                      }
+                    }
+                  }
                 }
               } catch (e) { console.error('Message parse error:', e); }
             });
@@ -1752,7 +2199,16 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           } catch (e) { setCombineStatus("error"); }
         };
 
-        const getConvoMsgs = () => messages[activeConvo] || [];
+        const getConvoMsgs = () => {
+          if (isWorkspace && activeWorkspace) {
+            const decMap = decryptedWorkspaceMsgs[activeWorkspace.id] || {};
+            return activeWorkspace.chain.map(block => ({
+              ...block,
+              content: decMap[block.ts || block.index] !== undefined ? decMap[block.ts || block.index] : "Decrypting..."
+            }));
+          }
+          return messages[activeConvo] || [];
+        };
 
         // ==================== MARKDOWN FORMATTING HELPERS ====================
         const getTextareaSelection = () => {
@@ -1799,6 +2255,48 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           try {
           if (replyTo) meta.replyTo = { index: replyTo.index, sender: replyTo.sender, preview: replyTo.content?.slice(0, 60) };
           if (selfDestruct > 0) meta.selfDestruct = selfDestruct;
+          
+          if (isWorkspace) {
+            const ns = window.GLLicenseRuntime;
+            if (!ns || !ns.workspaceManager || !activeWorkspace) return;
+            const enc = await CryptoEngine.encrypt(content.trim(), activeWorkspace.workspaceKey);
+            const block = {
+              sender: identity.name,
+              senderId: identity.fingerprint,
+              encrypted: enc,
+              type: type,
+              meta: meta,
+              ts: Date.now()
+            };
+            await ns.workspaceManager.addToChain(activeWorkspace.id, block);
+            setWorkspaces(ns.workspaceManager.getWorkspaces());
+            setMsgInput("");
+            setReplyTo(null);
+            
+            // Broadcast to other workspace members
+            const conn = p2pConnectorRef.current;
+            activeWorkspace.members.forEach(member => {
+              if (member.id !== identity.fingerprint) {
+                if (conn && (conn.isConnected(member.id) || connectionStates[member.id] === 'connected')) {
+                  try {
+                    conn.sendMessage(member.id, {
+                      type: 'workspace-chat',
+                      workspaceId: activeWorkspace.id,
+                      sender: identity.name,
+                      senderId: identity.fingerprint,
+                      encrypted: enc,
+                      msgType: type,
+                      meta: meta
+                    });
+                  } catch (e) {
+                    console.error('Failed to send workspace message to peer:', member.id, e);
+                  }
+                }
+              }
+            });
+            return;
+          }
+
           const block = await chain.add(identity.name, content.trim(), type, meta);
           block.encrypted = await CryptoEngine.encrypt(content.trim(), identity.fingerprint);
           setMessages(prev => ({ ...prev, [activeConvo]: [...(prev[activeConvo] || []), block] }));
@@ -1846,7 +2344,18 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           } catch (e) { console.error('sendMessage error:', e); addToast(e.message || 'Failed to send message', 'error'); }
         };
 
-        const sendFile = async (fileName, fileSize, fileObj) => {
+        const sendFile = async (fileName, fileSize, fileObj, targetPeerId = null) => {
+          const runtime = window.GLLicenseRuntime;
+          if (runtime && runtime.featureGate) {
+            const limits = await runtime.featureGate.getLimits();
+            const maxBytes = limits.maxTransferBytes;
+            const maxAllowed = maxBytes === Infinity ? 2 * 1024 * 1024 * 1024 : maxBytes;
+            if (fileSize > maxAllowed) {
+              await runtime.featureGate.triggerUpgradeFlow('transfer');
+              addToast(`File size exceeds limit (${maxBytes === Infinity ? '2GB' : '25MB'})`, 'error');
+              return;
+            }
+          }
           try {
           const id = Date.now();
           setUploadProgress(p => ({ ...p, [id]: 0 }));
@@ -1933,7 +2442,26 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
         const copyMsg = (msg) => { navigator.clipboard?.writeText(msg.content); setMsgContext(null); };
 
         const exportChat = () => {
-          const data = chain.export();
+          const runtime = window.GLLicenseRuntime;
+          let blocks = isWorkspace && activeWorkspace ? activeWorkspace.chain : chain.blocks;
+          
+          if (isWorkspace && activeWorkspace) {
+            const decMap = decryptedWorkspaceMsgs[activeWorkspace.id] || {};
+            blocks = blocks.map(block => ({
+              ...block,
+              content: decMap[block.ts || block.index] !== undefined ? decMap[block.ts || block.index] : block.content
+            }));
+          }
+
+          let blocksToExport = blocks;
+          if (runtime && runtime.featureGate) {
+            const isFullExport = runtime.featureGate.canSync('full_export');
+            if (!isFullExport) {
+              blocksToExport = blocks.slice(-500);
+              addToast('Export limited to last 500 blocks on Free plan', 'info');
+            }
+          }
+          const data = JSON.stringify(blocksToExport, null, 2);
           const blob = new Blob([data], { type: "application/json" });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
@@ -2828,6 +3356,8 @@ pc.onicecandidate = (e) => {
           crimson: { bg: "#0f0a0a", bg2: "#0d0808", bg3: "#130c0c", accent: "#ff4466", accent2: "#ff8844", accent3: "#ffcc00" },
           arctic: { bg: "#0a0d0f", bg2: "#080b0d", bg3: "#0c1013", accent: "#44ddff", accent2: "#8899ff", accent3: "#cc88ff" },
           void: { bg: "#050508", bg2: "#030305", bg3: "#080810", accent: "#8866ff", accent2: "#ff66aa", accent3: "#44ffcc" },
+          stealth: { bg: "#000000", bg2: "#050505", bg3: "#080808", accent: "#ffffff", accent2: "#aaaaaa", accent3: "#555555", isPro: true },
+          carbon: { bg: "#0f0f0f", bg2: "#141414", bg3: "#1a1a1a", accent: "#d4a017", accent2: "#f0c040", accent3: "#8b6914", isPro: true },
         };
         const th = themes[settings.theme] || themes.phantom;
 
@@ -2846,18 +3376,6 @@ pc.onicecandidate = (e) => {
           @keyframes shake { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-4px); } 75% { transform:translateX(4px); } }
           @keyframes typing { 0%,60%,100% { opacity:0.3; transform:translateY(0); } 30% { opacity:1; transform:translateY(-4px); } }
           @keyframes scanline { 0% { top:-100%; } 100% { top:200%; } }
-          @keyframes ghostFly {
-            0% { transform: translate(-100vw, 20vh) scale(0.8) rotate(5deg); opacity: 0; }
-            10% { opacity: 0.4; }
-            90% { opacity: 0.4; }
-            100% { transform: translate(100vw, -20vh) scale(1.2) rotate(-5deg); opacity: 0; }
-          }
-          @keyframes ghostFlyReverse {
-            0% { transform: translate(100vw, 40vh) scale(0.9) rotate(-10deg); opacity: 0; }
-            15% { opacity: 0.3; }
-            85% { opacity: 0.3; }
-            100% { transform: translate(-100vw, 0vh) scale(1.1) rotate(10deg); opacity: 0; }
-          }
           * { box-sizing: border-box; }
           input:focus, textarea:focus { outline: none; }
           @media (max-width: 767px) {
@@ -2965,31 +3483,14 @@ pc.onicecandidate = (e) => {
         if (view === "splash") return (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", background: `radial-gradient(ellipse at center, ${th.bg} 0%, #010409 70%)`, position: "relative", overflow: "hidden", fontFamily: "'JetBrains Mono', monospace" }}>
             <style>{globalCSS}</style>
-            
-            {/* Flying background ghosts */}
-            {[
-              { delay: "0s", top: "20%", dur: "12s", rev: false, size: 40 },
-              { delay: "4s", top: "50%", dur: "15s", rev: true, size: 55 },
-              { delay: "8s", top: "75%", dur: "10s", rev: false, size: 35 },
-              { delay: "2s", top: "10%", dur: "18s", rev: true, size: 45 },
-            ].map((g, i) => (
-              <div key={i} style={{
-                position: "absolute", top: g.top, left: 0, pointerEvents: "none", zIndex: 1,
-                animation: `${g.rev ? "ghostFlyReverse" : "ghostFly"} ${g.dur} linear infinite`,
-                animationDelay: g.delay, opacity: 0
-              }}>
-                <I t="ghost" s={g.size} c={`${th.accent}44`} />
-              </div>
-            ))}
-
             {[15, 30, 45, 60, 75, 85].map((t, i) => <div key={i} style={{ position: "absolute", width: "100%", height: 1, top: `${t}%`, background: `linear-gradient(90deg, transparent, ${th.accent}15, transparent)` }} />)}
-            <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20, zIndex: 10 }}><I t="ghost" s={80} c={th.accent} /></div>
-            <div style={{ fontSize: isMobile ? 28 : 44, fontWeight: 800, letterSpacing: isMobile ? 6 : 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8, zIndex: 10 }}>GHOSTLINK</div>
-            <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase", zIndex: 10 }}>Zero Trust · Zero Trace · Zero Servers</div>
-            <div style={{ marginTop: 40, display: "flex", gap: 5, zIndex: 10 }}>
+            <div style={{ animation: "ghostFloat 2s ease-in-out infinite", filter: `drop-shadow(0 0 40px ${th.accent}66)`, marginBottom: 20 }}><I t="ghost" s={80} c={th.accent} /></div>
+            <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2}, ${th.accent3})`, WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: 8 }}>GHOSTLINK</div>
+            <div style={{ fontSize: 11, color: "#4a5568", letterSpacing: 6, textTransform: "uppercase" }}>Zero Trust · Zero Trace · Zero Servers</div>
+            <div style={{ marginTop: 40, display: "flex", gap: 5 }}>
               {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 0.25}s` }} />)}
             </div>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", overflow: "hidden", zIndex: 5 }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, pointerEvents: "none", overflow: "hidden" }}>
               <div style={{ position: "absolute", width: "100%", height: "30%", background: `linear-gradient(transparent, ${th.accent}05, transparent)`, animation: "scanline 4s linear infinite" }} />
             </div>
           </div>
@@ -3092,15 +3593,21 @@ pc.onicecandidate = (e) => {
               <div style={{ fontSize: 32, fontWeight: 300, color: th.accent, marginBottom: 40, letterSpacing: 6, fontFamily: "'Space Grotesk', sans-serif" }}>{fmtCallT(callTimer)}</div>
 
               {(callType === "video" || screenSharing) && (
-                <div style={{ width: "100%", maxWidth: 480, aspectRatio: "16/9", background: "#111", borderRadius: 12, overflow: "hidden", position: "relative", marginBottom: 36 }}>
-                  {Object.values(remoteStreams).map((stream, i) => (
-                    <video key={i} autoPlay playsInline ref={el => { if (el && stream) el.srcObject = stream; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ))}
-                  {localStream && (
-                    <video autoPlay playsInline muted ref={el => { if (el && localStream) el.srcObject = localStream; }} style={{ position: "absolute", bottom: 8, right: 8, width: 120, height: 90, borderRadius: 8, objectFit: "cover", border: `2px solid ${th.accent}` }} />
+                <div style={{ width: "85%", maxWidth: 640, aspectRatio: "16/9", background: "rgba(255,255,255,0.02)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 36, position: "relative", overflow: "hidden" }}>
+                  {Object.keys(remoteStreams).length > 0 ? (
+                    Object.values(remoteStreams).map((stream, i) => (
+                      <video key={i} autoPlay playsInline ref={el => { if (el && stream) el.srcObject = stream; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ))
+                  ) : (
+                    <div style={{ color: "#2a2a3a", fontSize: 12 }}>{screenSharing ? "Screen sharing active..." : "Encrypted video feed"}</div>
                   )}
-                  {!Object.keys(remoteStreams).length && (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", fontSize: 13 }}>Waiting for peer video...</div>
+                  <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, transparent 60%, ${th.bg}88)`, pointerEvents: "none" }} />
+                  {callType === "video" && (
+                    localStream ? (
+                      <video autoPlay playsInline muted ref={el => { if (el && localStream) el.srcObject = localStream; }} style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, borderRadius: 10, border: `1px solid ${th.accent}25`, objectFit: "cover" }} />
+                    ) : (
+                      <div style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, background: "rgba(0,0,0,0.5)", borderRadius: 10, border: `1px solid ${th.accent}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#4a5568" }}>You</div>
+                    )
                   )}
                 </div>
               )}
@@ -3149,36 +3656,43 @@ pc.onicecandidate = (e) => {
             )}
 
             {/* ══════ SIDEBAR ══════ */}
-            <div style={{ width: isTablet ? 52 : 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
+            <div style={{ width: 68, background: th.bg2, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile ? "none" : "flex", flexDirection: "column", alignItems: "center", paddingTop: 14, gap: 2, flexShrink: 0 }}>
               <div style={{ color: th.accent, marginBottom: 16, cursor: "pointer" }}><I t="ghost" s={28} c={th.accent} /></div>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingConnected ? "#00cc66" : connectionMode === 'Manual Signal' ? th.accent3 : autoReconnectStatus === 'waiting' ? "#ff8844" : "#ff4444", margin: "4px auto", boxShadow: `0 0 8px ${signalingConnected ? "#00cc6688" : connectionMode === 'Manual Signal' ? th.accent3 + '88' : "#ff444488"}` }} title={signalingConnected ? "Relay connected" : connectionMode === 'Manual Signal' ? "Manual P2P active" : autoReconnectStatus === 'waiting' ? "Peer offline — waiting" : "Offline"} />
               {[
                 { id: "chat", icon: "chat", label: "Chats" },
+                { id: "workspaces", icon: "users", label: "Workspaces" },
                 { id: "files", icon: "file", label: "Files" },
                 { id: "calls", icon: "phone", label: "Calls" },
                 { id: "chain", icon: "chain", label: "Chain" },
               ].map(tab => (
-                <button key={tab.id} title={tab.label} onClick={() => { setActiveTab(tab.id); if (tab.id === "chain") setShowChainExplorer(true); if (tab.id !== "chat" && tab.id !== "calls") setActiveConvo(null); }} style={{
+                <button key={tab.id} title={tab.label} onClick={() => {
+                  if (tab.id === "workspaces" && licenseStatus !== 'team' && licenseStatus !== 'enterprise') {
+                    const ns = window.GLLicenseRuntime;
+                    if (ns && ns.featureGate) {
+                      ns.featureGate.triggerUpgradeFlow('team_workspaces');
+                    } else {
+                      setUpgradeLimitType('team_workspaces');
+                      setShowUpgradeModal(true);
+                    }
+                    return;
+                  }
+                  setActiveTab(tab.id);
+                  if (tab.id === "chain") setShowChainExplorer(true);
+                }} style={{
                   width: 44, height: 44, borderRadius: 12, border: "none",
                   background: activeTab === tab.id ? `${th.accent}18` : "transparent",
                   color: activeTab === tab.id ? th.accent : "#4a5568", cursor: "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", position: "relative",
                 }}>
                   <I t={tab.icon} s={19} c={activeTab === tab.id ? th.accent : undefined} />
+                  {tab.id === "workspaces" && licenseStatus !== 'team' && licenseStatus !== 'enterprise' && (
+                    <span style={{ position: "absolute", top: 4, right: 4, background: th.accent, borderRadius: "50%", width: 8, height: 8, border: `1.5px solid ${th.bg2}` }} />
+                  )}
                 </button>
               ))}
               <div style={{ flex: 1 }} />
-              <button title="Identity Recovery" onClick={openRecovery} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <I t="recover" s={18} />
-              </button>
-              <button onClick={() => setShowQRScanner(true)} style={{ width: 36, height: 36, borderRadius: 10, background: showQRScanner ? `${th.accent}22` : "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }} title="Scan QR Code">
-                <I t="search" s={18} c={showQRScanner ? th.accent : "#4a5568"} />
-              </button>
               <button title="Settings" onClick={() => setShowSettings(true)} style={{ width: 44, height: 44, borderRadius: 12, border: "none", background: "transparent", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <I t="settings" s={18} />
-              </button>
-              <button title="Roadmap & Features" onClick={() => setShowRoadmap(true)} style={{ width: 36, height: 36, borderRadius: 10, background: showRoadmap ? `${th.accent3}22` : "transparent", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={showRoadmap ? th.accent3 : "#4a5568"} strokeWidth="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
               </button>
               <div title={identity?.name} style={{ width: 38, height: 38, borderRadius: 10, marginBottom: 14, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#000", cursor: "pointer" }}>
                 {identity?.name?.charAt(0)?.toUpperCase() || "?"}
@@ -3186,7 +3700,7 @@ pc.onicecandidate = (e) => {
             </div>
 
             {/* ══════ PEER LIST / FILES LIST ══════ */}
-            <div style={{ width: isMobile ? "100%" : isTablet ? 220 : 270, background: th.bg3, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile && activeConvo ? "none" : "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+            <div style={{ width: isMobile ? "100%" : 270, background: th.bg3, borderRight: "1px solid rgba(255,255,255,0.04)", display: isMobile && activeConvo ? "none" : "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
               {/* Mobile top bar with ghost icon + identity */}
               {isMobile && (
                 <div style={{ padding: "12px 14px 8px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -3229,52 +3743,20 @@ pc.onicecandidate = (e) => {
                 </div>
               )}
               {/* Desktop peer list header */}
-              {!isMobile && (
+              {!isMobile && activeTab !== "workspaces" && (
                 <div style={{ padding: "16px 14px 10px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5 }}>{activeTab === "files" ? "FILES" : activeTab === "calls" ? "CALLS" : "PEERS"}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5 }}>{activeTab === "files" ? "FILES" : "PEERS"}</div>
                     <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{identity ? `${identity.fingerprint.slice(0, 8)}...` : ""}</div>
                   </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <Btn small ghost onClick={() => setShowGroupCreator(true)}><I t="users" s={13} /> Group</Btn>
-                    <Btn small accent onClick={genInvite}><I t="plus" s={13} /> Invite</Btn>
-                  </div>
+                  <Btn small ghost onClick={genInvite}><I t="plus" s={13} /> Invite</Btn>
                 </div>
               )}
 
-              {activeTab === "calls" ? (
-                <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
-                  <div style={{ padding: "6px 14px 4px", fontSize: 9, color: "#3a3a4a", letterSpacing: 1, textTransform: "uppercase" }}>Recent</div>
-                  {callHistory.map((c, i) => {
-                    const isMissed = c.status === "missed";
-                    const color = isMissed ? "#ff4444" : th.accent;
-                    return (
-                      <div key={c.id} style={{ padding: "11px 14px", display: "flex", alignItems: "center", gap: 11, cursor: "pointer", borderBottom: "1px solid rgba(255,255,255,0.03)", transition: "background 0.15s" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                        <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${c.color}, ${c.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{c.avatar}</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>{c.peer}</div>
-                          <div style={{ fontSize: 9.5, color: isMissed ? "#ff4444" : "#4a5568", display: "flex", alignItems: "center", gap: 5 }}>
-                            <I t={c.type === "video" ? "video" : "phone"} s={10} c={color} />
-                            <span>{isMissed ? "Missed" : (c.dir === "out" ? "Outgoing" : "Incoming")} · {fmtDate(c.ts)}</span>
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                          {!isMissed && <span style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace" }}>{fmtCallT(c.duration)}</span>}
-                          <button onClick={() => { const p = peers.find(p => p.name === c.peer); if (p) setActiveConvo(p.id); startCall(c.type); }} style={{ background: `${th.accent}12`, border: "none", borderRadius: 6, padding: "3px 7px", color: th.accent, cursor: "pointer", fontSize: 9, fontWeight: 600, fontFamily: "inherit" }}>
-                            Call
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {callHistory.length === 0 && <div style={{ textAlign: "center", padding: 40, fontSize: 11, color: "#2a2a3a" }}>No call history yet</div>}
-                </div>
-              ) : activeTab === "files" ? (
+              {activeTab === "files" ? (
                 <div style={{ flex: 1, overflowY: "auto", padding: 10 }}>
                   {transferredFiles.map((f, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both" }}>
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderRadius: 10, marginBottom: 4, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", animation: "fadeIn 0.3s ease", animationDelay: `${i * 0.05}s`, animationFillMode: "both", cursor: "pointer" }}>
                       <div style={{ width: 36, height: 36, borderRadius: 8, background: `${fileIcons[getExt(f.name)] || "#6a6a7a"}18`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                         <I t="file" s={16} c={fileIcons[getExt(f.name)] || "#6a6a7a"} />
                       </div>
@@ -3283,22 +3765,35 @@ pc.onicecandidate = (e) => {
                         <div style={{ fontSize: 9, color: "#4a5568", marginTop: 2 }}>{fmtSize(f.size)} · {f.from} · {f.chunks} chunks</div>
                       </div>
                       {f.url ? (
-                        <a href={f.url} download={f.name} onClick={() => setTimeout(() => URL.revokeObjectURL(f.url), 1000)} style={{ 
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          width: 32, height: 32, borderRadius: 6, flexShrink: 0,
-                          background: `${th.accent}15`, color: th.accent,
-                          textDecoration: "none", fontSize: 14, fontWeight: 700
-                        }}>
-                          ↓
+                        <a href={f.url} download={f.name} onClick={e => { e.stopPropagation(); setTimeout(() => URL.revokeObjectURL(f.url), 1000); }} style={{ display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                          <I t="dl" s={12} c={th.accent} />
                         </a>
                       ) : (
                         <I t="lock" s={12} c={th.accent} />
                       )}
                     </div>
                   ))}
-                  {transferredFiles.length === 0 && <div style={{ textAlign: "center", padding: 40, fontSize: 11, color: "#2a2a3a" }}>No files transferred yet. Send files via the chat.</div>}
-                  {transferredFiles.length > 0 && <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>Click ↓ to download files</div>}
+                  {transferredFiles.length === 0 && (
+                    <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>
+                      All files are chunked and encrypted P2P
+                    </div>
+                  )}
+                  {transferredFiles.length > 0 && (
+                    <div style={{ padding: "20px 0", textAlign: "center", fontSize: 10, color: "#2a2a3a" }}>
+                      All files are chunked and encrypted P2P
+                    </div>
+                  )}
                 </div>
+              ) : activeTab === "workspaces" ? (
+                <window.WorkspacePanel
+                  workspaces={workspaces}
+                  activeConvo={activeConvo}
+                  setActiveConvo={setActiveConvo}
+                  setWorkspaces={setWorkspaces}
+                  onCreateClick={() => setShowWorkspaceCreate(true)}
+                  onJoinClick={() => setShowWorkspaceJoin(true)}
+                  th={th}
+                />
               ) : (
                 <div style={{ flex: 1, overflowY: "auto", padding: "6px 0" }}>
                   {peers.length === 0 && (
@@ -3341,7 +3836,7 @@ pc.onicecandidate = (e) => {
                   <div style={{ fontSize: 8, color: "#1a1a2a", display: "flex", alignItems: "center", gap: 4, flex: 1, overflow: "hidden" }}>
                     <I t="key" s={9} c="#2a2a3a" /><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{identity?.fingerprint || "..."}</span>
                   </div>
-                  <Btn small accent onClick={genInvite} style={{ flexShrink: 0 }}><I t="plus" s={12} /> Invite</Btn>
+                  <Btn small ghost onClick={genInvite} style={{ flexShrink: 0 }}><I t="plus" s={12} /> Invite</Btn>
                 </div>
               ) : (
                 <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", fontSize: 8, color: "#1a1a2a", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
@@ -3370,58 +3865,61 @@ pc.onicecandidate = (e) => {
               ) : (
                 <>
                   {/* ── CHAT HEADER ── */}
-                  <div style={{ padding: isMobile ? "10px 12px" : "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, WebkitBackdropFilter: "blur(12px)", backdropFilter: "blur(12px)", flexShrink: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 11 }}>
-                      {/* Mobile back button */}
+                  <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "space-between", background: `${th.bg}ee`, backdropFilter: "blur(12px)", flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
                       {isMobile && (
                         <button onClick={() => setActiveConvo(null)} style={{ width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.04)", color: th.accent, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15,18 9,12 15,6"/></svg>
                         </button>
                       )}
-                      <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 11, cursor: "pointer" }} onClick={() => setShowPeerInfo(true)}>
-                        <div style={{ width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${activePeer?.color}, ${activePeer?.color}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{activePeer?.avatar}</div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 11, cursor: "pointer" }} onClick={() => { if (!isWorkspace) setShowPeerInfo(true); }}>
+                        <div style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 10,
+                          background: isWorkspace
+                            ? `linear-gradient(135deg, ${th.accent3}30, ${th.accent2}10)`
+                            : `linear-gradient(135deg, ${activePeer?.color}, ${activePeer?.color}88)`,
+                          border: isWorkspace ? `1px solid ${th.accent2}25` : "none",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: isWorkspace ? th.accent2 : "#fff"
+                        }}>
+                          {isWorkspace ? activeWorkspace?.name?.slice(0, 2).toUpperCase() : activePeer?.avatar}
+                        </div>
                         <div>
-                          <div style={{ fontSize: isMobile ? 13 : 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                            {activePeer?.name}
-                            {!isMobile && <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>}
-                            {(() => {
-                              const modeColor = connectionMode === 'P2P Direct' ? th.accent : connectionMode === 'Via Relay' ? th.accent2 : connectionMode === 'Manual Signal' ? th.accent3 : '#4a5568';
-                              const modeIcon = connectionMode === 'P2P Direct' ? 'zap' : connectionMode === 'Via Relay' ? 'globe' : connectionMode === 'Manual Signal' ? 'link' : 'globe';
-                              const modeLabel = connectionMode || (autoReconnectStatus === 'waiting' ? 'Peer offline' : autoReconnectStatus === 'trying-cache' ? 'Reconnecting...' : 'Connecting...');
-                              return <Tag color={modeColor} icon={modeIcon}>{modeLabel.toUpperCase()}</Tag>;
-                            })()}
+                          <div style={{ fontSize: 13.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+                            {isWorkspace ? activeWorkspace?.name : activePeer?.name}
+                            <Tag color={chainValid ? th.accent : "#ff4444"} icon={chainValid ? "check" : "x"}>{chainValid ? "CHAIN VALID" : "CHAIN BROKEN"}</Tag>
                           </div>
-                          <div style={{ fontSize: 9.5, color: "#4a5568" }}>{isMobile ? (chainValid ? "✓ encrypted" : "⚠ broken") : `${convoMsgs.length} blocks · E2E encrypted · P2P`}</div>
+                          <div style={{ fontSize: 9.5, color: "#4a5568" }}>
+                            {isWorkspace
+                              ? `${activeWorkspace?.members?.length || 1} members · ${convoMsgs.length} blocks`
+                              : `${convoMsgs.length} blocks · E2E encrypted · P2P`
+                            }
+                          </div>
                         </div>
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 4 }}>
-                      {(isMobile
-                        ? [
-                            { icon: "search", action: () => setShowSearch(!showSearch) },
-                            { icon: "phone", action: () => startCall("voice") },
-                            { icon: "video", action: () => startCall("video") },
-                          ]
-                        : [
-                            { icon: "search", action: () => setShowSearch(!showSearch) },
-                            { icon: "phone", action: () => startCall("voice") },
-                            { icon: "video", action: () => startCall("video") },
-                            { icon: "screen", action: () => startCall("screen") },
-                            { icon: "export", action: exportChat },
-                          ]
-                      ).map((b, i) => (
-                        <button key={i} onClick={b.action} style={{ width: isMobile ? 38 : 34, height: isMobile ? 38 : 34, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}
+                      {[
+                        { icon: "search", action: () => setShowSearch(!showSearch) },
+                        ...(!isWorkspace ? [
+                          { icon: "phone", action: () => startCall("voice") },
+                          { icon: "video", action: () => startCall("video") },
+                          { icon: "screen", action: () => startCall("screen") },
+                        ] : []),
+                        { icon: "export", action: exportChat },
+                      ].map((b, i) => (
+                        <button key={i} onClick={b.action} style={{ width: 34, height: 34, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}
                           onMouseEnter={e => { e.currentTarget.style.background = `${th.accent}15`; e.currentTarget.style.color = th.accent; }}
                           onMouseLeave={e => { e.currentTarget.style.background = "rgba(255,255,255,0.03)"; e.currentTarget.style.color = "#5a5a6a"; }}>
                           <I t={b.icon} s={15} />
                         </button>
                       ))}
-                      {activePeer && !activePeer.type && (
-                        <button onClick={() => openVerificationCeremony(activePeer)} title={verificationComplete[activePeer.id] ? "Verified" : "Verify contact"}
-                          style={{ width: isMobile ? 38 : 34, height: isMobile ? 38 : 34, borderRadius: 8, border: "none", background: verificationComplete[activePeer.id] ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: verificationComplete[activePeer.id] ? th.accent : "#5a5a6a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }}>
-                          <I t="shield" s={15} />
-                        </button>
-                      )}
                     </div>
                   </div>
 
@@ -3445,8 +3943,13 @@ pc.onicecandidate = (e) => {
                     </div>
                   )}
 
-                  {/* ── MESSAGES ── */}
-                  <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
+                  {/* ── MESSAGES AND ROSTER BODY ── */}
+                  <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0, position: "relative" }}>
+                    
+                    {/* Left Chat Flow */}
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, height: "100%", position: "relative" }}>
+                      {/* ── MESSAGES ── */}
+                      <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 4 }}>
                     {dragOver && (
                       <div style={{ position: "absolute", inset: 0, background: `${th.bg}dd`, border: `2px dashed ${th.accent}44`, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10, zIndex: 50, margin: 8 }}>
                         <I t="ul" s={40} c={th.accent} />
@@ -3476,7 +3979,7 @@ pc.onicecandidate = (e) => {
                         </div>
                       );
                       return (
-                        <div key={i} style={{ animation: "fadeIn 0.25s ease", animationFillMode: "both", animationDelay: `${Math.min(i, 10) * 0.02}s`, alignSelf: isMe ? "flex-end" : "flex-start", maxWidth: isMobile ? "88%" : "72%", position: "relative" }}
+                        <div key={i} style={{ animation: "fadeIn 0.25s ease", animationFillMode: "both", animationDelay: `${Math.min(i, 10) * 0.02}s`, alignSelf: isMe ? "flex-end" : "flex-start", maxWidth: "72%", position: "relative" }}
                           onContextMenu={e => { e.preventDefault(); setMsgContext(msg); }}>
 
                           {msg.meta?.replyTo && (
@@ -3679,9 +4182,9 @@ pc.onicecandidate = (e) => {
 
                   {/* ── INPUT BAR ── */}
                   {showEmojiPicker && (
-                    <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 64, left: isMobile ? 0 : 14, right: isMobile ? 0 : "auto", background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: isMobile ? "12px 12px 0 0" : 12, padding: 10, display: "flex", flexWrap: "wrap", gap: 4, width: isMobile ? "100%" : 260, zIndex: 50, animation: "fadeInScale 0.15s ease", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
+                    <div onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 64, left: 14, background: "#151520", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, padding: 10, display: "flex", flexWrap: "wrap", gap: 4, width: 260, zIndex: 50, animation: "fadeInScale 0.15s ease", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
                       {EMOJIS.map((em, i) => (
-                        <button key={i} onClick={() => { setMsgInput(p => p + em); setShowEmojiPicker(false); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: isMobile ? 24 : 20, padding: isMobile ? 6 : 3, borderRadius: 6, lineHeight: 1, transition: "background 0.1s" }}
+                        <button key={i} onClick={() => { setMsgInput(p => p + em); setShowEmojiPicker(false); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, padding: 3, borderRadius: 6, lineHeight: 1, transition: "background 0.1s" }}
                           onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.08)"}
                           onMouseLeave={e => e.currentTarget.style.background = "none"}>
                           {em}
@@ -3689,96 +4192,44 @@ pc.onicecandidate = (e) => {
                       ))}
                     </div>
                   )}
-                  <div style={{ padding: isMobile ? "8px 10px" : "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: isMobile ? 6 : 8, background: `${th.bg}ee`, flexShrink: 0 }}>
+                  {isRecording && (
+                    <div style={{ position: "absolute", bottom: 60, left: 14, right: 14, background: "#1a0a0a", border: "1px solid #ff444433", borderRadius: 12, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, animation: "fadeIn 0.15s ease", zIndex: 40 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#ff4444", animation: "pulse 1s infinite" }} />
+                      <span style={{ fontSize: 12, color: "#ff4444", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                        {String(Math.floor(recordingDuration / 60)).padStart(2, "0")}:{String(recordingDuration % 60).padStart(2, "0")}
+                      </span>
+                      <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 1, height: 28 }}>
+                        {recordingWaveform.slice(-40).map((amp, i) => (
+                          <div key={i} style={{ width: 3, borderRadius: 1, height: `${Math.max(4, amp * 28)}px`, background: `linear-gradient(to top, #ff4444, #ff8844)`, transition: "height 0.05s ease" }} />
+                        ))}
+                      </div>
+                      <span style={{ fontSize: 9, color: "#4a5568" }}>Release to send</span>
+                    </div>
+                  )}
+                  <div style={{ padding: "10px 14px", borderTop: "1px solid rgba(255,255,255,0.04)", display: "flex", alignItems: "center", gap: 8, background: `${th.bg}ee`, flexShrink: 0 }}>
                     <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) { sendFile(e.target.files[0].name, e.target.files[0].size, e.target.files[0]); e.target.value = ''; } }} />
                     <input type="file" accept="image/*" ref={imageInputRef} style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) { sendImage(e.target.files[0]); e.target.value = ''; } }} />
-                    <button onClick={() => fileInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Send file">
+                    <button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                       <I t="file" s={15} />
                     </button>
-                    <button onClick={() => imageInputRef.current?.click()} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: "rgba(255,255,255,0.03)", color: "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }} title="Send image">
-                      <I t="image" s={15} />
+                    <button onClick={() => setSelfDestruct(selfDestruct === 0 ? 30 : selfDestruct === 30 ? 60 : selfDestruct === 60 ? 300 : 0)} title={selfDestruct ? `Self-destruct: ${selfDestruct}s` : "Self-destruct off"} style={{
+                      width: 36, height: 36, borderRadius: 8, border: "none",
+                      background: selfDestruct ? `${th.accent3}15` : "rgba(255,255,255,0.03)",
+                      color: selfDestruct ? th.accent3 : "#4a5568", cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative",
+                    }}>
+                      <I t="timer" s={15} c={selfDestruct ? th.accent3 : undefined} />
+                      {selfDestruct > 0 && <span style={{ position: "absolute", top: 2, right: 2, fontSize: 7, color: th.accent3, fontWeight: 700 }}>{selfDestruct}s</span>}
                     </button>
-                    <button onClick={e => { e.stopPropagation(); setShowEmojiPicker(p => !p); }} style={{ width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none", background: showEmojiPicker ? `${th.accent}15` : "rgba(255,255,255,0.03)", color: showEmojiPicker ? th.accent : "#4a5568", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <I t="emoji" s={15} />
-                    </button>
-
-                    {/* Voice message recording button */}
-                    <button
-                      onMouseDown={startRecording}
-                      onMouseUp={stopRecording}
-                      onTouchStart={startRecording}
-                      onTouchEnd={stopRecording}
-                      style={{
-                        width: isMobile ? 40 : 36, height: isMobile ? 40 : 36, borderRadius: 8, border: "none",
-                        background: isRecording ? "#ff444422" : "rgba(255,255,255,0.03)",
-                        color: isRecording ? "#ff4444" : "#4a5568", cursor: "pointer",
-                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                        transition: "all 0.2s ease", userSelect: "none", WebkitUserSelect: "none",
-                      }} title="Hold to record voice">
-                      <I t="mic" s={15} />
-                    </button>
-
-                    {/* Recording overlay */}
-                    {isRecording && (
-                      <div style={{
-                        position: "absolute", bottom: 60, left: 14, right: 14,
-                        background: "#1a0a0a", border: "1px solid #ff444433", borderRadius: 12,
-                        padding: "10px 14px", display: "flex", alignItems: "center", gap: 10,
-                        animation: "fadeIn 0.15s ease", zIndex: 40
-                      }}>
-                        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#ff4444", animation: "pulse 1s infinite" }} />
-                        <span style={{ fontSize: 12, color: "#ff4444", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                          {String(Math.floor(recordingDuration / 60)).padStart(2, "0")}:{String(recordingDuration % 60).padStart(2, "0")}
-                        </span>
-                        <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 1, height: 28 }}>
-                          {recordingWaveform.slice(-40).map((amp, i) => (
-                            <div key={i} style={{
-                              width: 3, borderRadius: 1,
-                              height: `${Math.max(4, amp * 28)}px`,
-                              background: `linear-gradient(to top, #ff4444, #ff8844)`,
-                              transition: "height 0.05s ease"
-                            }} />
-                          ))}
-                          {recordingWaveform.length === 0 && [0,1,2,3,4,5,6,7,8,9].map(i => (
-                            <div key={i} style={{ width: 3, borderRadius: 1, height: "4px", background: "#ff444444", animation: "pulse 1s infinite", animationDelay: `${i * 0.1}s` }} />
-                          ))}
-                        </div>
-                        <span style={{ fontSize: 9, color: "#4a5568" }}>Release to send</span>
-                      </div>
-                    )}
-
-                    {!isMobile && (
-                      <button onClick={() => setSelfDestruct(selfDestruct === 0 ? 30 : selfDestruct === 30 ? 60 : selfDestruct === 60 ? 300 : 0)} title={selfDestruct ? `Self-destruct: ${selfDestruct}s` : "Self-destruct off"} style={{
-                        width: 36, height: 36, borderRadius: 8, border: "none",
-                        background: selfDestruct ? `${th.accent3}15` : "rgba(255,255,255,0.03)",
-                        color: selfDestruct ? th.accent3 : "#4a5568", cursor: "pointer",
-                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, position: "relative",
-                      }}>
-                        <I t="timer" s={15} c={selfDestruct ? th.accent3 : undefined} />
-                        {selfDestruct > 0 && <span style={{ position: "absolute", top: 2, right: 2, fontSize: 7, color: th.accent3, fontWeight: 700 }}>{selfDestruct}s</span>}
-                      </button>
-                    )}
-
-                    {/* Markdown Formatting Toolbar */}
-                    {!isMobile && (
-                      <div style={{ display: "flex", gap: 2, padding: "2px 0" }}>
-                        <button onClick={() => insertMarkdownFormat('**')} title="Bold (Ctrl+B)" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>**</button>
-                        <button onClick={() => insertMarkdownFormat('*')} title="Italic" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontStyle: "italic" }}>*</button>
-                        <button onClick={() => insertMarkdownFormat('`')} title="Inline code" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>`</button>
-                        <button onClick={() => insertMarkdownFormat('> ', '')} title="Quote" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11 }}>></button>
-                        <button onClick={() => insertMarkdownFormat('~~')} title="Strikethrough" style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 4, padding: "3px 7px", color: "#6a6a7a", cursor: "pointer", fontSize: 11, textDecoration: "line-through" }}>~~</button>
-                      </div>
-                    )}
-
                     <input value={msgInput} onChange={e => setMsgInput(e.target.value)}
                       onKeyDown={e => {
                         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(msgInput); }
                         if (e.key === "Tab") handleTabKey(e);
                       }}
-                      placeholder={selfDestruct ? `Self-destruct ${selfDestruct}s...` : isMobile ? "Message..." : "Type encrypted message..."}
-                      style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: isMobile ? "10px 12px" : "10px 14px", color: "#e0e0e8", fontSize: isMobile ? 14 : 12.5, fontFamily: "inherit" }} />
+                      placeholder={selfDestruct ? `Self-destruct in ${selfDestruct}s...` : "Type encrypted message..."}
+                      style={{ flex: 1, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: "10px 14px", color: "#e0e0e8", fontSize: 12.5, fontFamily: "inherit" }} />
                     <button onClick={() => sendMessage(msgInput)} style={{
-                      width: isMobile ? 44 : 40, height: isMobile ? 44 : 40, borderRadius: 10, border: "none",
+                      width: 40, height: 40, borderRadius: 10, border: "none",
                       background: msgInput.trim() ? `linear-gradient(135deg, ${th.accent}, ${th.accent2})` : "rgba(255,255,255,0.04)",
                       color: msgInput.trim() ? "#000" : "#3a3a4a", cursor: msgInput.trim() ? "pointer" : "default",
                       display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.2s ease",
@@ -3786,8 +4237,22 @@ pc.onicecandidate = (e) => {
                       <I t="send" s={16} />
                     </button>
                   </div>
-                </>
-              )}
+
+                  </div> {/* End of Left Chat Flow */}
+
+                  {/* Right Workspace Roster (desktop only) */}
+                  {isWorkspace && !isMobile && (
+                    <window.WorkspaceRoster
+                      workspace={activeWorkspace}
+                      currentUserId={identity?.fingerprint}
+                      onKickMember={handleKickMember}
+                      onInviteClick={() => setShowWorkspaceInviteGen('public')}
+                      th={th}
+                    />
+                  )}
+                </div> {/* End of MESSAGES AND ROSTER BODY */}
+              </>
+            )}
             </div>
 
             {/* ══════ MESSAGE CONTEXT MENU ══════ */}
@@ -3919,14 +4384,16 @@ pc.onicecandidate = (e) => {
                         flex: 1, padding: "9px 0", borderRadius: 8, border: "none",
                         background: inviteTab === t ? `${th.accent}15` : "transparent",
                         color: inviteTab === t ? th.accent : "#5a5a6a", cursor: "pointer",
-                        fontFamily: "inherit", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase",
-                      }}>{t === "create" ? "Relay Invite" : t === "join" ? "Join" : "Manual P2P"}</button>
+                        fontFamily: "inherit", fontSize: 11, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase",
+                      }}>{t === "create" ? "Create Invite" : t === "join" ? "Join Channel" : "Manual P2P"}</button>
                     ))}
                   </div>
 
                   {inviteTab === "create" ? (
                     <>
-                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Share this invite code via a secure channel. Requires relay server.</p>
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>
+                        Share this one-time invite code via a secure out-of-band channel. The code expires after first use.
+                      </p>
                       <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
                         <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700 }}>{inviteCode}</div>
                       </div>
@@ -3938,7 +4405,7 @@ pc.onicecandidate = (e) => {
                           Relay server unavailable. Switch to <button onClick={() => setInviteTab('manual')} style={{ background: "none", border: "none", color: th.accent3, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700, textDecoration: "underline" }}>Manual P2P</button> for serverless connection.
                         </div>
                       )}
-                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use</div>
+                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
                       {qrSvgMarkup && (
                         <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrSvgMarkup }} />
                       )}
@@ -4126,7 +4593,7 @@ pc.onicecandidate = (e) => {
                   <div style={{ textAlign: "left", background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 14 }}>
                     {[
                       { label: "Public Key", value: activePeer.pubKey },
-                      { label: "Connection", value: connectionMode || "WebRTC P2P" },
+                      { label: "Connection", value: "WebRTC P2P Direct" },
                       { label: "Encryption", value: "ECDH + AES-256-GCM" },
                       { label: "Messages", value: `${convoMsgs.length} blocks` },
                       { label: "Chain Status", value: chainValid ? "Valid" : "Broken" },
@@ -4221,7 +4688,7 @@ pc.onicecandidate = (e) => {
                     {/* ══════ SETTINGS MODAL ══════ */}
             {showSettings && (
               <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => setShowSettings(false)}>
-                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 500, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
+                <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 500, width: "100%", maxHeight: "85vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="settings" s={20} c={th.accent} /> SETTINGS
@@ -4235,7 +4702,12 @@ pc.onicecandidate = (e) => {
                       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                         <div style={{ width: 40, height: 40, borderRadius: 10, background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 700, color: "#000" }}>{identity?.name?.charAt(0)?.toUpperCase()}</div>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600 }}>{identity?.name}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600 }}>{identity?.name}</span>
+                            {licenseStatus === 'free' && <span style={{ background: "rgba(255,255,255,0.06)", color: "#718096", fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 4, letterSpacing: 0.5 }}>FREE</span>}
+                            {licenseStatus === 'pro' && <span style={{ background: "rgba(212, 160, 23, 0.12)", color: "#d4a017", fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 4, letterSpacing: 0.5, border: "1px solid rgba(212, 160, 23, 0.2)" }}>PRO ✦</span>}
+                            {licenseStatus === 'team' && <span style={{ background: "rgba(0, 212, 255, 0.12)", color: "#00d4ff", fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 4, letterSpacing: 0.5, border: "1px solid rgba(0, 212, 255, 0.2)" }}>TEAM ✦</span>}
+                          </div>
                           <div style={{ fontSize: 9, color: "#4a5568", fontFamily: "monospace" }}>FP: {identity?.fingerprint}</div>
                         </div>
                       </div>
@@ -4249,14 +4721,24 @@ pc.onicecandidate = (e) => {
                     <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Theme</div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                       {Object.entries(themes).map(([key, t]) => (
-                        <button key={key} onClick={() => setSettings(s => ({ ...s, theme: key }))} style={{
+                        <button key={key} onClick={() => {
+                          if (t.isPro && licenseStatus === 'free') {
+                            setUpgradeLimitType('pro_themes');
+                            setShowUpgradeModal(true);
+                          } else {
+                            setSettings(s => ({ ...s, theme: key }));
+                          }
+                        }} style={{
                           padding: 12, borderRadius: 10, border: settings.theme === key ? `2px solid ${t.accent}` : "1px solid rgba(255,255,255,0.06)",
                           background: t.bg, cursor: "pointer", textAlign: "left",
                         }}>
                           <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
                             {[t.accent, t.accent2, t.accent3].map((c, i) => <div key={i} style={{ width: 12, height: 12, borderRadius: 3, background: c }} />)}
                           </div>
-                          <div style={{ fontSize: 11, fontWeight: 600, color: t.accent, textTransform: "capitalize" }}>{key}</div>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: t.accent, textTransform: "capitalize", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                            <span>{key}</span>
+                            {t.isPro && licenseStatus === 'free' && <span style={{ fontSize: 10 }}>🔒</span>}
+                          </div>
                         </button>
                       ))}
                     </div>
@@ -4587,13 +5069,26 @@ pc.onicecandidate = (e) => {
                     )}
                   </div>
 
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Tools</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <Btn small ghost onClick={() => { setShowSettings(false); setShowQRScanner(true); }}><I t="search" s={13} /> Scan QR</Btn>
+                      <Btn small ghost onClick={() => { setShowSettings(false); setShowGroupCreator(true); }}><I t="users" s={13} /> Group</Btn>
+                      <Btn small ghost onClick={() => { setShowSettings(false); setShowRoadmap(true); }}><I t="info" s={13} /> Roadmap</Btn>
+                      <Btn small ghost onClick={() => imageInputRef.current?.click()}><I t="image" s={13} /> Image</Btn>
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 9, color: "#3a3a4a" }}>
+                      {connectionMode ? `Connection: ${connectionMode}` : signalingConnected ? 'Relay connected' : 'Offline — use Manual P2P in invite'}
+                    </div>
+                  </div>
+
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <Btn small ghost onClick={exportChat} style={{ flex: 1 }}><I t="dl" s={13} /> Export Data</Btn>
                     <Btn small ghost onClick={() => { setShowSettings(false); openRecovery(); }} style={{ flex: 1 }}><I t="recover" s={13} /> Backup ID</Btn>
                   </div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    <Btn small ghost onClick={wipeAll} style={{ flex: 1, borderColor: "rgba(255,255,255,0.06)", color: "#8a8a9a" }}>
-                       Wipe Message Data
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <Btn small ghost onClick={wipeAll} style={{ flex: 1, borderColor: "rgba(255,68,68,0.2)", color: "#ff4444" }}>
+                      <I t="trash" s={13} c="#ff4444" /> Wipe All
                     </Btn>
                     <Btn small ghost onClick={deleteAccount} style={{ flex: 1, borderColor: "rgba(255,68,68,0.2)", color: "#ff4444" }}>
                       <I t="trash" s={13} c="#ff4444" /> Delete Account
@@ -5120,6 +5615,77 @@ pc.onicecandidate = (e) => {
                 </div>
               </div>
             )}
+
+            {/* ══════ WORKSPACE & UPGRADE MODALS ══════ */}
+            <window.UpgradeModal
+              show={showUpgradeModal}
+              onClose={() => setShowUpgradeModal(false)}
+              limitType={upgradeLimitType}
+              deviceId={deviceId}
+              licenseKeyInput={licenseKeyInput}
+              setLicenseKeyInput={setLicenseKeyInput}
+              licenseError={licenseError}
+              setLicenseError={setLicenseError}
+              licenseActivating={licenseActivating}
+              onActivate={async () => {
+                setLicenseActivating(true);
+                setLicenseError(null);
+                try {
+                  const ns = window.GLLicenseRuntime;
+                  if (ns && ns.licenseManager) {
+                    const res = await ns.licenseManager.activate(licenseKeyInput.trim());
+                    if (res.success) {
+                      const tier = await ns.licenseManager.getTier();
+                      setLicenseStatus(tier);
+                      setLicenseTier(tier);
+                      setShowUpgradeModal(false);
+                      addToast('License activated successfully!', 'success');
+                    } else {
+                      setLicenseError(res.error || 'Invalid key or fingerprint check failed');
+                    }
+                  } else {
+                    setLicenseError('License validation system not loaded.');
+                  }
+                } catch (e) {
+                  setLicenseError(e.message || 'Activation failed');
+                } finally {
+                  setLicenseActivating(false);
+                }
+              }}
+              th={th}
+            />
+
+            <window.WorkspaceCreateModal
+              show={showWorkspaceCreate}
+              onClose={() => setShowWorkspaceCreate(false)}
+              value={workspaceCreateName}
+              onChange={setWorkspaceCreateName}
+              onCreate={handleCreateWorkspace}
+              th={th}
+            />
+
+            <window.WorkspaceJoinModal
+              show={showWorkspaceJoin}
+              onClose={() => setShowWorkspaceJoin(false)}
+              code={workspaceJoinInvite}
+              onCodeChange={setWorkspaceJoinInvite}
+              words={inviteWordsInput}
+              onWordsChange={setInviteWordsInput}
+              onJoin={handleJoinWorkspace}
+              th={th}
+            />
+
+            <window.WorkspaceInviteModal
+              show={!!showWorkspaceInviteGen}
+              onClose={() => { setShowWorkspaceInviteGen(false); setWorkspaceInviteCode(''); setWorkspaceInviteRecipientPub(''); }}
+              inviteType={showWorkspaceInviteGen || 'public'}
+              onInviteTypeChange={setShowWorkspaceInviteGen}
+              recipientPub={workspaceInviteRecipientPub}
+              onRecipientPubChange={setWorkspaceInviteRecipientPub}
+              onGenerate={handleGenerateWorkspaceInvite}
+              inviteCode={workspaceInviteCode}
+              th={th}
+            />
           </div>
         );
       }

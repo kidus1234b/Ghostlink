@@ -14,6 +14,24 @@
       this._deviceFP = fp;
     }
 
+    _parseFormat(key) {
+      const parsed = Core()?.parseLicenseKey(key);
+      if (!parsed) return null;
+      return {
+        payload: parsed.payloadEncoded,
+        checksum: parsed.checksumEncoded,
+        signature: parsed.signatureEncoded
+      };
+    }
+
+    _base32Decode(str) {
+      return Core()?.base32Decode(str);
+    }
+
+    static calculateChecksum(payloadBytes) {
+      return Core()?.computeChecksum(payloadBytes);
+    }
+
     async validate(licenseKey, options = {}) {
       const skipDeviceCheck = options.skipDeviceCheck || false;
       const core = Core();
@@ -29,7 +47,7 @@
 
         const license = { ...result.license };
 
-        if (!skipDeviceCheck && license.tier === 'pro' && this._deviceFP) {
+        if (!skipDeviceCheck && (license.tier === 'pro' || license.tier === 'team') && this._deviceFP) {
           const fingerprint = await this._deviceFP.getFingerprint();
           const bound = await core.verifyDeviceBinding(license, fingerprint);
           if (!bound) {
@@ -42,7 +60,7 @@
           license.deviceFingerprint = fingerprint;
         }
 
-        if (options.activatedAt && license.durationMonths) {
+        if (options.activatedAt && license.durationMonths !== undefined) {
           license.activatedAt = options.activatedAt;
           license.expiresAt = core.computeExpiryTimestamp(
             options.activatedAt,

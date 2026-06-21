@@ -60,25 +60,99 @@ const GF = (() => {
 // Error correction level M for versions 1-10
 const VERSION_EC_M = [
   null, // 0 unused
-  [26, 10, 1, 16, 0, 0],      // v1: 16 data codewords
-  [44, 16, 1, 28, 0, 0],      // v2: 28
-  [70, 26, 1, 44, 0, 0],      // v3: 44
-  [100, 18, 2, 32, 0, 0],     // v4: 64
-  [134, 24, 2, 43, 0, 0],     // v5: 86
-  [172, 16, 4, 27, 0, 0],     // v6: 108
-  [196, 18, 4, 31, 0, 0],     // v7: 124
-  [242, 22, 2, 38, 2, 39],    // v8: 154
-  [292, 22, 3, 36, 2, 37],    // v9: 182
-  [346, 26, 4, 43, 1, 44],    // v10: 215
+  [26, 10, 1, 16, 0, 0], // v1
+  [44, 16, 1, 28, 0, 0], // v2
+  [70, 26, 1, 44, 0, 0], // v3
+  [100, 18, 2, 32, 0, 0], // v4
+  [134, 24, 2, 43, 0, 0], // v5
+  [172, 16, 4, 27, 0, 0], // v6
+  [196, 18, 4, 31, 0, 0], // v7
+  [242, 22, 2, 38, 2, 39], // v8
+  [292, 22, 3, 36, 2, 37], // v9
+  [346, 26, 4, 43, 1, 44], // v10
+  [404, 30, 1, 50, 4, 51], // v11
+  [466, 22, 6, 36, 2, 37], // v12
+  [532, 22, 8, 37, 1, 38], // v13
+  [581, 24, 4, 40, 5, 41], // v14
+  [655, 24, 5, 41, 5, 42], // v15
+  [733, 28, 7, 45, 3, 46], // v16
+  [815, 28, 10, 46, 1, 47], // v17
+  [901, 26, 9, 43, 4, 44], // v18
+  [991, 26, 3, 44, 11, 45], // v19
+  [1085, 26, 3, 41, 13, 42], // v20
+  [1156, 26, 17, 42, 0, 0], // v21
+  [1258, 28, 17, 46, 0, 0], // v22
+  [1364, 28, 4, 47, 14, 48], // v23
+  [1474, 28, 6, 45, 14, 46], // v24
+  [1588, 28, 8, 47, 13, 48], // v25
+  [1706, 28, 19, 46, 4, 47], // v26
+  [1828, 28, 22, 45, 3, 46], // v27
+  [1921, 28, 3, 45, 23, 46], // v28
+  [2051, 28, 21, 45, 7, 46], // v29
+  [2185, 28, 19, 47, 10, 48], // v30
+  [2323, 28, 2, 46, 29, 47], // v31
+  [2465, 28, 10, 46, 23, 47], // v32
+  [2611, 28, 14, 46, 21, 47], // v33
+  [2761, 28, 14, 46, 23, 47], // v34
+  [2876, 28, 12, 47, 26, 48], // v35
+  [3034, 28, 6, 47, 34, 48], // v36
+  [3196, 28, 29, 46, 14, 47], // v37
+  [3362, 28, 13, 46, 32, 47], // v38
+  [3532, 28, 40, 47, 7, 48], // v39
+  [3706, 28, 18, 47, 31, 48]  // v40
 ];
 
-// Data capacity in bytes for version 1-10, EC level M, byte mode
-const BYTE_CAPACITY_M = [0, 14, 26, 42, 62, 84, 106, 122, 152, 180, 213];
+// Data capacity in bytes for version 1-40, EC level M, byte mode
+const BYTE_CAPACITY_M = [
+  0, 14, 26, 42, 62, 84, 106, 122, 152, 180, 213, // v1-10
+  251, 287, 331, 362, 412, 450, 504, 560, 624, 666, // v11-20
+  711, 779, 857, 911, 997, 1059, 1125, 1190, 1264, 1370, // v21-30
+  1452, 1538, 1628, 1722, 1809, 1911, 1989, 2099, 2213, 2331 // v31-40
+];
 
-// Alignment pattern positions for versions 2-10
+// Alignment pattern positions for versions 2-40
 const ALIGNMENT_POSITIONS = [
-  null, [], [6, 18], [6, 22], [6, 26], [6, 30],
-  [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50],
+  null,
+  [], // v1
+  [6, 18], // v2
+  [6, 22], // v3
+  [6, 26], // v4
+  [6, 30], // v5
+  [6, 34], // v6
+  [6, 22, 38], // v7
+  [6, 24, 42], // v8
+  [6, 26, 46], // v9
+  [6, 28, 50], // v10
+  [6, 30, 54], // v11
+  [6, 32, 58], // v12
+  [6, 34, 62], // v13
+  [6, 26, 46, 66], // v14
+  [6, 26, 48, 70], // v15
+  [6, 26, 50, 74], // v16
+  [6, 30, 54, 78], // v17
+  [6, 30, 56, 82], // v18
+  [6, 30, 58, 86], // v19
+  [6, 34, 62, 90], // v20
+  [6, 28, 50, 72, 94], // v21
+  [6, 26, 50, 74, 98], // v22
+  [6, 30, 54, 78, 102], // v23
+  [6, 28, 54, 80, 106], // v24
+  [6, 32, 58, 84, 110], // v25
+  [6, 30, 58, 86, 114], // v26
+  [6, 34, 62, 90, 118], // v27
+  [6, 26, 50, 74, 98, 122], // v28
+  [6, 30, 54, 78, 102, 126], // v29
+  [6, 26, 52, 78, 104, 130], // v30
+  [6, 30, 56, 82, 108, 134], // v31
+  [6, 34, 60, 86, 112, 138], // v32
+  [6, 30, 58, 86, 114, 142], // v33
+  [6, 34, 62, 90, 118, 146], // v34
+  [6, 30, 54, 78, 102, 126, 150], // v35
+  [6, 24, 50, 76, 102, 128, 154], // v36
+  [6, 28, 54, 80, 106, 132, 158], // v37
+  [6, 32, 58, 84, 110, 136, 162], // v38
+  [6, 26, 54, 82, 110, 138, 166], // v39
+  [6, 30, 58, 86, 114, 142, 170]  // v40
 ];
 
 // Format info bits for EC level M with mask patterns 0-7
@@ -86,10 +160,27 @@ const FORMAT_BITS_M = [
   0x5412, 0x5125, 0x5E7C, 0x5B4B, 0x45F9, 0x40CE, 0x4F97, 0x4AA0,
 ];
 
-// Version information for versions 7-10 (lower versions don't have version info)
+// Version information for versions 7-40 (lower versions don't have version info)
 const VERSION_INFO = [
   null, null, null, null, null, null, null,
-  0x07C94, 0x085BC, 0x09A99, 0x0A4D3,
+  0x07C94, 0x085BC, 0x09A99, 0x0A4D3, 0x0BBF6, 0x0C762, 0x0D847, 0x0E60D,
+  0x0F928, 0x10B78, 0x1145D, 0x12A17, 0x13532, 0x149A6, 0x15683, 0x168C9,
+  0x177EC, 0x18EC4, 0x191E1, 0x1AFAB, 0x1B08E, 0x1CC1A, 0x1D33F, 0x1ED75,
+  0x1F250, 0x209D5, 0x216F0, 0x228BA, 0x2379F, 0x24B0B, 0x2542E, 0x26A64,
+  0x27541, 0x28C69
+];
+
+// Remainder bits for versions 1-40
+const REMAINDER_BITS = [
+  0,
+  0, 7, 7, 7, 7, 7, // 1-6
+  0, 3, 3, 3, 3, 3, // 7-12
+  4, 4, 4, 4, 4,    // 13-17
+  3, 3, 3, 3, 3,    // 18-22
+  4, 4, 4, 4, 4,    // 23-27
+  3, 3, 3, 3, 3,    // 28-32
+  4, 4, 4, 4, 4,    // 33-37
+  3, 3, 3           // 38-40
 ];
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -102,10 +193,10 @@ function qrEncode(text) {
 
   // Find minimum version
   let version = 0;
-  for (let v = 1; v <= 10; v++) {
+  for (let v = 1; v <= 40; v++) {
     if (byteLen <= BYTE_CAPACITY_M[v]) { version = v; break; }
   }
-  if (version === 0) throw new Error('Data too long for QR versions 1-10');
+  if (version === 0) throw new Error('Data too long for QR versions 1-40');
 
   const size = version * 4 + 17;
   const ecInfo = VERSION_EC_M[version];
@@ -274,7 +365,7 @@ function qrEncode(text) {
     for (let b = 7; b >= 0; b--) dataBits.push((byte >> b) & 1);
   }
   // Remainder bits for certain versions
-  const remainderBits = version <= 1 ? 0 : version <= 6 ? 7 : 0;
+  const remainderBits = REMAINDER_BITS[version] || 0;
   for (let i = 0; i < remainderBits; i++) dataBits.push(0);
 
   let bitIdx = 0;
@@ -527,32 +618,32 @@ class QRInvite {
   }
 
   async _sign(payload) {
-    // Need ECDSA signing key. If identity has an ECDSA key pair, use it.
-    // Otherwise derive one from the ECDH key pair (for compatibility).
-    let signingKey = this._identity.signingKey;
-    if (!signingKey && this._identity.keyPair && this._identity.keyPair.privateKey) {
-      // Export ECDH private key and re-import as ECDSA
-      try {
+    try {
+      // Need ECDSA signing key. If identity has an ECDSA key pair, use it.
+      // Otherwise derive one from the ECDH key pair (for compatibility).
+      let signingKey = this._identity.signingKey;
+      if (!signingKey && this._identity.keyPair && this._identity.keyPair.privateKey) {
+        // Export ECDH private key and re-import as ECDSA
         const exported = await crypto.subtle.exportKey('pkcs8', this._identity.keyPair.privateKey);
         signingKey = await crypto.subtle.importKey(
           'pkcs8', exported,
           { name: 'ECDSA', namedCurve: 'P-256' },
           false, ['sign']
         );
-      } catch (_) {
-        // Fallback: HMAC-based signature using public key as key material
-        return this._hmacSign(payload);
       }
-    }
-    if (!signingKey) return this._hmacSign(payload);
+      if (!signingKey) return this._hmacSign(payload);
 
-    const data = new TextEncoder().encode(payload);
-    const sig = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: 'SHA-256' },
-      signingKey,
-      data
-    );
-    return hexFromBytes(new Uint8Array(sig));
+      const data = new TextEncoder().encode(payload);
+      const sig = await crypto.subtle.sign(
+        { name: 'ECDSA', hash: 'SHA-256' },
+        signingKey,
+        data
+      );
+      return hexFromBytes(new Uint8Array(sig));
+    } catch (_) {
+      // Fallback: HMAC-based signature using public key as key material
+      return this._hmacSign(payload);
+    }
   }
 
   async _hmacSign(payload) {

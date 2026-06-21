@@ -5,15 +5,17 @@
 
   const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
   const LICENSE_VERSION = 2;
-  const VALID_DURATIONS = [1, 3, 6, 8, 12];
+  const VALID_DURATIONS = [0, 1, 3, 6, 8, 12, 120];
 
   const TIER = {
     PRO: 1,
+    TEAM: 2,
     ENTERPRISE: 3,
   };
 
   const TIER_NAME = {
     1: 'pro',
+    2: 'team',
     3: 'enterprise',
   };
 
@@ -132,7 +134,14 @@
     if (!VALID_DURATIONS.includes(durationMonths)) {
       throw new Error(`Invalid duration. Use: ${VALID_DURATIONS.join(', ')} months`);
     }
-    const tierByte = tier === 'enterprise' ? TIER.ENTERPRISE : TIER.PRO;
+    let tierByte;
+    if (tier === 'enterprise') {
+      tierByte = TIER.ENTERPRISE;
+    } else if (tier === 'team') {
+      tierByte = TIER.TEAM;
+    } else {
+      tierByte = TIER.PRO;
+    }
     return new Uint8Array([
       LICENSE_VERSION,
       tierByte,
@@ -239,9 +248,9 @@
       maxUsers = 10,
     } = options;
 
-    if (tier === 'pro') {
+    if (tier === 'pro' || tier === 'team') {
       if (!deviceId || String(deviceId).trim().length < 8) {
-        throw new Error('Pro license requires the customer Device ID');
+        throw new Error(`${tier.charAt(0).toUpperCase() + tier.slice(1)} license requires the customer Device ID`);
       }
     } else if (tier === 'enterprise') {
       if (!companyName || String(companyName).trim().length < 2) {
@@ -251,11 +260,11 @@
         throw new Error('Enterprise license requires number of users');
       }
     } else {
-      throw new Error('Tier must be pro or enterprise');
+      throw new Error('Tier must be pro, team, or enterprise');
     }
 
     let bindBytes;
-    if (tier === 'pro') {
+    if (tier === 'pro' || tier === 'team') {
       bindBytes = await bindBytesFromDeviceId(deviceId);
     } else {
       bindBytes = await bindBytesFromEnterprise(maxUsers, companyName);
@@ -282,7 +291,7 @@
       key,
       tier: decoded.tier,
       durationMonths: decoded.durationMonths,
-      deviceId: tier === 'pro' ? String(deviceId).trim() : null,
+      deviceId: (tier === 'pro' || tier === 'team') ? String(deviceId).trim() : null,
       companyName: tier === 'enterprise' ? String(companyName).trim() : null,
       maxUsers: tier === 'enterprise' ? Math.min(255, Number(maxUsers)) : null,
     };
@@ -339,7 +348,7 @@
   }
 
   async function verifyDeviceBinding(license, deviceFingerprint) {
-    if (!license || license.tier !== 'pro') return true;
+    if (!license || (license.tier !== 'pro' && license.tier !== 'team')) return true;
     const hash = await sha256Bytes(deviceFingerprint);
     return hash[0] === license.bindByte0 && hash[1] === license.bindByte1;
   }

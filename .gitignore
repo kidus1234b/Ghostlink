@@ -1,1 +1,4 @@
 node_modules
+license-generator/
+license-test.html
+test-license.html

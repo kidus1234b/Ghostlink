@@ -349,21 +349,22 @@
      * @param {string} workspaceId - Workspace ID
      * @param {string} memberId - Member's peer ID
      * @param {string} memberPublicKey - Member's public key
-     * @returns {Promise<string>} Encrypted workspace key
+     * @returns {Promise<Object>} Encrypted workspace key
      */
     async encryptWorkspaceKeyForMember(workspaceId, memberId, memberPublicKey) {
       const workspace = this._workspaces.get(workspaceId);
       if (!workspace) return null;
 
-      // In real implementation:
-      // 1. Export workspace key
-      // 2. Import member's public key
-      // 3. Encrypt using recipient public key only
-      // For now, return the workspace key (would be properly encrypted in production)
+      const Crypto = window.CryptoEngine;
+      if (!Crypto) {
+        throw new Error('CryptoEngine not loaded');
+      }
+
+      const encryptedBundle = await Crypto.encryptWithPublicKey(workspace.workspaceKey, memberPublicKey);
 
       return {
         workspaceId: workspaceId,
-        encryptedKey: workspace.workspaceKey, // Would be encrypted
+        encryptedKey: encryptedBundle,
         recipientPubKey: memberPublicKey,
         timestamp: Date.now()
       };
@@ -376,9 +377,40 @@
      * @returns {Promise<string>} Decrypted workspace key
      */
     async decryptWorkspaceKey(encryptedData, privateKey) {
-      // In real implementation, would use privateKey to decrypt
-      // For now, return the encrypted key as-is
-      return encryptedData.encryptedKey;
+      const Crypto = window.CryptoEngine;
+      if (!Crypto) {
+        throw new Error('CryptoEngine not loaded');
+      }
+
+      let data = encryptedData;
+      if (data && typeof data === 'object') {
+        if (data.ephemeralPubKeyHex) {
+          return await Crypto.decryptWithPrivateKey(data, privateKey);
+        }
+        if (data.encryptedKey) {
+          if (typeof data.encryptedKey === 'object' && data.encryptedKey.ephemeralPubKeyHex) {
+            return await Crypto.decryptWithPrivateKey(data.encryptedKey, privateKey);
+          }
+          return data.encryptedKey;
+        }
+      }
+
+      if (typeof data === 'string') {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.ephemeralPubKeyHex) {
+            return await Crypto.decryptWithPrivateKey(parsed, privateKey);
+          }
+        } catch (e) {
+          // ignore
+        }
+        if (data.includes(':')) {
+          return data.split(':')[1];
+        }
+        return data;
+      }
+
+      return data;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -390,9 +422,10 @@
      * @param {string} workspaceId - Workspace ID
      * @param {string} inviterId - Inviter's peer ID
      * @param {string} inviterName - Inviter's display name
+     * @param {string} [recipientPubKeyHex] - Optional recipient public key for ECIES
      * @returns {Promise<{success: boolean, invite: ?Object, error: ?string}>}
      */
-    async createInvite(workspaceId, inviterId, inviterName) {
+    async createInvite(workspaceId, inviterId, inviterName, recipientPubKeyHex) {
       const workspace = this._workspaces.get(workspaceId);
       if (!workspace) {
         return { success: false, invite: null, error: 'Workspace not found' };
@@ -409,8 +442,13 @@
         return { success: false, invite: null, error: 'Insufficient permissions' };
       }
 
-      // Encrypt workspace key for recipient (recipient public key only - will be set on accept)
-      const encryptedWorkspaceKey = await this._encryptWorkspaceKeyPreview(workspace);
+      let encryptedWorkspaceKey;
+      if (recipientPubKeyHex) {
+        const Crypto = window.CryptoEngine;
+        encryptedWorkspaceKey = await Crypto.encryptWithPublicKey(workspace.workspaceKey, recipientPubKeyHex);
+      } else {
+        encryptedWorkspaceKey = await this._encryptWorkspaceKeyPreview(workspace);
+      }
 
       const invite = {
         workspaceId: workspaceId,
@@ -436,8 +474,6 @@
      * @private
      */
     async _encryptWorkspaceKeyPreview(workspace) {
-      // In production, this would use recipient's public key
-      // For now, return a mock encrypted value
       const nonce = crypto.getRandomValues(new Uint8Array(12));
       return this._arrayBufferToBase64(nonce.buffer) + ':' + workspace.workspaceKey;
     }
@@ -450,7 +486,6 @@
      * @private
      */
     async _signInvite(workspaceId, inviterId) {
-      // In production, would sign with inviter's private key
       const data = workspaceId + ':' + inviterId + ':' + Date.now();
       const encoded = new TextEncoder().encode(data);
       const hash = await crypto.subtle.digest('SHA-256', encoded);
@@ -477,9 +512,10 @@
      * Accepts an invite
      * @param {Object} invite - Invite to accept
      * @param {string} recipientId - Recipient's peer ID
+     * @param {CryptoKey} [privateKey] - Recipient private key for ECIES decryption
      * @returns {Promise<{success: boolean, workspace: ?Object, error: ?string}>}
      */
-    async acceptInvite(invite, recipientId) {
+    async acceptInvite(invite, recipientId, privateKey) {
       if (this._destroyed) {
         return { success: false, workspace: null, error: 'WorkspaceManager destroyed' };
       }
@@ -495,23 +531,51 @@
         return { success: false, workspace: null, error: 'Invalid signature' };
       }
 
-      // Check if workspace still exists
-      const workspace = this._workspaces.get(invite.workspaceId);
+      let decryptedKey = null;
+      try {
+        decryptedKey = await this.decryptWorkspaceKey(invite.encryptedWorkspaceKey, privateKey);
+      } catch (err) {
+        console.error('Decryption of workspace key failed:', err);
+        return { success: false, workspace: null, error: 'Failed to decrypt workspace key' };
+      }
+
+      // Check if workspace still exists locally or add new one
+      let workspace = this._workspaces.get(invite.workspaceId);
       if (!workspace) {
-        return { success: false, workspace: null, error: 'Workspace not found' };
+        workspace = {
+          id: invite.workspaceId,
+          name: invite.workspaceName,
+          chain: [],
+          members: [
+            { id: invite.inviter, role: WORKSPACE_ROLE.OWNER, joinedAt: invite.createdAt },
+            { id: recipientId, role: WORKSPACE_ROLE.MEMBER, joinedAt: Date.now() }
+          ],
+          encryptedVault: null,
+          workspaceKey: decryptedKey,
+          createdAt: invite.createdAt,
+          updatedAt: Date.now()
+        };
+        this._workspaces.set(invite.workspaceId, workspace);
+        this._memberRoles.set(this._memberKey(invite.workspaceId, recipientId), WORKSPACE_ROLE.MEMBER);
+        this._memberRoles.set(this._memberKey(invite.workspaceId, invite.inviter), WORKSPACE_ROLE.OWNER);
+      } else {
+        // Check if already a member
+        if (workspace.members.some(m => m.id === recipientId)) {
+          return { success: false, workspace: null, error: 'Already a member' };
+        }
+        workspace.members.push({
+          id: recipientId,
+          role: WORKSPACE_ROLE.MEMBER,
+          joinedAt: Date.now()
+        });
+        this._memberRoles.set(this._memberKey(invite.workspaceId, recipientId), WORKSPACE_ROLE.MEMBER);
+        if (decryptedKey) {
+          workspace.workspaceKey = decryptedKey;
+        }
       }
 
-      // Check if already a member
-      if (workspace.members.some(m => m.id === recipientId)) {
-        return { success: false, workspace: null, error: 'Already a member' };
-      }
-
-      // Add as member
-      const result = await this.addMember(invite.workspaceId, recipientId, WORKSPACE_ROLE.MEMBER);
-
-      if (!result.success) {
-        return { success: false, workspace: null, error: result.error };
-      }
+      workspace.updatedAt = Date.now();
+      await this._saveWorkspaces();
 
       // Clean up invite
       await this._removeInvite(invite);

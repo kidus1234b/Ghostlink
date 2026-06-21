@@ -49,31 +49,33 @@ class TransferState {
 
 // ─── Simple EventEmitter ─────────────────────────────────────────────────────
 
-class EventEmitter {
-  constructor() {
-    this._listeners = new Map();
-  }
+if (typeof window.EventEmitter === 'undefined') {
+  window.EventEmitter = class EventEmitter {
+    constructor() {
+      this._listeners = new Map();
+    }
 
-  on(event, callback) {
-    if (!this._listeners.has(event)) this._listeners.set(event, new Set());
-    this._listeners.get(event).add(callback);
-  }
+    on(event, callback) {
+      if (!this._listeners.has(event)) this._listeners.set(event, new Set());
+      this._listeners.get(event).add(callback);
+    }
 
-  off(event, callback) {
-    const set = this._listeners.get(event);
-    if (set) set.delete(callback);
-  }
+    off(event, callback) {
+      const set = this._listeners.get(event);
+      if (set) set.delete(callback);
+    }
 
-  emit(event, ...args) {
-    const set = this._listeners.get(event);
-    if (set) {
-      for (const fn of set) {
-        try { fn(...args); } catch (e) {
-          console.error(`[FileTransfer] Event handler error (${event}):`, e);
+    emit(event, ...args) {
+      const set = this._listeners.get(event);
+      if (set) {
+        for (const fn of set) {
+          try { fn(...args); } catch (e) {
+            console.error(`[FileTransfer] Event handler error (${event}):`, e);
+          }
         }
       }
     }
-  }
+  };
 }
 
 // ─── FileTransfer ───────────────────────────────────────────────────────────

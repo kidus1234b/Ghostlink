@@ -227,6 +227,18 @@
     }
 
     _createPeerConnection(peerId, mode) {
+      const runtime = window.GLLicenseRuntime;
+      if (runtime && runtime.featureGate) {
+        const isUnlimited = runtime.featureGate.canSync('unlimited_peers');
+        if (!isUnlimited) {
+          const currentActiveCount = Object.values(this.pcs).filter(p => p.signalingState !== 'closed').length;
+          if (currentActiveCount >= 5) {
+            runtime.featureGate.triggerUpgradeFlow('peers');
+            throw new Error('Connection limit of 5 peers reached on Free tier.');
+          }
+        }
+      }
+
       const pc = new RTCPeerConnection({ iceServers: this.iceServers });
       pc.__mode = mode;
       pc.__peerId = peerId;
@@ -299,6 +311,20 @@
       const peerId = msg.from;
       let pc = this.pcs[peerId];
       if (!pc) { pc = this._createPeerConnection(peerId, 'relay'); this.pcs[peerId] = pc; }
+
+      // Perfect Negotiation: detect offer collision
+      const polite = this.identity.fingerprint < peerId;
+      const offerCollision = (pc.signalingState !== 'stable' || pc.remoteDescription);
+      
+      if (offerCollision) {
+        if (!polite) {
+          console.log('[P2P] Glare detected (impolite), ignoring incoming offer from', peerId);
+          return;
+        }
+        console.log('[P2P] Glare detected (polite), rolling back local offer for', peerId);
+        await pc.setLocalDescription({ type: 'rollback' });
+      }
+
       await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
       this.knownPeers[peerId] = { publicKey: msg.publicKey || '', name: msg.name || `Peer-${peerId.slice(0,6)}` };
       if (this.pendingIce[peerId]) {
@@ -321,8 +347,20 @@
       const peerId = msg.from;
       const pc = this.pcs[peerId];
       if (!pc) return;
+
+      if (pc.signalingState === 'stable') {
+        console.log('[P2P] Already stable, ignoring answer from', peerId);
+        return;
+      }
+
       await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
       this.knownPeers[peerId] = { publicKey: msg.publicKey || '', name: msg.name || `Peer-${peerId.slice(0,6)}` };
+
+      // Apply pending ICE candidates
+      if (this.pendingIce[peerId]) {
+        for (const c of this.pendingIce[peerId]) { try { await pc.addIceCandidate(c); } catch (e) {} }
+        delete this.pendingIce[peerId];
+      }
     }
 
     async _handleRemoteIce(msg) {
