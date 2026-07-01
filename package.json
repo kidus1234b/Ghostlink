@@ -9,8 +9,8 @@
     "electron"
   ],
   "scripts": {
-    "start": "cd server && node index.js",
-    "server": "cd server && node index.js",
+    "start": "python3 server/server.py",
+    "server": "python3 server/server.py",
     "desktop": "cd electron && npm start",
     "mobile:android": "cd mobile && npx react-native run-android",
     "mobile:ios": "cd mobile && npx react-native run-ios",

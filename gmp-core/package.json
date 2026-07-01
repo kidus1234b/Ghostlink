@@ -1,0 +1,21 @@
+{
+  "name": "gmp-core",
+  "version": "1.2.0",
+  "description": "Ghost Mesh Protocol — Phase 1 + Phase 2a (Identity, Wire Format, Single Link, Nonce Tracking, Rate Limiting)",
+  "type": "module",
+  "main": "link.js",
+  "scripts": {
+    "test": "node test/two-node-test.js",
+    "test:two-node": "node test/two-node-test.js",
+    "test:nonce": "node test/nonce-persistence-test.js",
+    "test:rate": "node test/rate-limit-test.js",
+    "test:binding": "node test/binding-test.js",
+    "test:nat": "node test/nat-detection-test.js",
+    "test:hole-punch": "node test/hole-punch-test.js",
+    "test:all": "node test/two-node-test.js && node test/nonce-persistence-test.js && node test/rate-limit-test.js && node test/binding-test.js && node test/nat-detection-test.js && node test/hole-punch-test.js"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0"
+  }
+}

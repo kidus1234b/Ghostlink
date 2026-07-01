@@ -31,6 +31,11 @@ const INVOKE_CHANNELS = [
   'secure-delete',
   'get-setting',
   'set-setting',
+  'ghostmesh-start-server',
+  'ghostmesh-stop-server',
+  'ghostmesh-dial',
+  'ghostmesh-send',
+  'ghostmesh-close',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -39,6 +44,9 @@ const RECEIVE_CHANNELS = [
   'update-downloaded',
   'update-error',
   'tray-action',
+  'ghostmesh-peer-connected',
+  'ghostmesh-data',
+  'ghostmesh-peer-disconnected',
 ];
 
 /* ─── Secure send helper (validates channel) ────────────────── */
@@ -73,7 +81,7 @@ contextBridge.exposeInMainWorld('ghostlink', {
   /* ── Platform info ──────────────────────────────────────────── */
   platform: process.platform,
   isElectron: true,
-
+  
   /* ── Signaling server URL (file:// has no hostname) ────────── */
   signalingUrl: 'ws://localhost:3001',
 
@@ -118,6 +126,18 @@ contextBridge.exposeInMainWorld('ghostlink', {
   settings: {
     get: (key) => secureInvoke('get-setting', key),
     set: (key, value) => secureInvoke('set-setting', key, value),
+  },
+
+  /* ── Ghost Mesh ─────────────────────────────────────────────── */
+  ghostMesh: {
+    startServer: () => secureInvoke('ghostmesh-start-server'),
+    stopServer: () => secureInvoke('ghostmesh-stop-server'),
+    dial: (host, port) => secureInvoke('ghostmesh-dial', { host, port }),
+    send: (connId, data) => secureInvoke('ghostmesh-send', { connId, data }),
+    close: (connId) => secureInvoke('ghostmesh-close', { connId }),
+    onPeerConnected: (callback) => secureOn('ghostmesh-peer-connected', callback),
+    onData: (callback) => secureOn('ghostmesh-data', callback),
+    onPeerDisconnected: (callback) => secureOn('ghostmesh-peer-disconnected', callback),
   },
 
   /* ── Drag-and-drop support ──────────────────────────────────── */

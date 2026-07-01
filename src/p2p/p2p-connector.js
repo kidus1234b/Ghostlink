@@ -79,6 +79,11 @@
 
       // Options
       this.trickleIce = true;
+
+      // Ghost Mesh (Yggdrasil TCP client/server)
+      this.meshConns = {}; // peerId -> { connId, sharedKey, name, publicKey }
+      this._meshListeners = [];
+      this._initGhostMesh();
     }
 
     // ─── Signaling discovery & connect ─────────────────────────────────────
@@ -89,7 +94,7 @@
       if (saved) candidates.push(saved);
       if (typeof GHOSTLINK_SIGNAL_URL !== 'undefined') candidates.push(GHOSTLINK_SIGNAL_URL);
       const { protocol, hostname } = window.location;
-      if (hostname && hostname !== 'localhost') {
+      if (hostname) {
         const port = window.location.port || 3001;
         candidates.push(`ws://${hostname}:${port}`);
         candidates.push(`ws://${hostname}:3001`);
@@ -447,6 +452,16 @@
     // ─── Send message via data channel ──────────────────────────────────────
 
     sendMessage(peerId, dataObj) {
+      const meshSession = this.meshConns[peerId];
+      if (meshSession) {
+        const payload = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+        this._encryptPayload(meshSession.sharedKey, payload).then(encrypted => {
+          window.ghostlink.ghostMesh.send(meshSession.connId, encrypted);
+        }).catch(err => {
+          console.error('[GhostMesh] Send message failed:', err);
+        });
+        return true;
+      }
       return this.sendOnChannel(peerId, 'messages', dataObj);
     }
 
@@ -471,7 +486,7 @@
     // ─── Utils ─────────────────────────────────────────────────────────────
 
     isConnected(peerId) {
-      return this.dcs[peerId]?.messages?.readyState === 'open';
+      return !!this.meshConns[peerId] || this.dcs[peerId]?.messages?.readyState === 'open';
     }
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
@@ -507,6 +522,237 @@
       if (this.ws) { this.ws.close(); this.ws = null; }
       this.wsOpen = false;
       Object.keys(this.pcs).forEach(id => this._cleanupPeer(id));
+
+      // Cleanup Mesh
+      this._meshListeners.forEach(un => { try { un(); } catch (e) {} });
+      this._meshListeners = [];
+      for (const conn of Object.values(this.meshConns)) {
+        try { window.ghostlink?.ghostMesh?.close(conn.connId); } catch (e) {}
+      }
+      this.meshConns = {};
+    }
+
+    _initGhostMesh() {
+      if (typeof window !== 'undefined' && window.ghostlink?.ghostMesh) {
+        const gm = window.ghostlink.ghostMesh;
+        
+        const un1 = gm.onPeerConnected(async ({ connId, remoteAddress, type }) => {
+          console.log(`[GhostMesh] Accepted incoming connection ${connId} from ${remoteAddress}`);
+        });
+        
+        const un2 = gm.onData(async ({ connId, data }) => {
+          await this._handleMeshData(connId, data);
+        });
+        
+        const un3 = gm.onPeerDisconnected(({ connId }) => {
+          this._handleMeshDisconnected(connId);
+        });
+        
+        this._meshListeners = [un1, un2, un3];
+        
+        if (localStorage.getItem('gl_yggdrasil_enabled') === 'true') {
+          gm.startServer().catch(err => console.warn('[GhostMesh] Auto-start server failed:', err.message));
+        }
+      }
+    }
+
+    async _handleMeshData(connId, data) {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'identity') {
+          const peerId = msg.fingerprint;
+          console.log(`[GhostMesh] Received identity from peer ${peerId} (${msg.name})`);
+          
+          let sharedKey = null;
+          const privKey = this.identity.privateKey || (this.identity.keyPair && this.identity.keyPair.privateKey);
+          
+          if (privKey && msg.publicKeyHex) {
+            try {
+              const peerKey = await crypto.subtle.importKey(
+                'raw',
+                new Uint8Array(msg.publicKeyHex.match(/.{2}/g).map(b => parseInt(b, 16))),
+                { name: 'ECDH', namedCurve: 'P-256' },
+                false,
+                []
+              );
+              const sharedBits = await crypto.subtle.deriveBits(
+                { name: 'ECDH', public: peerKey },
+                privKey,
+                256
+              );
+              sharedKey = await crypto.subtle.importKey(
+                'raw', sharedBits,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+              );
+            } catch (e) {
+              console.warn('[GhostMesh] ECDH key derivation failed, using fallback key:', e.message);
+            }
+          }
+          
+          if (!sharedKey) {
+            const fallbackMaterial = new TextEncoder().encode(this.identity.fingerprint + ':' + peerId);
+            const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
+            sharedKey = await crypto.subtle.importKey(
+              'raw', hashBits,
+              { name: 'AES-GCM', length: 256 },
+              false,
+              ['encrypt', 'decrypt']
+            );
+          }
+          
+          this.meshConns[peerId] = {
+            connId,
+            sharedKey,
+            name: msg.name,
+            publicKey: msg.publicKeyHex,
+          };
+          
+          if (!msg.reply) {
+            const identMsg = {
+              type: 'identity',
+              fingerprint: this.identity.fingerprint,
+              name: this.identity.name,
+              publicKeyHex: this.identity.publicKeyHex,
+              yggdrasilAddress: localStorage.getItem('gl_yggdrasil_address') || '',
+              reply: true
+            };
+            await window.ghostlink.ghostMesh.send(connId, JSON.stringify(identMsg));
+          }
+          
+          this.states[peerId] = 'connected';
+          this.emit('peer-connected', peerId, { mode: 'Ghost Mesh', name: msg.name, publicKey: msg.publicKeyHex });
+          
+          if (msg.yggdrasilAddress) {
+            this.cacheMeshPeer(peerId, msg.yggdrasilAddress, msg.name);
+          }
+          return;
+        }
+        
+        let peerId = null;
+        let session = null;
+        for (const [pid, conn] of Object.entries(this.meshConns)) {
+          if (conn.connId === connId) {
+            peerId = pid;
+            session = conn;
+            break;
+          }
+        }
+        
+        if (!session) {
+          console.warn(`[GhostMesh] Data received on unmapped connection ${connId}`);
+          return;
+        }
+        
+        const decrypted = await this._decryptPayload(session.sharedKey, data);
+        const parsed = JSON.parse(decrypted);
+        this.emit('message', peerId, parsed);
+        
+      } catch (e) {
+        console.error('[GhostMesh] Failed to process incoming data:', e);
+      }
+    }
+
+    _handleMeshDisconnected(connId) {
+      let peerId = null;
+      for (const [pid, conn] of Object.entries(this.meshConns)) {
+        if (conn.connId === connId) {
+          peerId = pid;
+          break;
+        }
+      }
+      if (peerId) {
+        delete this.meshConns[peerId];
+        this.states[peerId] = 'disconnected';
+        this.emit('peer-disconnected', peerId);
+      }
+    }
+
+    async _encryptPayload(sharedKey, plaintext) {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encoded = new TextEncoder().encode(plaintext);
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        sharedKey,
+        encoded
+      );
+      
+      const arrayToBase64 = (bytes) => {
+        let binary = '';
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        return btoa(binary);
+      };
+      
+      return JSON.stringify({
+        iv: arrayToBase64(iv),
+        data: arrayToBase64(new Uint8Array(ciphertext))
+      });
+    }
+
+    async _decryptPayload(sharedKey, encryptedStr) {
+      const { iv, data } = JSON.parse(encryptedStr);
+      
+      const base64ToArray = (b64) => {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+      };
+      
+      const ivBytes = base64ToArray(iv);
+      const ciphertextBytes = base64ToArray(data);
+      
+      const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: ivBytes },
+        sharedKey,
+        ciphertextBytes
+      );
+      
+      return new TextDecoder().decode(decrypted);
+    }
+
+    async connectToMeshPeer(peerId, yggdrasilAddress) {
+      if (this.meshConns[peerId]) return true;
+      if (typeof window === 'undefined' || !window.ghostlink?.ghostMesh) return false;
+      
+      try {
+        const res = await window.ghostlink.ghostMesh.dial(yggdrasilAddress, 49500);
+        if (res.success) {
+          const connId = res.connId;
+          const identMsg = {
+            type: 'identity',
+            fingerprint: this.identity.fingerprint,
+            name: this.identity.name,
+            publicKeyHex: this.identity.publicKeyHex,
+            yggdrasilAddress: localStorage.getItem('gl_yggdrasil_address') || ''
+          };
+          
+          setTimeout(async () => {
+            await window.ghostlink.ghostMesh.send(connId, JSON.stringify(identMsg));
+          }, 150);
+          
+          return true;
+        }
+      } catch (e) {
+        console.warn('[GhostMesh] Dial failed:', e.message);
+      }
+      return false;
+    }
+
+    cacheMeshPeer(peerId, address, name) {
+      try {
+        const cached = JSON.parse(localStorage.getItem('gl_mesh_peers') || '{}');
+        cached[peerId] = {
+          yggdrasilAddress: address,
+          name: name || `Peer-${peerId.slice(0,6)}`,
+          lastConnected: Date.now()
+        };
+        localStorage.setItem('gl_mesh_peers', JSON.stringify(cached));
+        window.dispatchEvent(new CustomEvent('gl-mesh-peers-updated'));
+      } catch (e) {
+        console.error('[GhostMesh] Failed to cache peer:', e);
+      }
     }
   }
 

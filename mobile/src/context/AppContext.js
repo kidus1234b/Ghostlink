@@ -22,6 +22,7 @@ const STORAGE_KEYS = {
   MESSAGES: '@ghostlink/messages',
   SETTINGS: '@ghostlink/settings',
   PEERS: '@ghostlink/peers',
+  GHOST_MESH: '@ghostlink/ghost_mesh',
 };
 
 // ─── Default Settings ────────────────────────────────────────
@@ -42,6 +43,12 @@ const INITIAL_STATE = {
   messages: new Map(), // roomId -> [{ id, sender, text, timestamp, type, status }]
   settings: {...DEFAULT_SETTINGS},
   connectionStatus: 'disconnected', // 'disconnected' | 'connecting' | 'connected'
+  ghostMesh: {
+    enabled: false,
+    address: '',       // Yggdrasil IPv6 address
+    publicKeyHex: '',  // X25519 public key hex
+    status: 'not_configured', // 'not_configured' | 'configured' | 'active'
+  },
 };
 
 // ─── Action Types ────────────────────────────────────────────
@@ -52,6 +59,8 @@ const Actions = {
   ADD_MESSAGE: 'ADD_MESSAGE',
   UPDATE_SETTINGS: 'UPDATE_SETTINGS',
   SET_CONNECTION_STATUS: 'SET_CONNECTION_STATUS',
+  SET_GHOST_MESH: 'SET_GHOST_MESH',
+  CLEAR_GHOST_MESH: 'CLEAR_GHOST_MESH',
   RESTORE_STATE: 'RESTORE_STATE',
   WIPE_ALL: 'WIPE_ALL',
 };
@@ -112,6 +121,23 @@ function appReducer(state, action) {
     case Actions.SET_CONNECTION_STATUS:
       return {...state, connectionStatus: action.payload};
 
+    case Actions.SET_GHOST_MESH:
+      return {
+        ...state,
+        ghostMesh: {...state.ghostMesh, ...action.payload},
+      };
+
+    case Actions.CLEAR_GHOST_MESH:
+      return {
+        ...state,
+        ghostMesh: {
+          enabled: false,
+          address: '',
+          publicKeyHex: '',
+          status: 'not_configured',
+        },
+      };
+
     case Actions.RESTORE_STATE:
       return {...state, ...action.payload};
 
@@ -121,6 +147,12 @@ function appReducer(state, action) {
         settings: {...DEFAULT_SETTINGS},
         peers: new Map(),
         messages: new Map(),
+        ghostMesh: {
+          enabled: false,
+          address: '',
+          publicKeyHex: '',
+          status: 'not_configured',
+        },
       };
 
     default:
@@ -139,12 +171,13 @@ function AppProvider({children}) {
   useEffect(() => {
     (async () => {
       try {
-        const [rawIdentity, rawMessages, rawSettings, rawPeers] =
+        const [rawIdentity, rawMessages, rawSettings, rawPeers, rawGhostMesh] =
           await Promise.all([
             AsyncStorage.getItem(STORAGE_KEYS.IDENTITY),
             AsyncStorage.getItem(STORAGE_KEYS.MESSAGES),
             AsyncStorage.getItem(STORAGE_KEYS.SETTINGS),
             AsyncStorage.getItem(STORAGE_KEYS.PEERS),
+            AsyncStorage.getItem(STORAGE_KEYS.GHOST_MESH),
           ]);
 
         const restored = {};
@@ -160,6 +193,9 @@ function AppProvider({children}) {
         }
         if (rawPeers) {
           restored.peers = objectToMap(JSON.parse(rawPeers));
+        }
+        if (rawGhostMesh) {
+          restored.ghostMesh = JSON.parse(rawGhostMesh);
         }
 
         if (Object.keys(restored).length > 0) {
@@ -223,6 +259,17 @@ function AppProvider({children}) {
     ).catch(() => {});
   }, [state.peers]);
 
+  // ── Persist ghostMesh ──
+  useEffect(() => {
+    if (!hydrated.current) {
+      return;
+    }
+    AsyncStorage.setItem(
+      STORAGE_KEYS.GHOST_MESH,
+      JSON.stringify(state.ghostMesh),
+    ).catch(() => {});
+  }, [state.ghostMesh]);
+
   // ── Bound Actions ──
 
   const setIdentity = useCallback(identity => {
@@ -259,11 +306,20 @@ function AppProvider({children}) {
         STORAGE_KEYS.MESSAGES,
         STORAGE_KEYS.SETTINGS,
         STORAGE_KEYS.PEERS,
+        STORAGE_KEYS.GHOST_MESH,
       ]);
     } catch (err) {
       console.warn('[AppContext] wipe error:', err);
     }
     dispatch({type: Actions.WIPE_ALL});
+  }, []);
+
+  const setGhostMesh = useCallback(meshData => {
+    dispatch({type: Actions.SET_GHOST_MESH, payload: meshData});
+  }, []);
+
+  const clearGhostMesh = useCallback(() => {
+    dispatch({type: Actions.CLEAR_GHOST_MESH});
   }, []);
 
   const value = {
@@ -273,6 +329,7 @@ function AppProvider({children}) {
     messages: state.messages,
     settings: state.settings,
     connectionStatus: state.connectionStatus,
+    ghostMesh: state.ghostMesh,
 
     // Actions
     setIdentity,
@@ -281,6 +338,8 @@ function AppProvider({children}) {
     addMessage,
     updateSettings,
     setConnectionStatus,
+    setGhostMesh,
+    clearGhostMesh,
     wipeAll,
   };
 

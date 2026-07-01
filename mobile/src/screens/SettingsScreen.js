@@ -14,6 +14,7 @@ import {
 import Slider from '@react-native-community/slider';
 import {useTheme, THEMES} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
+import GhostMeshSetupModal from '../components/GhostMeshSetupModal';
 
 const SECURITY_INFO = [
   {label: 'Encryption Level', value: 'AES-256-GCM'},
@@ -24,8 +25,9 @@ const SECURITY_INFO = [
 
 export default function SettingsScreen({navigation}) {
   const {theme, themeName, setThemeName} = useTheme();
-  const {identity, settings, messages, updateSettings, wipeAll} = useApp();
+  const {identity, settings, messages, updateSettings, wipeAll, ghostMesh, setGhostMesh} = useApp();
   const [pubKeyCopied, setPubKeyCopied] = useState(false);
+  const [showMeshSetup, setShowMeshSetup] = useState(false);
 
   // ── Handlers ──
 
@@ -322,6 +324,78 @@ export default function SettingsScreen({navigation}) {
           </TouchableOpacity>
         </View>
 
+        {/* ── Ghost Mesh (Advanced) ── */}
+        <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+          <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>GHOST MESH (ADVANCED)</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={{flex: 1}}>
+              <Text style={[styles.toggleLabel, {color: theme.text}]}>Ghost Mesh (Yggdrasil)</Text>
+              <Text style={{fontSize: 10, color: theme.textMuted, marginTop: 2}}>
+                {ghostMesh.address
+                  ? `Address: ${ghostMesh.address}`
+                  : 'Direct peer-to-peer transport over Yggdrasil mesh network.'}
+              </Text>
+            </View>
+            <View style={{alignItems: 'flex-end', gap: 6}}>
+              {/* Status Tag */}
+              <View style={[
+                styles.meshStatusTag,
+                {
+                  backgroundColor:
+                    ghostMesh.status === 'active' ? '#00cc6620' :
+                    ghostMesh.status === 'configured' ? '#d69e2e20' : '#3a3a4a',
+                  borderColor:
+                    ghostMesh.status === 'active' ? '#00cc6640' :
+                    ghostMesh.status === 'configured' ? '#d69e2e40' : '#4a4a5a',
+                },
+              ]}>
+                <Text style={[
+                  styles.meshStatusText,
+                  {
+                    color:
+                      ghostMesh.status === 'active' ? '#00cc66' :
+                      ghostMesh.status === 'configured' ? '#d69e2e' : '#6a6a7a',
+                  },
+                ]}>
+                  {ghostMesh.status === 'active' ? 'ACTIVE' :
+                   ghostMesh.status === 'configured' ? 'CONFIGURED' : 'NOT CONFIGURED'}
+                </Text>
+              </View>
+              {ghostMesh.address ? (
+                <Switch
+                  value={ghostMesh.enabled}
+                  onValueChange={v => {
+                    Vibration.vibrate(10);
+                    setGhostMesh({
+                      enabled: v,
+                      status: v ? 'active' : 'configured',
+                    });
+                  }}
+                  trackColor={{false: theme.bgTertiary, true: theme.accent + '50'}}
+                  thumbColor={ghostMesh.enabled ? theme.accent : theme.textMuted}
+                />
+              ) : null}
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.actionRow, {borderTopWidth: 1, borderTopColor: theme.border, marginTop: 8}]}
+            onPress={() => setShowMeshSetup(true)}
+            activeOpacity={0.7}>
+            <Text style={[styles.actionText, {color: theme.accent}]}>
+              {ghostMesh.address ? 'Reconfigure' : 'Configure'}
+            </Text>
+            <Text style={[styles.actionArrow, {color: theme.textMuted}]}>{'\u203A'}</Text>
+          </TouchableOpacity>
+
+          <Text style={{fontSize: 9, color: theme.textMuted, marginTop: 8, lineHeight: 14}}>
+            On mobile, Ghost Mesh operates in Web Client mode {String.fromCharCode(8212)} it derives
+            your Yggdrasil identity for peer discovery but uses WebRTC for transport. Full direct
+            TCP mesh connections require the desktop Electron app.
+          </Text>
+        </View>
+
         {/* ── Destructive Wipe Button ── */}
         <TouchableOpacity
           style={[styles.dangerBtn, {backgroundColor: theme.danger + '15', borderColor: theme.danger + '40'}]}
@@ -337,6 +411,22 @@ export default function SettingsScreen({navigation}) {
           </Text>
         </View>
       </ScrollView>
+
+      {/* Ghost Mesh Setup Modal */}
+      <GhostMeshSetupModal
+        visible={showMeshSetup}
+        onClose={() => setShowMeshSetup(false)}
+        onComplete={({address, publicKeyHex}) => {
+          setGhostMesh({
+            enabled: true,
+            address,
+            publicKeyHex,
+            status: 'active',
+          });
+          setShowMeshSetup(false);
+          Alert.alert('Ghost Mesh Configured', 'Your Yggdrasil identity has been saved and Ghost Mesh is now active.');
+        }}
+      />
     </View>
   );
 }
@@ -566,6 +656,19 @@ const styles = StyleSheet.create({
   dangerBtnLabel: {
     fontSize: 15,
     fontWeight: '700',
+  },
+
+  /* Ghost Mesh */
+  meshStatusTag: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  meshStatusText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 1,
   },
 
   /* Footer */

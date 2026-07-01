@@ -73,9 +73,11 @@
       // 3. ws://localhost:3001
       urls.push('ws://localhost:3001');
 
-      // 4. ws://[hostname]:3001
+      // 4. ws://[hostname]:[port]
       try {
         if (typeof location !== 'undefined' && location.hostname) {
+          const port = location.port || 3001;
+          urls.push(`ws://${location.hostname}:${port}`);
           urls.push(`ws://${location.hostname}:3001`);
         }
       } catch (e) { /* location not available */ }

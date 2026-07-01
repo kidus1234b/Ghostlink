@@ -72,6 +72,7 @@
     </script>
     <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/tweetnacl@1.0.3/nacl-fast.min.js" crossorigin></script>
     <script src="src/crypto/signal-protocol.js"></script>
     <script src="src/p2p/webrtc-manager.js"></script>
     <script src="src/p2p/file-transfer.js?v=2"></script>
@@ -126,7 +127,7 @@
     <script src="src/license/dev-console.js"></script>
     <script src="src/license/license-activation-ui.js"></script>
     <script src="src/license/index.js"></script>
-    <script type="text/babel" src="src/license/workspace-components.js"></script>
+    <script src="src/license/workspace-components.js"></script>
     <script>window.GLLicenseAPI = window.GhostLink;</script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
     <script>
@@ -546,9 +547,12 @@
           };
         },
         genInvite() {
-          const b = crypto.getRandomValues(new Uint8Array(16));
-          const c = Array.from(b).map(b => b.toString(16).padStart(2, "0")).join("");
-          return `GL-${c.slice(0, 8)}-${c.slice(8, 16)}-${c.slice(16, 24)}-${c.slice(24, 32)}`.toUpperCase();
+          const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+          const bytes = crypto.getRandomValues(new Uint8Array(9));
+          const part1 = Array.from(bytes.slice(0, 3)).map(b => chars[b % chars.length]).join("");
+          const part2 = Array.from(bytes.slice(3, 6)).map(b => chars[b % chars.length]).join("");
+          const part3 = Array.from(bytes.slice(6, 9)).map(b => chars[b % chars.length]).join("");
+          return `GHOST-${part1}-${part2}-${part3}`;
         },
         // URL-safe base64 encode (replaces deprecated unescape/escape)
         _base64Encode(str) {
@@ -664,70 +668,318 @@
           );
           return new TextDecoder().decode(decryptedBytes);
         },
+        async deriveYggdrasilIdentity(words) {
+          const enc = new TextEncoder();
+          const baseKey = await crypto.subtle.importKey(
+            "raw",
+            enc.encode(words.join(" ")),
+            "PBKDF2",
+            false,
+            ["deriveBits"]
+          );
+          const derivedBits = await crypto.subtle.deriveBits(
+            {
+              name: "PBKDF2",
+              salt: enc.encode("ghostlink-yggdrasil-v1"),
+              iterations: 100000,
+              hash: "SHA-256"
+            },
+            baseKey,
+            256
+          );
+          const rawKeyBytes = new Uint8Array(derivedBits);
+
+          const publicKeyBytes = await this.curve25519PublicKeyFromSeed(rawKeyBytes);
+          const address = await this.deriveYggdrasilAddress(publicKeyBytes);
+          const publicKeyHex = Array.from(publicKeyBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+          const privateKeyHex = Array.from(rawKeyBytes).map(b => b.toString(16).padStart(2, "0")).join("");
+
+          return { publicKeyHex, address, privateKeyHex };
+        },
+        async curve25519PublicKeyFromSeed(seedBytes) {
+          // Primary path: use tweetnacl (nacl-fast.min.js exposes as window.nacl)
+          // nacl.box.keyPair.fromSecretKey performs X25519 (Curve25519) scalar
+          // multiplication of the private key against the standard base point (9),
+          // producing the correct 32-byte Curve25519 public key.
+          if (typeof nacl !== 'undefined' && nacl.box) {
+            try {
+              const keyPair = nacl.box.keyPair.fromSecretKey(seedBytes);
+              return new Uint8Array(keyPair.publicKey);
+            } catch (e) {
+              console.warn('[CryptoEngine] nacl X25519 failed:', e.message);
+            }
+          }
+          // Fallback: Web Crypto API X25519 (available in modern browsers)
+          // Import the 32-byte seed as a PKCS#8-wrapped X25519 private key,
+          // then re-export as JWK to extract the public key ("x" field).
+          // PKCS#8 header for X25519: OID 1.3.101.110 = 302e020100300506032b656e04220420
+          if (typeof crypto.subtle !== 'undefined') {
+            try {
+              const x25519Pkcs8Header = new Uint8Array([
+                0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20
+              ]);
+              const pkcs8Key = new Uint8Array(48);
+              pkcs8Key.set(x25519Pkcs8Header, 0);
+              pkcs8Key.set(seedBytes, 16);
+
+              // Import as X25519 private key (must be exportable to extract public key)
+              const privateKey = await crypto.subtle.importKey(
+                "pkcs8",
+                pkcs8Key,
+                { name: "X25519" },
+                true,
+                ["deriveBits"]
+              );
+
+              // Export as JWK to get the public key component ("x" field)
+              const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+              if (jwk.x) {
+                // JWK "x" is base64url-encoded 32-byte Curve25519 public key
+                const b64url = jwk.x;
+                const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+                const binStr = atob(b64);
+                const pubBytes = new Uint8Array(binStr.length);
+                for (let i = 0; i < binStr.length; i++) pubBytes[i] = binStr.charCodeAt(i);
+                return pubBytes;
+              }
+              throw new Error('JWK export did not contain public key (x field)');
+            } catch (e) {
+              console.warn('[CryptoEngine] Web Crypto X25519 failed:', e.message);
+            }
+          }
+          throw new Error('[CryptoEngine] No X25519 implementation available. ' +
+            'Ensure tweetnacl (nacl-fast.min.js) is loaded, or use a browser with Web Crypto X25519 support.');
+        },
+        async deriveYggdrasilAddress(publicKeyBytes) {
+          const hashBuffer = await crypto.subtle.digest("SHA-512", publicKeyBytes);
+          const hash = new Uint8Array(hashBuffer);
+          
+          let leadingOnes = 0;
+          for (let i = 0; i < hash.length; i++) {
+            const byte = hash[i];
+            let mask = 0x80;
+            while (mask > 0) {
+              if ((byte & mask) !== 0) {
+                leadingOnes++;
+                mask >>= 1;
+              } else {
+                break;
+              }
+            }
+            if (mask > 0) {
+              break;
+            }
+          }
+          
+          const addr = new Uint8Array(16);
+          addr[0] = 0x02;
+          addr[1] = leadingOnes;
+          
+          let bitSrc = leadingOnes + 1;
+          for (let i = 0; i < 112; i++) {
+            const srcBitPos = bitSrc + i;
+            const srcByteIdx = Math.floor(srcBitPos / 8);
+            const srcBitIdx = 7 - (srcBitPos % 8);
+            const bitVal = (hash[srcByteIdx] >> srcBitIdx) & 1;
+            
+            const destBitPos = 16 + i;
+            const destByteIdx = Math.floor(destBitPos / 8);
+            const destBitIdx = 7 - (destBitPos % 8);
+            
+            if (bitVal) {
+              addr[destByteIdx] |= (1 << destBitIdx);
+            }
+          }
+          
+          const segments = [];
+          for (let i = 0; i < 16; i += 2) {
+            const val = (addr[i] << 8) | addr[i+1];
+            segments.push(val.toString(16));
+          }
+          
+          const rawIp = segments.join(':');
+          const segs = rawIp.split(':');
+          let bestStart = -1;
+          let bestLen = 0;
+          let curStart = -1;
+          let curLen = 0;
+          for (let i = 0; i < segs.length; i++) {
+            if (parseInt(segs[i], 16) === 0) {
+              if (curStart === -1) {
+                curStart = i;
+                curLen = 1;
+              } else {
+                curLen++;
+              }
+              if (curLen > bestLen) {
+                bestStart = curStart;
+                bestLen = curLen;
+              }
+            } else {
+              curStart = -1;
+              curLen = 0;
+            }
+          }
+          if (bestLen > 1) {
+            const before = segs.slice(0, bestStart).join(':');
+            const after = segs.slice(bestStart + bestLen).join(':');
+            return (before === '' ? '' : before) + '::' + (after === '' ? '' : after);
+          }
+          return rawIp;
+        },
       };
       window.CryptoEngine = CryptoEngine;
 
       // ==================== MANUAL SIGNALING (serverless WebRTC) ====================
+      /* 
+       * Known Limitation: Symmetric NAT Traversal
+       * Direct connection requires either one peer to have a direct public IP, or both peers
+       * to have cone NATs that allow hole punching via STUN reflexive candidates. If one or
+       * both devices are on symmetric NAT networks (common on cellular/mobile carriers or strict
+       * corporate firewalls), direct WebRTC hole punching will fail. In those cases, a TURN relay
+       * server is required. This zero-server flow uses only STUN servers, so symmetric NAT cases
+       * are expected to fail.
+       *
+       * Why full SDP exchange works:
+       * A WebRTC peer connection needs to know the external IP and port for the remote peer,
+       * as well as the cryptographic fingerprints and connection configuration. STUN servers
+       * help each peer discover its own public-facing reflexive candidate mapping (IP and port).
+       * By embedding all these candidates inside the full SDP block and exchanging them (via QR
+       * or paste), both peers perform a "simultaneous open" handshake, actively trying to send
+       * packets to each other's discovered public endpoints. This punches holes through most
+       * standard firewalls and consumer router NATs.
+       */
       const ManualSignaling = {
+        // Helper to wait for ICE gathering to complete before proceeding
+        waitForIceGathering(pc) {
+          return new Promise(resolve => {
+            if (pc.iceGatheringState === 'complete') {
+              resolve();
+              return;
+            }
+            const timeoutId = setTimeout(() => {
+              pc.removeEventListener('icegatheringstatechange', check);
+              resolve();
+            }, 4000);
+            function check() {
+              if (pc.iceGatheringState === 'complete') {
+                clearTimeout(timeoutId);
+                pc.removeEventListener('icegatheringstatechange', check);
+                resolve();
+              }
+            }
+            pc.addEventListener('icegatheringstatechange', check);
+          });
+        },
+
         async createOffer(identity) {
           const pc = new RTCPeerConnection({
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' }
             ]
           });
-          const dc = pc.createDataChannel('ghostlink', { ordered: true });
-          const candidates = [];
-          const gatherDone = new Promise(resolve => {
-            pc.onicecandidate = e => { if (e.candidate) candidates.push(e.candidate.toJSON()); else resolve(); };
-            setTimeout(resolve, 6000);
-          });
+
+          // Create 3 data channels: messages, files, presence
+          const msgDc = pc.createDataChannel('messages', { ordered: true });
+          const filesDc = pc.createDataChannel('files', { ordered: true });
+          const presDc = pc.createDataChannel('presence', { ordered: false, maxRetransmits: 0 });
+
+          // Call createOffer(), setLocalDescription(offer)
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
-          await gatherDone;
+
+          // Wait for ICE gathering to complete
+          await this.waitForIceGathering(pc);
+
+          // Bundle: sdp, pubKeyHex, name, fingerprint, timestamp
           const bundle = {
-            v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
-            i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
+            sdp: pc.localDescription,
+            pubKeyHex: identity.publicKeyHex,
+            name: identity.name,
+            fingerprint: identity.fingerprint,
+            timestamp: Date.now()
           };
-          return { encoded: CryptoEngine._base64Encode(JSON.stringify(bundle)), pc, dc, bundle };
+
+          // Compress/encode raw base64
+          const encoded = CryptoEngine._base64Encode(JSON.stringify(bundle));
+          return { encoded, pc, dcs: { messages: msgDc, files: filesDc, presence: presDc }, bundle };
         },
+
         async processOffer(encodedOffer, identity) {
           const bundle = JSON.parse(CryptoEngine._base64Decode(encodedOffer));
+          if (!bundle || !bundle.sdp) {
+            throw new Error("Invalid offer bundle structure");
+          }
+
           const pc = new RTCPeerConnection({
             iceServers: [
               { urls: 'stun:stun.l.google.com:19302' },
               { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' },
+              { urls: 'stun:stun2.l.google.com:19302' }
             ]
           });
-          const candidates = [];
-          const gatherDone = new Promise(resolve => {
-            pc.onicecandidate = e => { if (e.candidate) candidates.push(e.candidate.toJSON()); else resolve(); };
-            setTimeout(resolve, 6000);
-          });
-          await pc.setRemoteDescription({ type: bundle.t, sdp: bundle.s });
-          for (const c of bundle.i) { try { await pc.addIceCandidate(c); } catch(e) {} }
+
+          // setRemoteDescription(offer from bundle)
+          await pc.setRemoteDescription(new RTCSessionDescription(bundle.sdp));
+
+          // Listen for the 3 incoming data channels
+          const dcs = { messages: null, files: null, presence: null };
+          pc.ondatachannel = (e) => {
+            const label = e.channel.label;
+            if (label === 'messages' || label === 'files' || label === 'presence') {
+              dcs[label] = e.channel;
+            }
+          };
+
+          // Call createAnswer(), setLocalDescription(answer)
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          await gatherDone;
+
+          // Wait for ICE gathering to complete
+          await this.waitForIceGathering(pc);
+
+          // Bundle answer
           const answerBundle = {
-            v: 2, s: pc.localDescription.sdp, t: pc.localDescription.type,
-            i: candidates, p: identity.publicKeyHex, n: identity.name, f: identity.fingerprint, ts: Date.now()
+            sdp: pc.localDescription,
+            pubKeyHex: identity.publicKeyHex,
+            name: identity.name,
+            fingerprint: identity.fingerprint,
+            timestamp: Date.now()
           };
-          return { encoded: CryptoEngine._base64Encode(JSON.stringify(answerBundle)), peerInfo: bundle, pc };
+
+          const encoded = CryptoEngine._base64Encode(JSON.stringify(answerBundle));
+          return { encoded, pc, dcs, peerInfo: bundle };
         },
+
         async processAnswer(encodedAnswer, pc) {
           const bundle = JSON.parse(CryptoEngine._base64Decode(encodedAnswer));
-          await pc.setRemoteDescription({ type: bundle.t, sdp: bundle.s });
-          for (const c of bundle.i) { try { await pc.addIceCandidate(c); } catch(e) {} }
+          if (!bundle || !bundle.sdp) {
+            throw new Error("Invalid answer bundle structure");
+          }
+          await pc.setRemoteDescription(new RTCSessionDescription(bundle.sdp));
           return bundle;
         },
+
         isManualSignal(str) {
-            if (!str || str.startsWith('GL-')) return false;
-            try { const d = JSON.parse(CryptoEngine._base64Decode(str)); return d.v === 2 && d.s && d.t; } catch { return false; }
-          },
-          decode(str) { try { return JSON.parse(CryptoEngine._base64Decode(str)); } catch { return null; } },
+          if (!str || str.startsWith('GL-')) return false;
+          try {
+            const decoded = CryptoEngine._base64Decode(str);
+            const d = JSON.parse(decoded);
+            return d && d.sdp && d.fingerprint;
+          } catch {
+            return false;
+          }
+        },
+
+        decode(str) {
+          try {
+            return JSON.parse(CryptoEngine._base64Decode(str));
+          } catch {
+            return null;
+          }
+        }
       };
 
       // ==================== PEER CACHE (localStorage) ====================
@@ -986,8 +1238,40 @@
         }
       }
 
+      // Helper components for React-based audio/video elements with robust lifecycle management
+      const VideoPlayer = ({ stream, style, muted }) => {
+        const videoRef = useRef(null);
+        useEffect(() => {
+          if (videoRef.current && stream) {
+            if (videoRef.current.srcObject !== stream) {
+              videoRef.current.srcObject = stream;
+            }
+          }
+        }, [stream]);
+        return <video ref={videoRef} autoPlay playsInline muted={muted} style={style} />;
+      };
+
+      const AudioPlayer = ({ stream }) => {
+        const audioRef = useRef(null);
+        useEffect(() => {
+          if (audioRef.current && stream) {
+            if (audioRef.current.srcObject !== stream) {
+              audioRef.current.srcObject = stream;
+            }
+          }
+        }, [stream]);
+        return <audio ref={audioRef} autoPlay />;
+      };
+
       // ==================== MAIN APP ====================
       function GhostLinkApp() {
+        const WorkspacePanel = window.WorkspacePanel || (() => null);
+        const WorkspaceRoster = window.WorkspaceRoster || (() => null);
+        const UpgradeModal = window.UpgradeModal || (() => null);
+        const WorkspaceCreateModal = window.WorkspaceCreateModal || (() => null);
+        const WorkspaceJoinModal = window.WorkspaceJoinModal || (() => null);
+        const WorkspaceInviteModal = window.WorkspaceInviteModal || (() => null);
+
         // WebCrypto check — must be on HTTPS or localhost
         if (!crypto?.subtle) {
           return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center', padding: 20 }}>
@@ -1068,6 +1352,37 @@
           return () => clearInterval(interval);
         }, []);
 
+        // Countdown timer for rate quote lock in payment details
+        useEffect(() => {
+          if (showBuyModal && buyStep === 4 && buyCountdown > 0) {
+            const timer = setInterval(() => {
+              setBuyCountdown(prev => {
+                if (prev <= 1) {
+                  clearInterval(timer);
+                  addToast('Rate quote lock expired. Please restart transaction.', 'error');
+                  setBuyStep(2);
+                  return 900;
+                }
+                return prev - 1;
+              });
+            }, 1000);
+            return () => clearInterval(timer);
+          }
+        }, [showBuyModal, buyStep, buyCountdown]);
+
+        // Simulated verification query latency
+        useEffect(() => {
+          if (showBuyModal && buyStep === 6) {
+            setBuyVerifying(true);
+            const timer = setTimeout(() => {
+              setBuyVerifying(false);
+              setBuyRefId('GL-' + Math.random().toString(36).substring(2, 10).toUpperCase());
+              setBuyStep(7);
+            }, 3000);
+            return () => clearTimeout(timer);
+          }
+        }, [showBuyModal, buyStep]);
+
         // Core state
         const [view, setView] = useState("splash");
         const [identity, setIdentity] = useState(null);
@@ -1106,6 +1421,44 @@
         const [showExpiryModal, setShowExpiryModal] = useState(false);
         const [expiryDismissed, setExpiryDismissed] = useState(false);
         const [licenseDaysLeft, setLicenseDaysLeft] = useState(null);
+        const [securityLog, setSecurityLog] = useState([]);
+
+        // Ghost Mesh (Yggdrasil) state
+        const [yggdrasilEnabled, setYggdrasilEnabled] = useState(localStorage.getItem('gl_yggdrasil_enabled') === 'true');
+        const [yggdrasilAddress, setYggdrasilAddress] = useState(localStorage.getItem('gl_yggdrasil_address') || '');
+        const [meshPeers, setMeshPeers] = useState(loadPersisted('gl_mesh_peers', {}));
+        const [showMeshSetup, setShowMeshSetup] = useState(false);
+        const [meshSetupStep, setMeshSetupStep] = useState('intro'); // intro, seed, result
+        const [meshSeedInput, setMeshSeedInput] = useState('');
+        const [meshAddressInput, setMeshAddressInput] = useState('');
+        const [meshPubKeyInput, setMeshPubKeyInput] = useState('');
+        const [derivedMeshAddress, setDerivedMeshAddress] = useState('');
+        const [derivedMeshPubKey, setDerivedMeshPubKey] = useState('');
+        const [derivedMeshPrivKey, setDerivedMeshPrivKey] = useState('');
+
+        useEffect(() => {
+          const handler = () => {
+            setMeshPeers(loadPersisted('gl_mesh_peers', {}));
+          };
+          window.addEventListener('gl-mesh-peers-updated', handler);
+          return () => window.removeEventListener('gl-mesh-peers-updated', handler);
+        }, []);
+
+        // Buy License portal state
+        const [showBuyModal, setShowBuyModal] = useState(false);
+        const [buyStep, setBuyStep] = useState(1);
+        const [buyPlan, setBuyPlan] = useState("PRO");
+        const [buyBilling, setBuyBilling] = useState("monthly");
+        const [buyDuration, setBuyDuration] = useState(1);
+        const [buyCoin, setBuyCoin] = useState("");
+        const [buyUsdtNetwork, setBuyUsdtNetwork] = useState("ERC20");
+        const [buyTxHash, setBuyTxHash] = useState("");
+        const [buyEmail, setBuyEmail] = useState("");
+        const [buyFileBlob, setBuyFileBlob] = useState(null);
+        const [buyFileName, setBuyFileName] = useState("");
+        const [buyRefId, setBuyRefId] = useState("");
+        const [buyCountdown, setBuyCountdown] = useState(900);
+        const [buyVerifying, setBuyVerifying] = useState(false);
 
         // Call state
         const [callActive, setCallActive] = useState(false);
@@ -1139,6 +1492,7 @@
           p2pRelay: "WebRTC",
           exportFormat: "json",
           messageRetention: 90,
+          relayServerUrl: "",
         }));
 
         // Recovery & extras
@@ -1201,6 +1555,17 @@
         const manualPcRef = useRef(null);
         const manualDcRef = useRef(null);
         const manualConnectionsRef = useRef({}); // { peerId: { pc, dc } }
+        const [qrCodeWarning, setQrCodeWarning] = useState(false);
+        const manualDcsRef = useRef(null);
+
+        // Quick Connect (Python signaling relay) state
+        const [quickSignalStep, setQuickSignalStep] = useState('idle'); // idle | host-connecting | host-waiting | host-handshaking | join-connecting | join-handshaking | connected | failed
+        const [quickRoomCode, setQuickRoomCode] = useState('');
+        const [quickInputCode, setQuickInputCode] = useState('');
+        const [quickMode, setQuickMode] = useState(null); // 'host' | 'join'
+        const quickWsRef = useRef(null);
+        const quickPcRef = useRef(null);
+        const quickDcsRef = useRef(null);
 
         // Signal Protocol Double Ratchet UI state
         const [signalProtocolStatus, setSignalProtocolStatus] = useState('uninitialized'); // uninitialized | initializing | active | failed
@@ -1293,6 +1658,7 @@
         const p2pConnectorRef = useRef(null);
         const callConnectionRef = useRef(null); // active call RTCPeerConnection
         const callLocalStreamRef = useRef(null); // active call local MediaStream
+        const screenStreamRef = useRef(null); // active screen sharing MediaStream
         const pendingCallOfferRef = useRef(null); // stores { sdp, callType, from } for answering
 
         // Responsive
@@ -1837,11 +2203,35 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                     return prev;
                   });
                 } else if (msg.type === 'call-offer') {
-                  // Incoming call — show incoming call UI
-                  pendingCallOfferRef.current = { sdp: msg.sdp, callType: msg.callType || 'voice', from: msg.from, fromName: msg.name };
-                  setIncomingCall({ peerId: msg.from, callType: msg.callType || 'voice' });
-                  setCallType(msg.callType || 'voice');
-                  addToast(`Incoming ${msg.callType || 'voice'} call from ${msg.name || msg.from}`, 'info');
+                  if (callActive && callConnectionRef.current && callConnectionRef.current.__peerId === msg.from) {
+                    // This is a renegotiation offer (e.g., adding screen share track)
+                    const pc = callConnectionRef.current;
+                    pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: msg.sdp }))
+                      .then(() => pc.createAnswer())
+                      .then(answer => pc.setLocalDescription(answer))
+                      .then(() => {
+                        const conn = p2pConnectorRef.current;
+                        if (conn && conn.isConnected(msg.from)) {
+                          conn.sendMessage(msg.from, {
+                            type: 'call-answer',
+                            sdp: pc.localDescription.sdp,
+                            from: identity.fingerprint,
+                            name: identity.name
+                          });
+                        }
+                      })
+                      .catch(e => console.error('Renegotiation error:', e));
+
+                    if (msg.callType) {
+                      setCallType(msg.callType);
+                    }
+                  } else {
+                    // Incoming call — show incoming call UI
+                    pendingCallOfferRef.current = { sdp: msg.sdp, callType: msg.callType || 'voice', from: msg.from, fromName: msg.name };
+                    setIncomingCall({ peerId: msg.from, callType: msg.callType || 'voice' });
+                    setCallType(msg.callType || 'voice');
+                    addToast(`Incoming ${msg.callType || 'voice'} call from ${msg.name || msg.from}`, 'info');
+                  }
                 } else if (msg.type === 'call-answer') {
                   // Answer to our call offer
                   const pc = callConnectionRef.current;
@@ -1986,6 +2376,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
               // Restore cached peers as offline initially
               const cached = PeerCache.getAllPeers();
               const cachedIds = Object.keys(cached);
+              const meshPeersCache = loadPersisted('gl_mesh_peers', {});
               if (cachedIds.length > 0) {
                 setAutoReconnectStatus('trying-relay');
                 for (const pid of cachedIds) {
@@ -1999,12 +2390,23 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                       color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
                     }];
                   });
+                  // Auto-dial Yggdrasil peers on start in Electron
+                  if (localStorage.getItem('gl_yggdrasil_enabled') === 'true' && window.ghostlink?.isElectron) {
+                    const mp = meshPeersCache[pid];
+                    if (mp && mp.yggdrasilAddress) {
+                      console.log(`[GhostMesh] Auto-dialing cached mesh peer ${pid} at ${mp.yggdrasilAddress}`);
+                      conn.connectToMeshPeer(pid, mp.yggdrasilAddress).catch(err => {
+                        console.warn('[GhostMesh] Auto-dial failed:', err.message);
+                      });
+                    }
+                  }
                 }
               }
             } catch (e) {
               console.warn('[GhostLink] Signaling connect failed (will auto-reconnect):', e.message);
               setSignalingAvailable(false);
               const cached = PeerCache.getAllPeers();
+              const meshPeersCache = loadPersisted('gl_mesh_peers', {});
               for (const pid of Object.keys(cached)) {
                 const c = cached[pid];
                 setPeers(prev => {
@@ -2016,6 +2418,16 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                     color: '#1a3a2a', unread: 0, fingerprint: pid, isReal: true, isCached: true
                   }];
                 });
+                // Auto-dial Yggdrasil peers on start in Electron even if signaling is down
+                if (localStorage.getItem('gl_yggdrasil_enabled') === 'true' && window.ghostlink?.isElectron) {
+                  const mp = meshPeersCache[pid];
+                  if (mp && mp.yggdrasilAddress) {
+                    console.log(`[GhostMesh] Auto-dialing cached mesh peer ${pid} at ${mp.yggdrasilAddress} (signaling down)`);
+                    conn.connectToMeshPeer(pid, mp.yggdrasilAddress).catch(err => {
+                      console.warn('[GhostMesh] Auto-dial failed:', err.message);
+                    });
+                  }
+                }
               }
               setTimeout(() => setAutoReconnectStatus('waiting'), 5000);
             }
@@ -2558,6 +2970,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
             // Create a new RTCPeerConnection for this call
             const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            pc.__peerId = peerId;
             callConnectionRef.current = pc;
 
             // Add local tracks
@@ -2565,23 +2978,55 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
             // When remote stream arrives
             pc.ontrack = (evt) => {
-              setRemoteStreams(prev => ({ ...prev, [peerId]: evt.streams[0] }));
+              setRemoteStreams(prev => {
+                const existing = prev[peerId];
+                let newStream;
+                if (existing) {
+                  const tracks = existing.getTracks();
+                  if (!tracks.some(t => t.id === evt.track.id)) {
+                    newStream = new MediaStream([...tracks, evt.track]);
+                  } else {
+                    newStream = existing;
+                  }
+                } else {
+                  newStream = new MediaStream([evt.track]);
+                }
+                return { ...prev, [peerId]: newStream };
+              });
             };
 
             // ICE signaling via the existing WebSocket (through p2pConnectorRef)
-pc.onicecandidate = (e) => {
+            pc.onicecandidate = (e) => {
               if (e.candidate) {
                 const conn = p2pConnectorRef.current;
                 if (conn && conn.isConnected(peerId)) {
                   conn.sendMessage(peerId, { type: 'call-ice', from: identity.fingerprint, candidate: e.candidate });
-                } else {
-                  // Fallback: send via signaling relay
-                  p2pConnectorRef.current?._send({
-                    type: 'offer', to: peerId, from: identity.fingerprint, sdp: pc.localDescription.sdp
-                  });
                 }
               }
             };
+
+            // Create and send WebRTC call offer
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const conn = p2pConnectorRef.current;
+            if (conn && conn.isConnected(peerId)) {
+              conn.sendMessage(peerId, {
+                type: 'call-offer',
+                callType: type,
+                sdp: pc.localDescription.sdp,
+                from: identity.fingerprint,
+                name: identity.name
+              });
+            } else {
+              addToast('Peer connection not fully established for calls', 'error');
+              localStream.getTracks().forEach(track => track.stop());
+              pc.close();
+              callConnectionRef.current = null;
+              callLocalStreamRef.current = null;
+              setLocalStream(null);
+              return;
+            }
 
             setCallType(type);
             setCallActive(true);
@@ -2601,7 +3046,8 @@ pc.onicecandidate = (e) => {
         };
 
         const endCall = async () => {
-          const peer = peers.find(p => p.id === activeConvo);
+          const peerId = callConnectionRef.current?.__peerId || peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
+          const peer = peers.find(p => p.id === peerId || p.fingerprint === peerId) || peers.find(p => p.id === activeConvo);
           const duration = callTimer;
           const ct = callType;
 
@@ -2616,6 +3062,10 @@ pc.onicecandidate = (e) => {
             callLocalStreamRef.current.getTracks().forEach(track => track.stop());
             callLocalStreamRef.current = null;
           }
+          if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach(track => track.stop());
+            screenStreamRef.current = null;
+          }
 
           // 3. Also clear legacy state for safety
           if (localStream) {
@@ -2626,7 +3076,6 @@ pc.onicecandidate = (e) => {
           });
 
           // 4. Send call-end signal via data channel
-          const peerId = peers.find(p => p.id === activeConvo)?.fingerprint || String(activeConvo);
           const conn = p2pConnectorRef.current;
           if (conn && conn.isConnected(peerId)) {
             conn.sendMessage(peerId, { type: 'call-end', from: identity.fingerprint });
@@ -2681,7 +3130,23 @@ pc.onicecandidate = (e) => {
 
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-            pc.ontrack = (evt) => { setRemoteStreams(prev => ({ ...prev, [callerPeerId]: evt.streams[0] })); };
+            pc.ontrack = (evt) => {
+              setRemoteStreams(prev => {
+                const existing = prev[callerPeerId];
+                let newStream;
+                if (existing) {
+                  const tracks = existing.getTracks();
+                  if (!tracks.some(t => t.id === evt.track.id)) {
+                    newStream = new MediaStream([...tracks, evt.track]);
+                  } else {
+                    newStream = existing;
+                  }
+                } else {
+                  newStream = new MediaStream([evt.track]);
+                }
+                return { ...prev, [callerPeerId]: newStream };
+              });
+            };
             pc.onicecandidate = (e) => {
               if (e.candidate) {
                 const conn = p2pConnectorRef.current;
@@ -2746,6 +3211,110 @@ pc.onicecandidate = (e) => {
             if (videoTrack) videoTrack.enabled = !videoTrack.enabled;
           }
           setCamOn(prev => !prev);
+        };
+
+        const toggleScreenShare = async () => {
+          if (screenSharing) {
+            // Stop screen sharing, revert to camera
+            if (screenStreamRef.current) {
+              screenStreamRef.current.getTracks().forEach(t => t.stop());
+              screenStreamRef.current = null;
+            }
+            
+            if (callType === 'video') {
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                if (callLocalStreamRef.current) {
+                  callLocalStreamRef.current.getTracks().forEach(t => t.stop());
+                }
+                callLocalStreamRef.current = stream;
+                setLocalStream(stream);
+
+                const videoTrack = stream.getVideoTracks()[0];
+                if (callConnectionRef.current) {
+                  const sender = callConnectionRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
+                  if (sender && videoTrack) {
+                    await sender.replaceTrack(videoTrack);
+                  }
+                }
+              } catch (e) {
+                console.error('Failed to revert to camera stream:', e);
+              }
+            } else {
+              // Voice call: remove video track
+              if (callConnectionRef.current) {
+                const sender = callConnectionRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) {
+                  try {
+                    callConnectionRef.current.removeTrack(sender);
+                  } catch {}
+                }
+                
+                // Trigger downgrade renegotiation
+                try {
+                  const offer = await callConnectionRef.current.createOffer();
+                  await callConnectionRef.current.setLocalDescription(offer);
+                  const conn = p2pConnectorRef.current;
+                  const peerId = callConnectionRef.current.__peerId;
+                  if (conn && conn.isConnected(peerId)) {
+                    conn.sendMessage(peerId, {
+                      type: 'call-offer',
+                      callType: 'voice',
+                      sdp: callConnectionRef.current.localDescription.sdp,
+                      from: identity.fingerprint,
+                      name: identity.name
+                    });
+                  }
+                } catch (err) {
+                  console.error('Downgrade renegotiation failed:', err);
+                }
+              }
+              setLocalStream(null);
+            }
+            setScreenSharing(false);
+          } else {
+            // Start screen sharing
+            try {
+              const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+              screenStreamRef.current = screenStream;
+
+              const screenTrack = screenStream.getVideoTracks()[0];
+              screenTrack.onended = () => {
+                toggleScreenShare();
+              };
+
+              if (callConnectionRef.current) {
+                const sender = callConnectionRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender && screenTrack) {
+                  await sender.replaceTrack(screenTrack);
+                } else if (screenTrack) {
+                  callConnectionRef.current.addTrack(screenTrack, screenStream);
+                  // Trigger renegotiation
+                  const offer = await callConnectionRef.current.createOffer();
+                  await callConnectionRef.current.setLocalDescription(offer);
+                  const conn = p2pConnectorRef.current;
+                  const peerId = callConnectionRef.current.__peerId;
+                  if (conn && conn.isConnected(peerId)) {
+                    conn.sendMessage(peerId, {
+                      type: 'call-offer',
+                      callType: 'video', // elevate to video call for rendering
+                      sdp: callConnectionRef.current.localDescription.sdp,
+                      from: identity.fingerprint,
+                      name: identity.name
+                    });
+                  }
+                }
+              }
+
+              const audioTrack = callLocalStreamRef.current?.getAudioTracks()[0];
+              const combinedStream = new MediaStream([audioTrack, screenTrack].filter(Boolean));
+              setLocalStream(combinedStream);
+              setScreenSharing(true);
+            } catch (e) {
+              console.error('Screen sharing failed:', e);
+              addToast('Screen share failed: ' + e.message, 'error');
+            }
+          }
         };
 
         // Separate ref to hold QRInvite class instance (don't overwrite with plain object)
@@ -2854,15 +3423,17 @@ pc.onicecandidate = (e) => {
         const generateManualOffer = async () => {
           if (!identity || !p2pConnectorRef.current) return;
           setManualSignalStep('creating');
+          setQrCodeWarning(false);
           try {
-            const result = await p2pConnectorRef.current.createManualOffer();
+            const result = await ManualSignaling.createOffer(identity);
             manualPcRef.current = result.pc;
+            manualDcsRef.current = result.dcs;
             
-            // Re-bind data channel events for manual offerer
-            const dc = result.pc.createDataChannel('messages', { ordered: true });
-            setupManualDataChannel(dc, result.pc, result.peerId, { n: 'Peer', p: '' });
+            if (result.encoded.length > 2900) {
+              setQrCodeWarning(true);
+            }
 
-            setManualOfferString(result.offerBase64);
+            setManualOfferString(result.encoded);
             setManualSignalStep('offer-ready');
           } catch (e) {
             console.error('Manual offer failed:', e);
@@ -2874,56 +3445,181 @@ pc.onicecandidate = (e) => {
         const processManualAnswer = async () => {
           if (!manualPeerInput.trim() || !p2pConnectorRef.current) return;
           try {
-            const success = await p2pConnectorRef.current.processManualAnswer(manualPeerInput.trim());
-            if (success) {
-              // Use the connector's helper instead of atob to avoid encoding errors
-              const decoded = p2pConnectorRef.current.decodeSignal(manualPeerInput.trim());
-              const bundle = JSON.parse(decoded);
-              const peerId = bundle.f;
-              
-              setManualSignalStep('connected');
-              setManualPeerInput('');
-              addToast('Connected via manual signal', 'success');
-            } else {
-              addToast('No pending connection matches this answer', 'error');
+            const conn = p2pConnectorRef.current;
+            const pc = manualPcRef.current;
+            const dcs = manualDcsRef.current;
+
+            if (!pc || !dcs) {
+              addToast('No active offer connection found', 'error');
+              return;
             }
+
+            const bundle = await ManualSignaling.processAnswer(manualPeerInput.trim(), pc);
+            const peerId = bundle.fingerprint;
+
+            // Register connection in direct connector
+            conn.pcs[peerId] = pc;
+            conn.dcs[peerId] = dcs;
+            conn.states[peerId] = 'connecting';
+            conn.knownPeers[peerId] = { name: bundle.name, publicKey: bundle.pubKeyHex };
+
+            // Setup direct data channels
+            conn._setupDc(peerId, 'messages', dcs.messages);
+            conn._setupDc(peerId, 'files', dcs.files);
+            conn._setupDc(peerId, 'presence', dcs.presence);
+
+            // Connection state change listener
+            let reconnectTimer = null;
+            pc.onconnectionstatechange = () => {
+              const state = pc.connectionState;
+              if (state === 'connecting') {
+                setManualSignalStep('connecting');
+                setConnectionMode('Manual Signal — Pending');
+              } else if (state === 'connected') {
+                setManualSignalStep('connected');
+                setConnectionMode('P2P Direct');
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+                setAutoReconnectStatus('connected');
+                
+                // Save to cache
+                PeerCache.addPeer(peerId, {
+                  fingerprint: peerId,
+                  name: bundle.name,
+                  pubKeyHex: bundle.pubKeyHex,
+                  lastConnectedAt: Date.now()
+                });
+
+                // Update UI peers list
+                setPeers(prev => {
+                  const name = bundle.name || `Peer-${peerId.slice(0,6)}`;
+                  if (prev.find(p => p.fingerprint === peerId || p.id === peerId)) {
+                    return prev.map(p => (p.fingerprint === peerId || p.id === peerId)
+                      ? { ...p, status: 'online', lastSeen: 'now', name } : p);
+                  }
+                  return [...prev, {
+                    id: peerId, name, status: 'online', pubKey: bundle.pubKeyHex || '',
+                    lastSeen: 'now', avatar: name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase() || 'P',
+                    color: '#1a3a2a', unread: 0, fingerprint: peerId, isReal: true, isManual: true
+                  }];
+                });
+                setActiveConvo(peerId);
+              } else if (state === 'failed') {
+                setManualSignalStep('failed');
+                setConnectionMode('Connection Failed');
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'failed' }));
+              } else if (state === 'disconnected') {
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+                addToast('Connection disconnected. Attempting automatic reconnect...', 'warning');
+                reconnectTimer = setTimeout(() => {
+                  if (pc.connectionState !== 'connected') {
+                    pc.close();
+                    setConnectionStates(prev => ({ ...prev, [peerId]: 'failed' }));
+                    addToast('Connection recovery timed out.', 'error');
+                  }
+                }, 30000);
+              }
+            };
+
+            setManualPeerInput('');
+            addToast('Processing answer response...', 'info');
           } catch (e) {
             console.error('Answer processing failed:', e);
-            addToast('Invalid answer signal', 'error');
+            addToast('Invalid answer code: ' + e.message, 'error');
           }
         };
 
         const processManualOffer = async () => {
-          if (!manualPeerInput.trim() || !identity || !p2pConnectorRef.current) return;
+          const rawInput = manualPeerInput.trim();
+          if (!rawInput || !identity || !p2pConnectorRef.current) return;
           setManualSignalStep('processing-offer');
           try {
-            const result = await p2pConnectorRef.current.processManualOffer(manualPeerInput.trim());
-            
-            // Re-bind data channel events for manual receiver
+            const result = await ManualSignaling.processOffer(rawInput, identity);
+            const conn = p2pConnectorRef.current;
+            const peerId = result.peerInfo.fingerprint;
+
+            // Register connection in direct connector
+            conn.pcs[peerId] = result.pc;
+            conn.knownPeers[peerId] = { name: result.peerInfo.name, publicKey: result.peerInfo.pubKeyHex };
+
+            // Setup data channel listener to bind channels to direct connector as they open
             result.pc.ondatachannel = (e) => {
-              setupManualDataChannel(e.channel, result.pc, result.peerInfo.f, result.peerInfo);
+              const label = e.channel.label;
+              conn._setupDc(peerId, label, e.channel);
             };
 
-            setManualAnswerString(result.answerBase64);
+            // Connection state change listener
+            let reconnectTimer = null;
+            result.pc.onconnectionstatechange = () => {
+              const state = result.pc.connectionState;
+              if (state === 'connecting') {
+                setManualSignalStep('connecting');
+                setConnectionMode('Manual Signal — Pending');
+              } else if (state === 'connected') {
+                setManualSignalStep('connected');
+                setConnectionMode('P2P Direct');
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'connected' }));
+                setAutoReconnectStatus('connected');
+                
+                // Save to cache
+                PeerCache.addPeer(peerId, {
+                  fingerprint: peerId,
+                  name: result.peerInfo.name,
+                  pubKeyHex: result.peerInfo.pubKeyHex,
+                  lastConnectedAt: Date.now()
+                });
+
+                // Update UI peers list
+                setPeers(prev => {
+                  const name = result.peerInfo.name || `Peer-${peerId.slice(0,6)}`;
+                  if (prev.find(p => p.fingerprint === peerId || p.id === peerId)) {
+                    return prev.map(p => (p.fingerprint === peerId || p.id === peerId)
+                      ? { ...p, status: 'online', lastSeen: 'now', name } : p);
+                  }
+                  return [...prev, {
+                    id: peerId, name, status: 'online', pubKey: result.peerInfo.pubKeyHex || '',
+                    lastSeen: 'now', avatar: name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase() || 'P',
+                    color: '#1a3a2a', unread: 0, fingerprint: peerId, isReal: true, isManual: true
+                  }];
+                });
+                setActiveConvo(peerId);
+              } else if (state === 'failed') {
+                setManualSignalStep('failed');
+                setConnectionMode('Connection Failed');
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'failed' }));
+              } else if (state === 'disconnected') {
+                setConnectionStates(prev => ({ ...prev, [peerId]: 'disconnected' }));
+                addToast('Connection disconnected. Attempting automatic reconnect...', 'warning');
+                reconnectTimer = setTimeout(() => {
+                  if (result.pc.connectionState !== 'connected') {
+                    result.pc.close();
+                    setConnectionStates(prev => ({ ...prev, [peerId]: 'failed' }));
+                    addToast('Connection recovery timed out.', 'error');
+                  }
+                }, 30000);
+              }
+            };
+
+            setManualAnswerString(result.encoded);
             setManualSignalStep('answer-ready');
             setManualPeerInfo(result.peerInfo);
             setManualPeerInput('');
           } catch (e) {
             console.error('Offer processing failed:', e);
-            addToast('Invalid offer signal', 'error');
+            addToast('Invalid offer code: ' + e.message, 'error');
             setManualSignalStep('idle');
           }
         };
 
         const joinPeer = async (code) => {
-          // Detect if this is a manual signal (base64 SDP bundle) or a GL- invite code
-          if (code && !code.startsWith('GL-')) {
+          // Detect if this is a manual signal (base64 SDP bundle) or a GHOST- or GL- invite code
+          const isInviteCode = code && (code.startsWith('GHOST-') || code.startsWith('GL-'));
+          if (code && !isInviteCode) {
             setManualPeerInput(code);
             setInviteTab('manual');
             await processManualOffer();
             return;
           }
-          if (!code || !code.startsWith('GL-')) { addToast('Invalid code. Use GL- invite or paste a manual signal.', 'error'); return; }
+          if (!code || !isInviteCode) { addToast('Invalid code. Use GHOST- or GL- invite or paste a manual signal.', 'error'); return; }
           try {
             const conn = p2pConnectorRef.current;
             if (conn) {
@@ -2938,6 +3634,403 @@ pc.onicecandidate = (e) => {
             addToast('Join failed: ' + e.message, 'error');
           }
         };
+
+        const closeQuickConnect = () => {
+          if (quickWsRef.current) {
+            try { quickWsRef.current.close(); } catch (e) {}
+            quickWsRef.current = null;
+          }
+          if (quickPcRef.current) {
+            try { quickPcRef.current.close(); } catch (e) {}
+            quickPcRef.current = null;
+          }
+          quickDcsRef.current = null;
+          setQuickSignalStep('idle');
+          setQuickRoomCode('');
+          setQuickInputCode('');
+          setQuickMode(null);
+        };
+
+        const getFormattedRelayUrl = () => {
+          let url = settings.relayServerUrl;
+          if (!url) return '';
+          if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+            const isSecure = window.location.protocol === 'https:';
+            url = (isSecure ? 'wss://' : 'ws://') + url;
+          }
+          return url;
+        };
+
+        // Host Flow
+        const startQuickHost = async () => {
+          if (!identity || !p2pConnectorRef.current) return;
+          closeQuickConnect();
+          setQuickMode('host');
+          setQuickSignalStep('host-connecting');
+
+          const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+          let code = '';
+          for (let i = 0; i < 6; i++) {
+            code += chars.charAt(Math.floor(Math.random() * chars.length));
+          }
+          setQuickRoomCode(code);
+
+          const url = getFormattedRelayUrl();
+          if (!url) {
+            addToast('Relay server URL is not configured in settings', 'error');
+            setQuickSignalStep('idle');
+            return;
+          }
+
+          let ws;
+          try {
+            ws = new WebSocket(url);
+            quickWsRef.current = ws;
+          } catch (e) {
+            console.error('Failed to create websocket:', e);
+            addToast('Failed to connect to relay: ' + e.message, 'error');
+            setQuickSignalStep('failed');
+            return;
+          }
+
+          const fallbackTimeout = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+              try { ws.close(); } catch (e) {}
+              addToast("Relay unreachable. Falling back to manual QR/paste.", "warning");
+              setInviteTab("manual");
+              generateManualOffer();
+              closeQuickConnect();
+            }
+          }, 5000);
+
+          ws.onopen = () => {
+            clearTimeout(fallbackTimeout);
+            ws.send(JSON.stringify({ type: 'join-room', roomCode: code }));
+            setQuickSignalStep('host-waiting');
+          };
+
+          ws.onerror = (err) => {
+            console.error('Relay WebSocket error:', err);
+            addToast('Relay connection error', 'error');
+            setQuickSignalStep('failed');
+          };
+
+          ws.onclose = () => {
+            console.log("Relay connection closed");
+          };
+
+          ws.onmessage = async (evt) => {
+            let data;
+            try { data = JSON.parse(evt.data); } catch { return; }
+
+            const conn = p2pConnectorRef.current;
+            if (!conn) return;
+
+            if (data.type === 'error') {
+              addToast(data.message, 'error');
+              setQuickSignalStep('failed');
+              return;
+            }
+
+            if (data.type === 'peer-joined') {
+              // Peer B has joined the room. Let's create the offer with trickle ICE!
+              setQuickSignalStep('host-handshaking');
+              setConnectionMode('Via Relay');
+
+              const pc = new RTCPeerConnection({
+                iceServers: [
+                  { urls: 'stun:stun.l.google.com:19302' },
+                  { urls: 'stun:stun1.l.google.com:19302' },
+                  { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+              });
+              quickPcRef.current = pc;
+              pc.__mode = 'P2P Direct';
+
+              // Create the 3 data channels
+              const msgDc = pc.createDataChannel('messages', { ordered: true });
+              const filesDc = pc.createDataChannel('files', { ordered: true });
+              const presDc = pc.createDataChannel('presence', { ordered: false, maxRetransmits: 0 });
+
+              const dcs = { messages: msgDc, files: filesDc, presence: presDc };
+              quickDcsRef.current = dcs;
+
+              // Send ICE candidates as they're discovered (Trickle ICE)
+              pc.onicecandidate = (event) => {
+                if (event.candidate && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'ice-candidate',
+                    roomCode: code,
+                    candidate: event.candidate
+                  }));
+                }
+              };
+
+              pc.onconnectionstatechange = () => {
+                const state = pc.connectionState;
+                if (state === 'connected') {
+                  // Direct P2P connected. The onopen data channel logic handles state transition.
+                  // Close relay websocket
+                  if (quickWsRef.current) {
+                    try { quickWsRef.current.close(); } catch (e) {}
+                    quickWsRef.current = null;
+                  }
+                } else if (state === 'failed') {
+                  setQuickSignalStep('failed');
+                  setConnectionMode('Connection Failed');
+                }
+              };
+
+              // Create offer
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+
+              ws.send(JSON.stringify({
+                type: 'offer',
+                roomCode: code,
+                sdp: offer.sdp,
+                pubKeyHex: identity.publicKeyHex,
+                name: identity.name,
+                fingerprint: identity.fingerprint
+              }));
+            }
+
+            else if (data.type === 'answer') {
+              const pc = quickPcRef.current;
+              if (pc) {
+                pc.__remoteFingerprint = data.fingerprint;
+                pc.__remoteName = data.name;
+                pc.__remotePubKey = data.pubKeyHex;
+
+                // Register with direct connector
+                const peerId = data.fingerprint;
+                conn.pcs[peerId] = pc;
+                conn.dcs[peerId] = quickDcsRef.current;
+                conn.states[peerId] = 'connecting';
+                conn.knownPeers[peerId] = { name: data.name, publicKey: data.pubKeyHex };
+
+                conn._setupDc(peerId, 'messages', quickDcsRef.current.messages);
+                conn._setupDc(peerId, 'files', quickDcsRef.current.files);
+                conn._setupDc(peerId, 'presence', quickDcsRef.current.presence);
+
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+
+                // Process pending candidates
+                if (pc.__pendingCandidates) {
+                  for (const candidate of pc.__pendingCandidates) {
+                    try { await pc.addIceCandidate(candidate); } catch (e) {}
+                  }
+                  delete pc.__pendingCandidates;
+                }
+              }
+            }
+
+            else if (data.type === 'ice-candidate') {
+              const pc = quickPcRef.current;
+              if (pc) {
+                if (pc.remoteDescription) {
+                  try { await pc.addIceCandidate(data.candidate); } catch (e) {}
+                } else {
+                  if (!pc.__pendingCandidates) pc.__pendingCandidates = [];
+                  pc.__pendingCandidates.push(data.candidate);
+                }
+              }
+            }
+          };
+        };
+
+        // Join Flow
+        const startQuickJoin = async () => {
+          if (!quickInputCode.trim() || !identity || !p2pConnectorRef.current) return;
+          const code = quickInputCode.trim().toUpperCase();
+          if (code.length !== 6) {
+            addToast('Room code must be exactly 6 characters', 'error');
+            return;
+          }
+
+          closeQuickConnect();
+          setQuickMode('join');
+          setQuickSignalStep('join-connecting');
+
+          const url = getFormattedRelayUrl();
+          if (!url) {
+            addToast('Relay server URL is not configured in settings', 'error');
+            setQuickSignalStep('idle');
+            return;
+          }
+
+          let ws;
+          try {
+            ws = new WebSocket(url);
+            quickWsRef.current = ws;
+          } catch (e) {
+            console.error('Failed to create websocket:', e);
+            addToast('Failed to connect to relay: ' + e.message, 'error');
+            setQuickSignalStep('failed');
+            return;
+          }
+
+          const fallbackTimeout = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+              try { ws.close(); } catch (e) {}
+              addToast("Relay unreachable. Falling back to manual QR/paste.", "warning");
+              setInviteTab("manual");
+              closeQuickConnect();
+            }
+          }, 5000);
+
+          ws.onopen = () => {
+            clearTimeout(fallbackTimeout);
+            ws.send(JSON.stringify({ type: 'join-room', roomCode: code }));
+            setQuickSignalStep('join-handshaking');
+            setConnectionMode('Via Relay');
+          };
+
+          ws.onerror = (err) => {
+            console.error('Relay WebSocket error:', err);
+            addToast('Relay connection error', 'error');
+            setQuickSignalStep('failed');
+          };
+
+          ws.onclose = () => {
+            console.log("Relay connection closed");
+          };
+
+          ws.onmessage = async (evt) => {
+            let data;
+            try { data = JSON.parse(evt.data); } catch { return; }
+
+            const conn = p2pConnectorRef.current;
+            if (!conn) return;
+
+            if (data.type === 'error') {
+              addToast(data.message, 'error');
+              setQuickSignalStep('failed');
+              return;
+            }
+
+            if (data.type === 'offer') {
+              const pc = new RTCPeerConnection({
+                iceServers: [
+                  { urls: 'stun:stun.l.google.com:19302' },
+                  { urls: 'stun:stun1.l.google.com:19302' },
+                  { urls: 'stun:stun2.l.google.com:19302' }
+                ]
+              });
+              quickPcRef.current = pc;
+              pc.__mode = 'P2P Direct';
+
+              pc.__remoteFingerprint = data.fingerprint;
+              pc.__remoteName = data.name;
+              pc.__remotePubKey = data.pubKeyHex;
+
+              const peerId = data.fingerprint;
+              conn.pcs[peerId] = pc;
+              conn.knownPeers[peerId] = { name: data.name, publicKey: data.pubKeyHex };
+
+              const dcs = { messages: null, files: null, presence: null };
+              quickDcsRef.current = dcs;
+
+              pc.ondatachannel = (event) => {
+                const label = event.channel.label;
+                if (label === 'messages' || label === 'files' || label === 'presence') {
+                  dcs[label] = event.channel;
+                  conn._setupDc(peerId, label, event.channel);
+                }
+              };
+
+              pc.onicecandidate = (event) => {
+                if (event.candidate && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: 'ice-candidate',
+                    roomCode: code,
+                    candidate: event.candidate
+                  }));
+                }
+              };
+
+              pc.onconnectionstatechange = () => {
+                const state = pc.connectionState;
+                if (state === 'connected') {
+                  if (quickWsRef.current) {
+                    try { quickWsRef.current.close(); } catch (e) {}
+                    quickWsRef.current = null;
+                  }
+                } else if (state === 'failed') {
+                  setQuickSignalStep('failed');
+                  setConnectionMode('Connection Failed');
+                }
+              };
+
+              // Set remote offer
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+
+              // Process pending candidates
+              if (pc.__pendingCandidates) {
+                for (const candidate of pc.__pendingCandidates) {
+                  try { await pc.addIceCandidate(candidate); } catch (e) {}
+                }
+                delete pc.__pendingCandidates;
+              }
+
+              // Create answer
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+
+              ws.send(JSON.stringify({
+                type: 'answer',
+                roomCode: code,
+                sdp: answer.sdp,
+                pubKeyHex: identity.publicKeyHex,
+                name: identity.name,
+                fingerprint: identity.fingerprint
+              }));
+            }
+
+            else if (data.type === 'ice-candidate') {
+              const pc = quickPcRef.current;
+              if (pc) {
+                if (pc.remoteDescription) {
+                  try { await pc.addIceCandidate(data.candidate); } catch (e) {}
+                } else {
+                  if (!pc.__pendingCandidates) pc.__pendingCandidates = [];
+                  pc.__pendingCandidates.push(data.candidate);
+                }
+              }
+            }
+          };
+        };
+
+        useEffect(() => {
+          const conn = p2pConnectorRef.current;
+          if (!conn) return;
+
+          const handlePeerConnected = (peerId) => {
+            if (quickSignalStep === 'host-handshaking' || quickSignalStep === 'join-handshaking' || quickSignalStep === 'host-waiting') {
+              setQuickSignalStep('connected');
+              if (quickWsRef.current) {
+                try { quickWsRef.current.close(); } catch (e) {}
+                quickWsRef.current = null;
+              }
+            }
+          };
+
+          conn.on('peer-connected', handlePeerConnected);
+          return () => {
+            conn.off('peer-connected', handlePeerConnected);
+          };
+        }, [quickSignalStep]);
+
+        useEffect(() => {
+          return () => {
+            if (quickWsRef.current) {
+              try { quickWsRef.current.close(); } catch (e) {}
+            }
+            if (quickPcRef.current) {
+              try { quickPcRef.current.close(); } catch (e) {}
+            }
+          };
+        }, []);
 
         // ═══════════════════════════════════════════════════════════════
         // PLANNED FEATURE IMPLEMENTATIONS
@@ -3578,11 +4671,17 @@ pc.onicecandidate = (e) => {
 
         // ==================== CALL OVERLAY ====================
         if (callActive) {
-          const peer = peers.find(p => p.id === activeConvo);
+          const callPeerId = callConnectionRef.current?.__peerId;
+          const peer = peers.find(p => p.id === callPeerId || p.fingerprint === callPeerId) || peers.find(p => p.id === activeConvo);
           return (
             <div style={{ position: "fixed", inset: 0, background: `radial-gradient(ellipse at center, ${th.bg} 0%, #010409 80%)`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 200, fontFamily: "'JetBrains Mono', monospace", color: "#e0e0e8" }}>
               <style>{globalCSS}</style>
-              {[1, 2, 3].map(i => <div key={i} style={{ position: "absolute", width: 180 + i * 90, height: 180 + i * 90, borderRadius: "50%", border: `1px solid ${th.accent}${Math.round(15 / i).toString(16)}`, animation: `ripple ${3 + i}s ease-out infinite`, animationDelay: `${i * 0.5}s` }} />)}
+              {[1, 2, 3].map(i => <div key={i} style={{ position: "absolute", width: 180 + i * 90, height: 180 + i * 90, borderRadius: "50%", border: `1px solid ${th.accent}${Math.round(15 / i).toString(16)}`, animation: `ripple ${3 + i}s ease-out infinite`, animationDelay: `${i * 0.5}s`, pointerEvents: "none" }} />)}
+
+              {/* Remote audio playbacks for all calls */}
+              {Object.entries(remoteStreams).map(([pId, stream]) => (
+                <AudioPlayer key={`audio-${pId}`} stream={stream} />
+              ))}
 
               <div style={{ width: 88, height: 88, borderRadius: 22, background: `linear-gradient(135deg, ${peer?.color || "#1a3a2a"}, ${peer?.color || "#1a3a2a"}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, marginBottom: 16, border: `2px solid ${th.accent}33` }}>{peer?.avatar || "?"}</div>
               <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 6 }}>{peer?.name || "Unknown"}</div>
@@ -3592,31 +4691,42 @@ pc.onicecandidate = (e) => {
               </div>
               <div style={{ fontSize: 32, fontWeight: 300, color: th.accent, marginBottom: 40, letterSpacing: 6, fontFamily: "'Space Grotesk', sans-serif" }}>{fmtCallT(callTimer)}</div>
 
-              {(callType === "video" || screenSharing) && (
-                <div style={{ width: "85%", maxWidth: 640, aspectRatio: "16/9", background: "rgba(255,255,255,0.02)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 36, position: "relative", overflow: "hidden" }}>
-                  {Object.keys(remoteStreams).length > 0 ? (
-                    Object.values(remoteStreams).map((stream, i) => (
-                      <video key={i} autoPlay playsInline ref={el => { if (el && stream) el.srcObject = stream; }} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                    ))
-                  ) : (
-                    <div style={{ color: "#2a2a3a", fontSize: 12 }}>{screenSharing ? "Screen sharing active..." : "Encrypted video feed"}</div>
-                  )}
-                  <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, transparent 60%, ${th.bg}88)`, pointerEvents: "none" }} />
-                  {callType === "video" && (
-                    localStream ? (
-                      <video autoPlay playsInline muted ref={el => { if (el && localStream) el.srcObject = localStream; }} style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, borderRadius: 10, border: `1px solid ${th.accent}25`, objectFit: "cover" }} />
-                    ) : (
-                      <div style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, background: "rgba(0,0,0,0.5)", borderRadius: 10, border: `1px solid ${th.accent}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#4a5568" }}>You</div>
-                    )
-                  )}
-                </div>
-              )}
+              {(() => {
+                const hasRemoteVideo = Object.values(remoteStreams).some(stream => stream && stream.getVideoTracks().length > 0);
+                const hasLocalVideo = localStream && localStream.getVideoTracks().length > 0;
+                if (callType === "video" || screenSharing || hasRemoteVideo || hasLocalVideo) {
+                  return (
+                    <div style={{ width: "85%", maxWidth: 640, aspectRatio: "16/9", background: "rgba(255,255,255,0.02)", borderRadius: 16, border: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 36, position: "relative", overflow: "hidden" }}>
+                      {hasRemoteVideo ? (
+                        Object.entries(remoteStreams).map(([pId, stream]) => {
+                          if (stream && stream.getVideoTracks().length > 0) {
+                            return (
+                              <VideoPlayer key={`video-${pId}`} stream={stream} muted style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                            );
+                          }
+                          return null;
+                        })
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ width: 88, height: 88, borderRadius: 22, background: `linear-gradient(135deg, ${peer?.color || "#1a3a2a"}, ${peer?.color || "#1a3a2a"}88)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, marginBottom: 16, border: `2px solid ${th.accent}33` }}>{peer?.avatar || "?"}</div>
+                          <div style={{ color: "#8a8a9a", fontSize: 12 }}>{screenSharing ? "Screen sharing active..." : "Encrypted video feed"}</div>
+                        </div>
+                      )}
+                      <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, transparent 60%, ${th.bg}88)`, pointerEvents: "none" }} />
+                      {hasLocalVideo && (
+                        <VideoPlayer stream={localStream} muted style={{ position: "absolute", bottom: 12, right: 12, width: 130, height: 85, borderRadius: 10, border: `1px solid ${th.accent}25`, objectFit: "cover" }} />
+                      )}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
-              <div style={{ display: "flex", gap: 16 }}>
+              <div style={{ display: "flex", gap: 16, position: "relative", zIndex: 10 }}>
                 {[
                   { icon: micOn ? "mic" : "micOff", bg: micOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleMicReal() },
                   ...(callType === "video" ? [{ icon: camOn ? "video" : "vidOff", bg: camOn ? "rgba(255,255,255,0.08)" : "#ff4444", action: () => toggleCamReal() }] : []),
-                  { icon: "screen", bg: screenSharing ? th.accent + "33" : "rgba(255,255,255,0.08)", action: () => setScreenSharing(!screenSharing) },
+                  { icon: "screen", bg: screenSharing ? th.accent + "33" : "rgba(255,255,255,0.08)", action: () => toggleScreenShare() },
                   { icon: "phone", bg: "#ff3344", action: () => endCall() },
                 ].map((b, i) => (
                   <button key={i} onClick={b.action} style={{ width: 56, height: 56, borderRadius: "50%", border: "none", background: b.bg, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.2s ease", boxShadow: `0 0 20px ${b.bg}33` }}>
@@ -3632,6 +4742,43 @@ pc.onicecandidate = (e) => {
         const activePeer = peers.find(p => p.id === activeConvo);
         const convoMsgs = getConvoMsgs();
         const filteredMsgs = searchQuery ? convoMsgs.filter(m => m.content?.toLowerCase().includes(searchQuery.toLowerCase())) : convoMsgs;
+
+        // Buy Portal computations
+        const pricingData = {
+          'PRO': { 'monthly': 8, 'yearly': 60, 'lifetime': 120 },
+          'TEAM': { 'monthly': 25, 'yearly': 190, 'lifetime': 400 },
+          'ENTERPRISE': { 'monthly': 80, 'yearly': 600, 'lifetime': 1500 }
+        };
+        const buyBasePrice = pricingData[buyPlan] ? pricingData[buyPlan][buyBilling] : 0;
+        const buyTotalPriceUSD = buyBilling === 'lifetime' ? buyBasePrice : buyBasePrice * buyDuration;
+
+        const buyAddresses = {
+          'BTC': '1GLBtc789xyz789xyz789xyz789xyz789x',
+          'ETH': '0xGLeth789xyz789xyz789xyz789xyz789xyz7',
+          'USDT-ERC20': '0xGLusdt789xyz789xyz789xyz789xyz789xyz',
+          'USDT-TRC20': 'TGLusdt789xyz789xyz789xyz789xyz789xyz',
+          'LTC': 'LGLltc789xyz789xyz789xyz789xyz789xyz'
+        };
+        const buyWalletKey = buyCoin === 'USDT' ? `USDT-${buyUsdtNetwork}` : buyCoin;
+        const buyWalletAddress = buyAddresses[buyWalletKey] || 'YOUR_WALLET_ADDRESS_HERE';
+
+        const buyMockPrices = { 'BTC': 65000.00, 'ETH': 3500.00, 'LTC': 80.00, 'USDT': 1.00 };
+        const buyCoinRate = buyMockPrices[buyCoin] || 1.00;
+        const buyCryptoAmount = (buyTotalPriceUSD / buyCoinRate).toFixed(buyCoin === 'BTC' || buyCoin === 'ETH' ? 6 : 2);
+
+        let buyQrSvgStr = "";
+        if (showBuyModal && buyStep === 4 && buyWalletAddress && window.qrEncode && window.matrixToSVG) {
+          try {
+            const matrix = window.qrEncode(buyWalletAddress);
+            buyQrSvgStr = window.matrixToSVG(matrix, matrix.length, 140, '#000000');
+          } catch (e) {
+            console.error('[Buy Portal] QR generation error:', e);
+          }
+        }
+
+        const countdownMin = Math.floor(buyCountdown / 60);
+        const countdownSec = buyCountdown % 60;
+        const buyCountdownStr = (countdownMin < 10 ? '0' : '') + countdownMin + ':' + (countdownSec < 10 ? '0' : '') + countdownSec;
 
         return (
           <div style={{ width: "100%", height: "100vh", background: th.bg, color: "#e0e0e8", fontFamily: "'JetBrains Mono', monospace", overflow: "hidden", position: "relative", display: "flex" }}>
@@ -3785,7 +4932,7 @@ pc.onicecandidate = (e) => {
                   )}
                 </div>
               ) : activeTab === "workspaces" ? (
-                <window.WorkspacePanel
+                <WorkspacePanel
                   workspaces={workspaces}
                   activeConvo={activeConvo}
                   setActiveConvo={setActiveConvo}
@@ -3807,7 +4954,20 @@ pc.onicecandidate = (e) => {
                     </div>
                   )}
                   {peers.map(peer => (
-                    <div key={peer.id} onClick={() => { setActiveConvo(peer.id); setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, unread: 0 } : p)); }} style={{
+                    <div key={peer.id} onClick={() => {
+                      setActiveConvo(peer.id);
+                      setPeers(prev => prev.map(p => p.id === peer.id ? { ...p, unread: 0 } : p));
+                      
+                      if (peer.status !== 'online' && localStorage.getItem('gl_yggdrasil_enabled') === 'true' && window.ghostlink?.isElectron) {
+                        const mp = meshPeers[peer.fingerprint || peer.id];
+                        if (mp && mp.yggdrasilAddress && p2pConnectorRef.current) {
+                          console.log(`[GhostMesh] Selecting peer, dialing ${mp.yggdrasilAddress}`);
+                          p2pConnectorRef.current.connectToMeshPeer(peer.fingerprint || peer.id, mp.yggdrasilAddress).catch(err => {
+                            console.warn('[GhostMesh] Selection dial failed:', err.message);
+                          });
+                        }
+                      }
+                    }} style={{
                       padding: "11px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 11,
                       background: activeConvo === peer.id ? `${th.accent}08` : "transparent",
                       borderLeft: activeConvo === peer.id ? `2px solid ${th.accent}` : "2px solid transparent",
@@ -3819,7 +4979,14 @@ pc.onicecandidate = (e) => {
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
-                          <span>{peer.name}</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {peer.name}
+                            {meshPeers[peer.fingerprint || peer.id] && (
+                              <span title="Ghost Mesh Enabled" style={{ display: "inline-flex", opacity: 0.85 }}>
+                                <I t="globe" s={11} c={p2pConnectorRef.current?.meshConns[peer.fingerprint || peer.id] ? th.accent : "#718096"} />
+                              </span>
+                            )}
+                          </span>
                           {peer.unread > 0 && <span style={{ width: 18, height: 18, borderRadius: "50%", background: th.accent, color: "#000", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{peer.unread}</span>}
                         </div>
                         <div style={{ fontSize: 9.5, color: "#4a5568", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -4242,7 +5409,7 @@ pc.onicecandidate = (e) => {
 
                   {/* Right Workspace Roster (desktop only) */}
                   {isWorkspace && !isMobile && (
-                    <window.WorkspaceRoster
+                    <WorkspaceRoster
                       workspace={activeWorkspace}
                       currentUserId={identity?.fingerprint}
                       onKickMember={handleKickMember}
@@ -4358,41 +5525,163 @@ pc.onicecandidate = (e) => {
               </div>
             )}
 
-            {/* ══════ INVITE MODAL (Hybrid Signaling) ══════ */}
+            {/* ══════ INVITE MODAL (Zero-Server WebRTC P2P) ══════ */}
             {showInvite && (
-              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); }}>
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 100, padding: isMobile ? 0 : 16 }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); closeQuickConnect(); }}>
                 <div onClick={e => e.stopPropagation()} style={{ background: "#111118", border: `1px solid ${th.accent}18`, borderRadius: isMobile ? "18px 18px 0 0" : 18, padding: isMobile ? "20px 16px" : 28, maxWidth: 520, width: "100%", maxHeight: "90vh", overflowY: "auto", animation: "fadeInScale 0.2s ease" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
                     <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 1.5, display: "flex", alignItems: "center", gap: 8 }}>
                       <I t="link" s={20} c={th.accent} /> PEER CONNECTION
                     </span>
-                    <button onClick={() => { setShowInvite(false); setManualSignalStep('idle'); }} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
+                    <button onClick={() => { setShowInvite(false); setManualSignalStep('idle'); closeQuickConnect(); }} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer" }}><I t="x" s={18} /></button>
                   </div>
 
-                  {/* Server status indicator */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, padding: "8px 12px", borderRadius: 8, background: signalingAvailable ? `${th.accent}08` : 'rgba(255,136,68,0.08)', border: `1px solid ${signalingAvailable ? th.accent + '20' : 'rgba(255,136,68,0.2)'}` }}>
-                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalingAvailable ? th.accent : '#ff8844', boxShadow: `0 0 6px ${signalingAvailable ? th.accent : '#ff8844'}88` }} />
-                    <span style={{ fontSize: 10, color: signalingAvailable ? th.accent : '#ff8844', fontWeight: 600 }}>
-                      {signalingAvailable ? 'Relay server online — auto mode' : 'No relay — manual signal available'}
-                    </span>
-                  </div>
-
-                  {/* Tab row: Create / Join / Manual */}
+                  {/* Tab row: Create Invite / Join Channel / Manual P2P / Quick Connect */}
                   <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 3 }}>
-                    {["create", "join", "manual"].map(t => (
-                      <button key={t} onClick={() => { setInviteTab(t); if (t === 'manual') { setManualSignalStep('idle'); setManualOfferString(''); setManualAnswerString(''); setManualPeerInput(''); } }} style={{
+                    {["create", "join", "manual", ...(settings.relayServerUrl ? ["quick"] : [])].map(t => (
+                      <button key={t} onClick={() => {
+                        setInviteTab(t);
+                        if (t !== 'quick') closeQuickConnect();
+                        if (t === 'manual') {
+                          setManualSignalStep('idle');
+                          setManualOfferString('');
+                          setManualAnswerString('');
+                          setManualPeerInput('');
+                        }
+                      }} style={{
                         flex: 1, padding: "9px 0", borderRadius: 8, border: "none",
                         background: inviteTab === t ? `${th.accent}15` : "transparent",
                         color: inviteTab === t ? th.accent : "#5a5a6a", cursor: "pointer",
-                        fontFamily: "inherit", fontSize: 11, fontWeight: 600, letterSpacing: 1, textTransform: "uppercase",
-                      }}>{t === "create" ? "Create Invite" : t === "join" ? "Join Channel" : "Manual P2P"}</button>
+                        fontFamily: "inherit", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase",
+                      }}>{t === "create" ? "Create Invite" : t === "join" ? "Join Channel" : t === "manual" ? "Manual P2P" : "Quick Connect"}</button>
                     ))}
                   </div>
 
-                  {inviteTab === "create" ? (
+                  {quickSignalStep === 'connected' ? (
+                    <div style={{ textAlign: "center", padding: 20 }}>
+                      <div style={{ width: 56, height: 56, borderRadius: "50%", background: `${th.accent}15`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", border: `2px solid ${th.accent}30` }}>
+                        <I t="check" s={28} c={th.accent} />
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: th.accent, marginBottom: 6 }}>Connected ✓</div>
+                      <div style={{ fontSize: 12, color: "#8a8a9a", marginBottom: 4 }}>Peer connected via Signaling Relay</div>
+                      <Tag color={th.accent3} icon="link">P2P DIRECT ENCRYPTED</Tag>
+                      <div style={{ marginTop: 16 }}>
+                        <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); closeQuickConnect(); }}>
+                          <I t="chat" s={14} c="#000" /> START CHATTING
+                        </Btn>
+                      </div>
+                    </div>
+                  ) : manualSignalStep === 'connected' ? (
+                    <div style={{ textAlign: "center", padding: 20 }}>
+                      <div style={{ width: 56, height: 56, borderRadius: "50%", background: `${th.accent}15`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", border: `2px solid ${th.accent}30` }}>
+                        <I t="check" s={28} c={th.accent} />
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: th.accent, marginBottom: 6 }}>Connected ✓</div>
+                      {manualPeerInfo && <div style={{ fontSize: 12, color: "#8a8a9a", marginBottom: 4 }}>{manualPeerInfo.name}</div>}
+                      <Tag color={th.accent3} icon="link">MANUAL P2P DIRECT</Tag>
+                      <div style={{ marginTop: 16 }}>
+                        <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); }}>
+                          <I t="chat" s={14} c="#000" /> START CHATTING
+                        </Btn>
+                      </div>
+                    </div>
+                  ) : inviteTab === "quick" ? (
+                    /* ── QUICK CONNECT TAB ── */
                     <>
                       <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>
-                        Share this one-time invite code via a secure out-of-band channel. The code expires after first use.
+                        Fast WebRTC signaling helper. Handshake occurs via WebSocket, then traffic transitions to 100% direct P2P.
+                      </p>
+
+                      {quickMode === null && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          <Btn accent style={{ width: "100%" }} onClick={startQuickHost}>
+                            <I t="zap" s={15} c="#000" /> HOST A SESSION
+                          </Btn>
+                          <Btn ghost style={{ width: "100%" }} onClick={() => setQuickMode('join')}>
+                            <I t="link" s={15} /> JOIN A SESSION
+                          </Btn>
+                        </div>
+                      )}
+
+                      {quickMode === 'host' && (
+                        <>
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>SHARE THIS ROOM CODE WITH YOUR PEER</div>
+                          <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 24, color: th.accent, letterSpacing: 4, fontWeight: 700 }}>{quickRoomCode}</div>
+                          </div>
+
+                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={() => { navigator.clipboard?.writeText(quickRoomCode); addToast('Room code copied to clipboard', 'success'); }}>
+                            <I t="copy" s={15} c="#000" /> COPY ROOM CODE
+                          </Btn>
+
+                          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", fontSize: 10, color: "#8a8a9a", textAlign: "center", marginBottom: 12, lineHeight: 1.5 }}>
+                            {quickSignalStep === 'host-connecting' && <div>Connecting to signaling relay...</div>}
+                            {quickSignalStep === 'host-waiting' && <div style={{ fontWeight: 600, color: th.accent }}>Waiting for peer to join...</div>}
+                            {quickSignalStep === 'host-handshaking' && <div style={{ fontWeight: 600, color: th.accent2 }}>Peer joined. Handshaking WebRTC...</div>}
+                            {quickSignalStep === 'failed' && <div style={{ color: "#ff4444" }}>Connection failed. Check settings and try again.</div>}
+                          </div>
+
+                          {quickSignalStep === 'failed' && (
+                            <Btn accent style={{ width: "100%", marginBottom: 8 }} onClick={startQuickHost}>RETRY HOSTING</Btn>
+                          )}
+
+                          <Btn ghost small style={{ width: "100%" }} onClick={closeQuickConnect}>
+                            CANCEL
+                          </Btn>
+                        </>
+                      )}
+
+                      {quickMode === 'join' && (
+                        <>
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>ENTER PEER'S 6-CHARACTER ROOM CODE</div>
+                          <input
+                            type="text"
+                            maxLength={6}
+                            value={quickInputCode}
+                            onChange={e => setQuickInputCode(e.target.value.toUpperCase())}
+                            placeholder="e.g. X7Y2Z9"
+                            style={{
+                              width: "100%",
+                              background: "rgba(255,255,255,0.04)",
+                              border: "1px solid rgba(255,255,255,0.08)",
+                              borderRadius: 10,
+                              padding: "12px 14px",
+                              color: "#e0e0e8",
+                              fontSize: 18,
+                              fontFamily: "monospace",
+                              fontWeight: 700,
+                              textAlign: "center",
+                              letterSpacing: 4,
+                              marginBottom: 12,
+                              textTransform: "uppercase"
+                            }}
+                          />
+
+                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={startQuickJoin} disabled={quickInputCode.length !== 6 || quickSignalStep === 'join-connecting' || quickSignalStep === 'join-handshaking'}>
+                            <I t="link" s={15} c="#000" /> CONNECT TO PEER
+                          </Btn>
+
+                          <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", fontSize: 10, color: "#8a8a9a", textAlign: "center", marginBottom: 12, lineHeight: 1.5 }}>
+                            {quickSignalStep === 'idle' && <div>Ready to connect.</div>}
+                            {quickSignalStep === 'join-connecting' && <div>Connecting to signaling relay...</div>}
+                            {quickSignalStep === 'join-handshaking' && <div style={{ fontWeight: 600, color: th.accent2 }}>Joining room & establishing WebRTC...</div>}
+                            {quickSignalStep === 'failed' && <div style={{ color: "#ff4444" }}>Connection failed. Confirm room code or check settings.</div>}
+                          </div>
+
+                          {quickSignalStep === 'failed' && (
+                            <Btn accent style={{ width: "100%", marginBottom: 8 }} onClick={startQuickJoin}>RETRY JOINING</Btn>
+                          )}
+
+                          <Btn ghost small style={{ width: "100%" }} onClick={closeQuickConnect}>
+                            BACK
+                          </Btn>
+                        </>
+                      )}
+                    </>
+                  ) : inviteTab === "create" ? (
+                    <>
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>
+                        Share this invite code via any messaging app, email, or in person. This connects you directly to your peer.
                       </p>
                       <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
                         <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700 }}>{inviteCode}</div>
@@ -4405,25 +5694,24 @@ pc.onicecandidate = (e) => {
                           Relay server unavailable. Switch to <button onClick={() => setInviteTab('manual')} style={{ background: "none", border: "none", color: th.accent3, cursor: "pointer", fontFamily: "inherit", fontSize: 10, fontWeight: 700, textDecoration: "underline" }}>Manual P2P</button> for serverless connection.
                         </div>
                       )}
-                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · No server involved</div>
+                      <div style={{ marginTop: 10, fontSize: 9, color: "#2a2a3a", textAlign: "center" }}>Cryptographically random · Single-use · Zero configuration</div>
                       {qrSvgMarkup && (
                         <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: qrSvgMarkup }} />
                       )}
                     </>
                   ) : inviteTab === "join" ? (
                     <>
-                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code (GL-...) or a manual signal string from your peer.</p>
-                      <textarea value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GL-XXXXXXXX-... or paste manual signal"
+                      <p style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.6 }}>Paste an invite code (GHOST-...) or a manual signal string from your peer.</p>
+                      <textarea value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="GHOST-XXX-XXX-XXX or paste manual signal"
                         rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "12px 14px", color: "#e0e0e8", fontSize: 12, fontFamily: "monospace", marginBottom: 8, letterSpacing: 0.5, resize: "none" }} />
-                      {joinCode && ManualSignaling.isManualSignal(joinCode) && (
+                      {joinCode && joinCode.trim() && !joinCode.trim().startsWith('GHOST-') && !joinCode.trim().startsWith('GL-') && (
                         <div style={{ marginBottom: 8, padding: "6px 10px", borderRadius: 6, background: `${th.accent3}10`, border: `1px solid ${th.accent3}20`, fontSize: 10, color: th.accent3 }}>
                           Manual signal detected — will create answer for peer
                         </div>
                       )}
                       <Btn accent style={{ width: "100%" }} onClick={async () => {
                         const code = joinCode.trim();
-                        if (ManualSignaling.isManualSignal(code)) {
-                          // Process manual offer and show answer via new connector
+                        if (code && !code.startsWith('GHOST-') && !code.startsWith('GL-')) {
                           setManualPeerInput(code);
                           setInviteTab('manual');
                           setManualSignalStep('processing-offer');
@@ -4441,7 +5729,7 @@ pc.onicecandidate = (e) => {
                         }
                         setJoinCode("");
                       }}>
-                        <I t="link" s={15} c="#000" /> {joinCode && ManualSignaling.isManualSignal(joinCode) ? "PROCESS & GENERATE ANSWER" : "CONNECT TO PEER"}
+                        <I t="link" s={15} c="#000" /> {joinCode && !joinCode.trim().startsWith('GHOST-') && !joinCode.trim().startsWith('GL-') ? "PROCESS & GENERATE ANSWER" : "CONNECT TO PEER"}
                       </Btn>
                       <Btn ghost small onClick={() => { setShowInvite(false); setShowQRScanner(true); }} style={{ width: "100%", marginTop: 8 }}>
                         <I t="search" s={14} /> Scan QR Code
@@ -4459,23 +5747,80 @@ pc.onicecandidate = (e) => {
                           <Btn accent style={{ width: "100%" }} onClick={generateManualOffer}>
                             <I t="zap" s={15} c="#000" /> GENERATE DIRECT OFFER
                           </Btn>
-                          <div style={{ textAlign: "center", fontSize: 10, color: "#3a3a4a", letterSpacing: 1 }}>— OR —</div>
-                          <div style={{ fontSize: 10, color: "#5a5a6a", marginBottom: 4 }}>Paste a peer's offer signal:</div>
-                          <textarea value={manualPeerInput} onChange={e => setManualPeerInput(e.target.value)} placeholder="Paste peer's offer signal here..."
-                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 12px", color: "#e0e0e8", fontSize: 10, fontFamily: "monospace", resize: "none" }} />
-                          <Btn ghost style={{ width: "100%" }} onClick={processManualOffer} disabled={!manualPeerInput.trim()}>
-                            <I t="link" s={14} /> PROCESS OFFER & GENERATE ANSWER
-                          </Btn>
                         </div>
                       )}
 
                       {manualSignalStep === 'creating' && (
-                        <div style={{ textAlign: "center", padding: 30 }}>
+                        <div style={{ textAlign: "center", padding: 20 }}>
                           <div style={{ display: "flex", gap: 5, justifyContent: "center", marginBottom: 12 }}>
                             {[0,1,2,3].map(i => <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i*0.25}s` }} />)}
                           </div>
                           <div style={{ fontSize: 11, color: "#5a5a6a" }}>Generating SDP offer & gathering ICE candidates...</div>
                         </div>
+                      )}
+
+                      {(manualSignalStep === 'offer-ready' || manualSignalStep === 'connecting' || manualSignalStep === 'failed') && (
+                        <>
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 1: SEND THIS OFFER CODE TO YOUR PEER</div>
+                          <div style={{ background: `${th.accent}06`, border: `1px solid ${th.accent}18`, borderRadius: 10, padding: 10, marginBottom: 10, maxHeight: 120, overflowY: "auto" }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 8, color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.5, userSelect: "all" }}>{manualOfferString}</div>
+                          </div>
+                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={() => { navigator.clipboard?.writeText(manualOfferString); addToast('Offer copied to clipboard', 'success'); }}>
+                            <I t="copy" s={14} c="#000" /> COPY OFFER CODE
+                          </Btn>
+
+                          {qrCodeWarning && (
+                            <div style={{ padding: "6px 10px", borderRadius: 6, background: "rgba(255,170,0,0.1)", border: "1px solid rgba(255,170,0,0.2)", fontSize: 9, color: "#ffaa00", marginBottom: 10, textAlign: "center" }}>
+                              Warning: Offer code is long ({manualOfferString.length} chars). If QR scanning fails, copy & paste the text bundle instead.
+                            </div>
+                          )}
+
+                          {/* QR Code display */}
+                          {(() => {
+                            try {
+                              if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+                                const { matrix } = qrEncode(manualOfferString);
+                                const svg = matrixToSVG(matrix, matrix.length, 180);
+                                return <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+                              }
+                            } catch (e) {
+                              return <div style={{ fontSize: 10, color: '#ff4444', textAlign: 'center', margin: '10px 0' }}>Offer is too large for a QR code. Please copy/paste the text bundle.</div>;
+                            }
+                            return null;
+                          })()}
+
+                          {/* Connection State Info */}
+                          {manualSignalStep === 'offer-ready' && (
+                            <div style={{ padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)", fontSize: 10, color: "#8a8a9a", textAlign: "center", marginBottom: 12, lineHeight: 1.5 }}>
+                              <div style={{ fontWeight: 600, color: th.accent }}>Waiting for peer to scan and respond...</div>
+                            </div>
+                          )}
+
+                          {manualSignalStep === 'connecting' && (
+                            <div style={{ padding: "8px 12px", borderRadius: 8, background: `${th.accent}08`, border: `1px solid ${th.accent}20`, fontSize: 10, color: th.accent, textAlign: "center", marginBottom: 12, lineHeight: 1.5 }}>
+                              <div style={{ fontWeight: 600 }}>Establishing connection...</div>
+                            </div>
+                          )}
+
+                          {manualSignalStep === 'failed' && (
+                            <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(255,68,102,0.06)", border: "1px solid rgba(255,68,102,0.15)", fontSize: 10, color: "#ff4466", textAlign: "left", marginBottom: 12, lineHeight: 1.5 }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4 }}>Could not establish a direct connection.</div>
+                              This usually happens when one or both devices are on a mobile network with strict NAT (common with some carriers). Try:
+                              <div style={{ marginTop: 4, paddingLeft: 8 }}>
+                                1. Connecting both devices to the same WiFi network<br/>
+                                2. Asking your peer to try from a different network<br/>
+                                3. Using a VPN that supports NAT traversal
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ fontSize: 10, color: th.accent2, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 2: PASTE PEER'S ANSWER CODE</div>
+                          <textarea value={manualPeerInput} onChange={e => setManualPeerInput(e.target.value)} placeholder="Paste peer's answer code here..."
+                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 12px", color: "#e0e0e8", fontSize: 10, fontFamily: "monospace", resize: "none", marginBottom: 10 }} />
+                          <Btn ghost style={{ width: "100%" }} onClick={processManualAnswer} disabled={!manualPeerInput.trim()}>
+                            <I t="link" s={14} /> CONNECT WITH ANSWER
+                          </Btn>
+                        </>
                       )}
 
                       {manualSignalStep === 'processing-offer' && (
@@ -4487,92 +5832,62 @@ pc.onicecandidate = (e) => {
                         </div>
                       )}
 
-                      {manualSignalStep === 'offer-ready' && (
-                        <>
-                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 1: SEND THIS OFFER TO YOUR PEER</div>
-                          <div style={{ background: `${th.accent}06`, border: `1px solid ${th.accent}18`, borderRadius: 10, padding: 10, marginBottom: 10, maxHeight: 120, overflowY: "auto" }}>
-                            <div style={{ fontFamily: "monospace", fontSize: 8, color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.5, userSelect: "all" }}>{manualOfferString}</div>
-                          </div>
-                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={() => { navigator.clipboard?.writeText(manualOfferString); addToast('Offer copied to clipboard', 'success'); }}>
-                            <I t="copy" s={14} c="#000" /> COPY OFFER SIGNAL
-                          </Btn>
-
-                          {/* Try QR for offer */}
-                          {manualOfferString.length < 4000 && (() => {
-                            try {
-                              if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
-                                const { matrix } = qrEncode(manualOfferString);
-                                const svg = matrixToSVG(matrix, matrix.length, 180);
-                                return <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
-                              }
-                            } catch {}
-                            return null;
-                          })()}
-
-                          <div style={{ fontSize: 10, color: th.accent2, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>STEP 2: PASTE PEER'S ANSWER</div>
-                          <textarea value={manualPeerInput} onChange={e => setManualPeerInput(e.target.value)} placeholder="Paste peer's answer signal here..."
-                            rows={3} style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: "10px 12px", color: "#e0e0e8", fontSize: 10, fontFamily: "monospace", resize: "none", marginBottom: 10 }} />
-                          <Btn ghost style={{ width: "100%" }} onClick={processManualAnswer} disabled={!manualPeerInput.trim()}>
-                            <I t="link" s={14} /> CONNECT WITH ANSWER
-                          </Btn>
-                        </>
-                      )}
-
-                      {manualSignalStep === 'answer-ready' && (
+                      {(manualSignalStep === 'answer-ready' || manualSignalStep === 'connecting' || manualSignalStep === 'failed') && (
                         <>
                           {manualPeerInfo && (
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, padding: "8px 10px", borderRadius: 8, background: `${th.accent2}08`, border: `1px solid ${th.accent2}15` }}>
                               <I t="users" s={14} c={th.accent2} />
-                              <span style={{ fontSize: 11, color: th.accent2, fontWeight: 600 }}>{manualPeerInfo.n}</span>
-                              <span style={{ fontSize: 8, color: "#4a5568", fontFamily: "monospace" }}>FP: {manualPeerInfo.f?.slice(0,12)}...</span>
+                              <span style={{ fontSize: 11, color: th.accent2, fontWeight: 600 }}>{manualPeerInfo.name || 'Peer'}</span>
+                              <span style={{ fontSize: 8, color: "#4a5568", fontFamily: "monospace" }}>FP: {manualPeerInfo.fingerprint?.slice(0,12)}...</span>
                             </div>
                           )}
-                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>SEND THIS ANSWER BACK TO YOUR PEER</div>
+
+                          <div style={{ fontSize: 10, color: th.accent, fontWeight: 600, marginBottom: 8, letterSpacing: 1 }}>SEND THIS RESPONSE ANSWER TO YOUR PEER</div>
                           <div style={{ background: `${th.accent2}06`, border: `1px solid ${th.accent2}18`, borderRadius: 10, padding: 10, marginBottom: 10, maxHeight: 120, overflowY: "auto" }}>
                             <div style={{ fontFamily: "monospace", fontSize: 8, color: "#8a8a9a", wordBreak: "break-all", lineHeight: 1.5, userSelect: "all" }}>{manualAnswerString}</div>
                           </div>
-                          <Btn accent style={{ width: "100%", marginBottom: 8 }} onClick={() => { navigator.clipboard?.writeText(manualAnswerString); addToast('Answer copied to clipboard', 'success'); }}>
-                            <I t="copy" s={14} c="#000" /> COPY ANSWER SIGNAL
+                          <Btn accent style={{ width: "100%", marginBottom: 12 }} onClick={() => { navigator.clipboard?.writeText(manualAnswerString); addToast('Answer response copied to clipboard', 'success'); }}>
+                            <I t="copy" s={14} c="#000" /> COPY RESPONSE CODE
                           </Btn>
 
-                          {/* Try QR for answer */}
-                          {manualAnswerString.length < 4000 && (() => {
+                          {/* QR Code display */}
+                          {(() => {
                             try {
                               if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
                                 const { matrix } = qrEncode(manualAnswerString);
                                 const svg = matrixToSVG(matrix, matrix.length, 180);
-                                return <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
+                                return <div style={{ marginBottom: 12, display: "flex", justifyContent: "center" }} dangerouslySetInnerHTML={{ __html: svg }} />;
                               }
-                            } catch {}
+                            } catch (e) {
+                              return <div style={{ fontSize: 10, color: '#ff4444', textAlign: 'center', margin: '10px 0' }}>Answer is too large for a QR code. Please copy/paste the text bundle.</div>;
+                            }
                             return null;
                           })()}
 
-                          <div style={{ fontSize: 10, color: "#5a5a6a", textAlign: "center", lineHeight: 1.6 }}>
-                            Once your peer processes your answer, the P2P connection will establish automatically.
-                          </div>
+                          {manualSignalStep === 'answer-ready' && (
+                            <div style={{ fontSize: 10, color: "#5a5a6a", textAlign: "center", lineHeight: 1.6, marginTop: 8 }}>
+                              Once your peer processes your answer response, the P2P connection will establish automatically.
+                            </div>
+                          )}
+
+                          {manualSignalStep === 'connecting' && (
+                            <div style={{ padding: "8px 12px", borderRadius: 8, background: `${th.accent}08`, border: `1px solid ${th.accent}20`, fontSize: 10, color: th.accent, textAlign: "center", marginBottom: 12, lineHeight: 1.5 }}>
+                              <div style={{ fontWeight: 600 }}>Establishing connection...</div>
+                            </div>
+                          )}
+
+                          {manualSignalStep === 'failed' && (
+                            <div style={{ padding: "10px 14px", borderRadius: 8, background: "rgba(255,68,102,0.06)", border: "1px solid rgba(255,68,102,0.15)", fontSize: 10, color: "#ff4466", textAlign: "left", marginBottom: 12, lineHeight: 1.5 }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4 }}>Could not establish a direct connection.</div>
+                              This usually happens when one or both devices are on a mobile network with strict NAT (common with some carriers). Try:
+                              <div style={{ marginTop: 4, paddingLeft: 8 }}>
+                                1. Connecting both devices to the same WiFi network<br/>
+                                2. Asking your peer to try from a different network<br/>
+                                3. Using a VPN that supports NAT traversal
+                              </div>
+                            </div>
+                          )}
                         </>
-                      )}
-
-                      {manualSignalStep === 'connected' && (
-                        <div style={{ textAlign: "center", padding: 20 }}>
-                          <div style={{ width: 56, height: 56, borderRadius: "50%", background: `${th.accent}15`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", border: `2px solid ${th.accent}30` }}>
-                            <I t="check" s={28} c={th.accent} />
-                          </div>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: th.accent, marginBottom: 6 }}>Connected!</div>
-                          {manualPeerInfo && <div style={{ fontSize: 12, color: "#8a8a9a", marginBottom: 4 }}>{manualPeerInfo.n}</div>}
-                          <Tag color={th.accent3} icon="link">MANUAL SIGNAL</Tag>
-                          <div style={{ marginTop: 12 }}>
-                            <Btn accent style={{ width: "100%" }} onClick={() => { setShowInvite(false); setManualSignalStep('idle'); }}>
-                              <I t="chat" s={14} c="#000" /> START CHATTING
-                            </Btn>
-                          </div>
-                        </div>
-                      )}
-
-                      {manualSignalStep === 'idle' && (
-                        <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", fontSize: 9, color: "#3a3a4a", lineHeight: 1.6 }}>
-                          <strong style={{ color: "#5a5a6a" }}>How it works:</strong> You generate an offer containing your SDP + ICE candidates + public key. Send it to your peer via any channel. They paste it, generate an answer, and send it back. Both sides connect directly — zero servers.
-                        </div>
                       )}
                     </>
                   )}
@@ -4635,7 +5950,14 @@ pc.onicecandidate = (e) => {
                       {[
                         { label: "UPTIME", value: fmtUptime(), color: th.accent },
                         { label: "CONNECTION", value: signalingConnected ? "ONLINE" : "OFFLINE", color: signalingConnected ? "#00cc66" : "#ff4444" },
-                        { label: "MODE", value: connectionMode || "—", color: th.accent2 },
+                        {
+                          label: "MODE",
+                          value: connectionMode || "—",
+                          color: connectionMode === "P2P Direct" ? "#00cc66" :
+                                 connectionMode === "Via Relay" ? "#ffaa00" :
+                                 (connectionMode === "Manual Signal" || connectionMode === "Manual Signal — Pending" || connectionMode === "Reconnecting") ? "#8a8a9a" :
+                                 connectionMode === "Connection Failed" ? "#ff4444" : th.accent2
+                        },
                         { label: "SIGNALING", value: signalingAvailable ? "READY" : "RETRYING", color: signalingAvailable ? th.accent : "#ff8844" },
                       ].map(b => (
                         <div key={b.label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: "10px 12px", textAlign: "center" }}>
@@ -4821,6 +6143,74 @@ pc.onicecandidate = (e) => {
                     </div>
                   </div>
 
+                  {/* Ghost Mesh (Advanced) */}
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Ghost Mesh (Advanced)</div>
+                    <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: "10px 12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <I t="globe" s={14} c={yggdrasilEnabled ? th.accent : "#5a5a6a"} />
+                          <span style={{ fontSize: 12, color: yggdrasilEnabled ? "#8a8a9a" : "#4a4a5a" }}>Ghost Mesh (Yggdrasil)</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          {!yggdrasilAddress ? (
+                            <Tag color="#3a3a4a">NOT CONFIGURED</Tag>
+                          ) : !yggdrasilEnabled ? (
+                            <Tag color="#d69e2e">CONFIGURED</Tag>
+                          ) : (
+                            <Tag color="#00cc66">ACTIVE</Tag>
+                          )}
+                          <button onClick={async () => {
+                            if (!yggdrasilAddress) {
+                              setShowMeshSetup(true);
+                              setMeshSetupStep('intro');
+                              return;
+                            }
+                            const newVal = !yggdrasilEnabled;
+                            localStorage.setItem('gl_yggdrasil_enabled', String(newVal));
+                            setYggdrasilEnabled(newVal);
+                            if (window.ghostlink?.isElectron) {
+                              if (newVal) {
+                                try {
+                                  await window.ghostlink.ghostMesh.startServer();
+                                  addToast('Ghost Mesh server started', 'success');
+                                } catch (err) {
+                                  addToast('Failed to start Ghost Mesh server: ' + err.message, 'error');
+                                }
+                              } else {
+                                try {
+                                  await window.ghostlink.ghostMesh.stopServer();
+                                  addToast('Ghost Mesh server stopped', 'info');
+                                } catch (err) {}
+                              }
+                            } else {
+                              addToast(newVal ? 'Mesh enabled (Web Client mode)' : 'Mesh disabled', 'info');
+                            }
+                          }} style={{
+                            width: 40, height: 22, borderRadius: 11, border: "none",
+                            background: yggdrasilEnabled ? th.accent : "rgba(255,255,255,0.08)",
+                            cursor: "pointer", position: "relative", transition: "all 0.2s ease",
+                          }}>
+                            <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: yggdrasilEnabled ? 21 : 3, transition: "all 0.2s ease" }} />
+                          </button>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 9.5, color: "#5a5a6a", marginTop: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ wordBreak: "break-all", paddingRight: 8 }}>
+                          {yggdrasilAddress ? `Address: ${yggdrasilAddress}` : "Direct peer-to-peer transport routing over Yggdrasil mesh network."}
+                        </span>
+                        <span onClick={() => { setShowMeshSetup(true); setMeshSetupStep('intro'); }} style={{ color: th.accent, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>
+                          {yggdrasilAddress ? "Reconfigure" : "Configure"}
+                        </span>
+                      </div>
+                      {!window.ghostlink?.isElectron && (
+                        <div style={{ fontSize: 9, color: "#856404", background: "rgba(133, 100, 4, 0.1)", border: "1px solid rgba(133, 100, 4, 0.2)", borderRadius: 6, padding: "6px 8px", marginTop: 8 }}>
+                          <strong>Web Mode:</strong> Direct TCP server is disabled in web browsers. Handshakes will use WebRTC candidate matching over Yggdrasil.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   {/* Biometric Unlock */}
                   <div style={{ marginBottom: 22 }}>
                     <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Device Security</div>
@@ -4853,6 +6243,36 @@ pc.onicecandidate = (e) => {
                       </div>
                       <div style={{ fontSize: 9, color: "#3a3a4a", marginTop: 6 }}>
                         {turnFallbackEnabled ? `${turnServers.filter(s => s.url).length} server(s) configured` : 'Enable for symmetric NAT support'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Signaling Relay */}
+                  <div style={{ marginBottom: 22 }}>
+                    <div style={{ fontSize: 10, color: "#4a5568", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Signaling Relay</div>
+                    <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 12 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <span style={{ fontSize: 12, color: "#8a8a9a" }}>Relay Server URL</span>
+                        <input
+                          id="relay-server-url-input"
+                          type="text"
+                          value={settings.relayServerUrl || ''}
+                          onChange={e => setSettings(s => ({ ...s, relayServerUrl: e.target.value.trim() }))}
+                          placeholder="e.g. ws://localhost:3001"
+                          style={{
+                            width: "100%",
+                            background: "rgba(255,255,255,0.04)",
+                            border: "1px solid rgba(255,255,255,0.08)",
+                            borderRadius: 8,
+                            padding: "8px 10px",
+                            color: "#e0e0e8",
+                            fontSize: 11,
+                            fontFamily: "monospace"
+                          }}
+                        />
+                        <span style={{ fontSize: 9, color: "#4a5568", lineHeight: 1.4 }}>
+                          Optional. Speeds up reconnection. Leave empty to always use manual QR/paste.
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -4940,6 +6360,18 @@ pc.onicecandidate = (e) => {
                           • Team workspaces<br/>
                           • Pro themes (Stealth, Carbon)
                         </div>
+                        <button
+                          onClick={() => { setShowBuyModal(true); setBuyStep(1); }}
+                          style={{
+                            width: "100%", padding: "10px 14px", borderRadius: 8,
+                            border: `1px solid ${th.accent}`, background: `${th.accent}15`,
+                            color: th.accent, fontSize: 11, fontWeight: 600, cursor: "pointer",
+                            marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                            transition: "all 0.2s ease"
+                          }}
+                        >
+                          <I t="key" s={12} c={th.accent} /> Buy License Key
+                        </button>
                         {deviceIdLoading ? (
                           <div style={{ marginBottom: 10, padding: 10, background: "#0a0a14", borderRadius: 8, border: "1px solid rgba(255,255,255,0.06)", fontSize: 9, color: "#5a5a6a" }}>
                             Loading Device ID…
@@ -5077,7 +6509,14 @@ pc.onicecandidate = (e) => {
                       <Btn small ghost onClick={() => { setShowSettings(false); setShowRoadmap(true); }}><I t="info" s={13} /> Roadmap</Btn>
                       <Btn small ghost onClick={() => imageInputRef.current?.click()}><I t="image" s={13} /> Image</Btn>
                     </div>
-                    <div style={{ marginTop: 8, fontSize: 9, color: "#3a3a4a" }}>
+                    <div style={{
+                      marginTop: 8,
+                      fontSize: 9,
+                      color: connectionMode === "P2P Direct" ? "#00cc66" :
+                             connectionMode === "Via Relay" ? "#ffaa00" :
+                             (connectionMode === "Manual Signal" || connectionMode === "Manual Signal — Pending" || connectionMode === "Reconnecting") ? "#8a8a9a" :
+                             connectionMode === "Connection Failed" ? "#ff4444" : "#3a3a4a"
+                    }}>
                       {connectionMode ? `Connection: ${connectionMode}` : signalingConnected ? 'Relay connected' : 'Offline — use Manual P2P in invite'}
                     </div>
                   </div>
@@ -5319,6 +6758,17 @@ pc.onicecandidate = (e) => {
                       qrScannerRef.current = scanner;
                       scanner.on('scan', async (data) => {
                         try {
+                          if (ManualSignaling.isManualSignal(data)) {
+                            setQrScanResult('Direct P2P Signal Detected');
+                            setManualPeerInput(data);
+                            scanner.stopScanning();
+                            setShowInvite(true);
+                            if (inviteTab !== 'create') {
+                              setInviteTab('join');
+                            }
+                            setTimeout(() => setShowQRScanner(false), 1500);
+                            return;
+                          }
                           const invite = QRInvite.parseInvite(data);
                           setQrScanResult(invite);
                           scanner.stopScanning();
@@ -5617,7 +7067,7 @@ pc.onicecandidate = (e) => {
             )}
 
             {/* ══════ WORKSPACE & UPGRADE MODALS ══════ */}
-            <window.UpgradeModal
+            <UpgradeModal
               show={showUpgradeModal}
               onClose={() => setShowUpgradeModal(false)}
               limitType={upgradeLimitType}
@@ -5655,7 +7105,7 @@ pc.onicecandidate = (e) => {
               th={th}
             />
 
-            <window.WorkspaceCreateModal
+            <WorkspaceCreateModal
               show={showWorkspaceCreate}
               onClose={() => setShowWorkspaceCreate(false)}
               value={workspaceCreateName}
@@ -5664,7 +7114,7 @@ pc.onicecandidate = (e) => {
               th={th}
             />
 
-            <window.WorkspaceJoinModal
+            <WorkspaceJoinModal
               show={showWorkspaceJoin}
               onClose={() => setShowWorkspaceJoin(false)}
               code={workspaceJoinInvite}
@@ -5675,7 +7125,7 @@ pc.onicecandidate = (e) => {
               th={th}
             />
 
-            <window.WorkspaceInviteModal
+            <WorkspaceInviteModal
               show={!!showWorkspaceInviteGen}
               onClose={() => { setShowWorkspaceInviteGen(false); setWorkspaceInviteCode(''); setWorkspaceInviteRecipientPub(''); }}
               inviteType={showWorkspaceInviteGen || 'public'}
@@ -5686,6 +7136,729 @@ pc.onicecandidate = (e) => {
               inviteCode={workspaceInviteCode}
               th={th}
             />
+
+            {showMeshSetup && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 110, padding: isMobile ? 0 : 16 }} onClick={() => { setShowMeshSetup(false); setMeshSeedInput(''); setMeshPubKeyInput(''); }}>
+                <div style={{ background: "#0a0a0f", border: `1px solid ${th.accent}30`, borderRadius: 14, width: "100%", maxWidth: 500, padding: 24, boxSizing: "border-box", display: "flex", flexDirection: "column", maxHeight: isMobile ? "90vh" : "95vh", overflowY: "auto", position: "relative", animation: "fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1)" }} onClick={e => e.stopPropagation()}>
+                  
+                  {/* Header */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="globe" s={18} c={th.accent} />
+                      <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: "#e0e0e8" }}>
+                        [ GHOST MESH SETUP ]
+                      </span>
+                    </div>
+                    <button onClick={() => { setShowMeshSetup(false); setMeshSeedInput(''); }} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <I t="x" s={18} />
+                    </button>
+                  </div>
+
+                  {/* Content Steps */}
+                  {meshSetupStep === 'intro' && (
+                    <div>
+                      <p style={{ fontSize: 12.5, color: "#8a8a9a", lineHeight: 1.6, marginBottom: 16 }}>
+                        Ghost Mesh integrates the decentralized, cryptographically-routed <strong>Yggdrasil</strong> IPv6 network directly into GhostLink as a transport layer.
+                      </p>
+                      <p style={{ fontSize: 12.5, color: "#8a8a9a", lineHeight: 1.6, marginBottom: 16 }}>
+                        This allows you to establish direct IP-to-IP encrypted connections to peers without relying on any signaling servers.
+                      </p>
+                      <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 12, marginBottom: 20, border: "1px solid rgba(255,255,255,0.04)" }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "#e0e0e8", marginBottom: 6 }}>Prerequisites:</div>
+                        <ul style={{ fontSize: 11, color: "#8a8a9a", paddingLeft: 18, lineHeight: 1.6, margin: 0 }}>
+                          <li>A Yggdrasil daemon must be installed and running on your host system.</li>
+                          <li>Your local daemon must be configured with a Node identity derived from your GhostLink recovery phrase.</li>
+                        </ul>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                        <button onClick={() => setMeshSetupStep('seed')} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: th.accent, color: "#000", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                          Next: Cryptographic Setup
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {meshSetupStep === 'seed' && (
+                    <div>
+                      <p style={{ fontSize: 12, color: "#8a8a9a", lineHeight: 1.5, marginBottom: 16 }}>
+                        Enter your 12-word seed phrase and your current local Yggdrasil address and public key. We will verify they match before saving.
+                      </p>
+                      
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>12-Word Recovery Phrase</label>
+                        <textarea
+                          value={meshSeedInput}
+                          onChange={e => setMeshSeedInput(e.target.value)}
+                          placeholder="word1 word2 word3..."
+                          rows={3}
+                          style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: 10, color: "#e0e0e8", fontFamily: "monospace", fontSize: 12, outline: "none", resize: "none" }}
+                        />
+                      </div>
+
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>Pasted Local Yggdrasil IP Address</label>
+                        <input
+                          type="text"
+                          value={meshAddressInput}
+                          onChange={e => setMeshAddressInput(e.target.value.trim())}
+                          placeholder="e.g. 201:97c4:..."
+                          style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "10px 12px", color: "#e0e0e8", fontFamily: "monospace", fontSize: 12, outline: "none" }}
+                        />
+                      </div>
+
+                      <div style={{ marginBottom: 20 }}>
+                        <label style={{ fontSize: 10, color: "#5a5a6a", letterSpacing: 1, textTransform: "uppercase", marginBottom: 6, display: "block" }}>Pasted Local Yggdrasil Public Key (hex)</label>
+                        <input
+                          type="text"
+                          value={meshPubKeyInput}
+                          onChange={e => setMeshPubKeyInput(e.target.value.trim().toLowerCase())}
+                          placeholder="e.g. a1b2c3d4... (64 hex chars from yggdrasilctl getSelf)"
+                          style={{ width: "100%", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "10px 12px", color: "#e0e0e8", fontFamily: "monospace", fontSize: 12, outline: "none" }}
+                        />
+                        <div style={{ fontSize: 9, color: "#4a5568", marginTop: 4 }}>
+                          Run <code>yggdrasilctl getSelf</code> — paste both the <strong>address</strong> and <strong>public key hex</strong> for stronger verification.
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <button onClick={() => setMeshSetupStep('intro')} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer", fontSize: 11 }}>
+                          Back
+                        </button>
+                        <button onClick={async () => {
+                          const words = meshSeedInput.trim().split(/\s+/);
+                          if (words.length !== 12 && words.length !== 24) {
+                            addToast('Seed phrase must be 12 or 24 words', 'error');
+                            return;
+                          }
+                          if (!meshAddressInput.trim()) {
+                            addToast('Please enter your local Yggdrasil IP address', 'error');
+                            return;
+                          }
+                          try {
+                            const derived = await CryptoEngine.deriveYggdrasilIdentity(words);
+                            
+                            // Normalizer
+                            const normalizeIPv6 = (ip) => {
+                              if (!ip) return "";
+                              let clean = ip.replace(/[\[\]]/g, "").trim().toLowerCase();
+                              if (clean.includes("::")) {
+                                const parts = clean.split("::");
+                                const left = parts[0] ? parts[0].split(":") : [];
+                                const right = parts[1] ? parts[1].split(":") : [];
+                                const missing = 8 - (left.length + right.length);
+                                const middle = Array(missing).fill("0");
+                                clean = [...left, ...middle, ...right].join(":");
+                              }
+                              return clean.split(":").map(seg => {
+                                return parseInt(seg || "0", 16).toString(16).padStart(4, "0");
+                              }).join(":");
+                            };
+
+                            const normPasted = normalizeIPv6(meshAddressInput);
+                            const normDerived = normalizeIPv6(derived.address);
+
+                            setDerivedMeshAddress(derived.address);
+                            setDerivedMeshPubKey(derived.publicKeyHex);
+                            setDerivedMeshPrivKey(derived.privateKeyHex);
+
+                            if (normPasted !== normDerived) {
+                              addToast('Verification failed: Seed phrase derived address (' + derived.address + ') does not match the entered address.', 'error');
+                              return;
+                            }
+
+                            // Verify public key if provided (stronger check against hash collisions)
+                            if (meshPubKeyInput.trim()) {
+                              const normPubPasted = meshPubKeyInput.trim().toLowerCase().replace(/\s/g, '');
+                              const normPubDerived = derived.publicKeyHex.toLowerCase();
+                              if (normPubPasted !== normPubDerived) {
+                                addToast('Verification failed: Derived X25519 public key (' + normPubDerived + ') does not match the pasted public key.', 'error');
+                                return;
+                              }
+                              addToast('Yggdrasil address AND public key verified!', 'success');
+                            } else {
+                              addToast('Yggdrasil address verified! (Tip: also paste public key hex for stronger verification)', 'success');
+                            }
+                            setMeshSetupStep('result');
+                          } catch (err) {
+                            addToast('Crypto derivation error: ' + err.message, 'error');
+                          }
+                        }} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: th.accent, color: "#000", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                          Verify & Continue
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {meshSetupStep === 'result' && (
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#00cc66", marginBottom: 16 }}>
+                        <I t="check" s={20} c="#00cc66" />
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>Cryptographic Matching Confirmed!</span>
+                      </div>
+                      
+                      <p style={{ fontSize: 12, color: "#8a8a9a", lineHeight: 1.5, marginBottom: 16 }}>
+                        Your seed phrase matches your Yggdrasil IPv6 address. Here are the keys you need to configure in your local Yggdrasil configuration file (usually <code>/etc/yggdrasil.conf</code>):
+                      </p>
+
+                      <div style={{ background: "rgba(255,255,255,0.02)", borderRadius: 10, padding: 12, marginBottom: 20 }}>
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 9, color: "#4a5568", textTransform: "uppercase", marginBottom: 2 }}>Node IPv6 Address</div>
+                          <div style={{ fontFamily: "monospace", fontSize: 11, color: "#e0e0e8", wordBreak: "break-all" }}>{derivedMeshAddress}</div>
+                        </div>
+                        <div style={{ marginBottom: 10 }}>
+                          <div style={{ fontSize: 9, color: "#4a5568", textTransform: "uppercase", marginBottom: 2 }}>Node Private Key (NodePrivHex)</div>
+                          <div style={{ display: "flex", alignItems: "center", justifySelf: "stretch", justifyContent: "space-between" }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#8a8a9a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "80%" }}>
+                              {derivedMeshPrivKey ? derivedMeshPrivKey + derivedMeshPubKey : ""}
+                            </div>
+                            <span onClick={() => {
+                              navigator.clipboard.writeText(derivedMeshPrivKey + derivedMeshPubKey);
+                              addToast('Private key copied', 'success');
+                            }} style={{ color: th.accent, cursor: "pointer", fontSize: 10, textDecoration: "underline" }}>Copy</span>
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 9, color: "#4a5568", textTransform: "uppercase", marginBottom: 2 }}>Node Public Key (NodePubHex)</div>
+                          <div style={{ display: "flex", alignItems: "center", justifySelf: "stretch", justifyContent: "space-between" }}>
+                            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#8a8a9a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", width: "80%" }}>
+                              {derivedMeshPubKey}
+                            </div>
+                            <span onClick={() => {
+                              navigator.clipboard.writeText(derivedMeshPubKey);
+                              addToast('Public key copied', 'success');
+                            }} style={{ color: th.accent, cursor: "pointer", fontSize: 10, textDecoration: "underline" }}>Copy</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ background: "rgba(255,180,0,0.06)", border: "1px solid rgba(255,180,0,0.15)", borderRadius: 8, padding: "10px 12px", marginBottom: 20 }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "#d69e2e", marginBottom: 4 }}>⚠ Post-Setup Verification</div>
+                        <div style={{ fontSize: 10, color: "#8a8a7a", lineHeight: 1.5 }}>
+                          After configuring your Yggdrasil daemon with these keys and restarting, run <code style={{ color: "#e0e0e8" }}>yggdrasilctl getSelf</code> and compare <strong>both</strong> the reported address AND the full public key hex against the values shown above. Address-only matching is insufficient — address collisions are theoretically possible with truncated SHA-512 hashes.
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <button onClick={() => setMeshSetupStep('seed')} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer", fontSize: 11 }}>
+                          Back
+                        </button>
+                        <button onClick={async () => {
+                          localStorage.setItem('gl_yggdrasil_address', derivedMeshAddress);
+                          localStorage.setItem('gl_yggdrasil_enabled', 'true');
+                          setYggdrasilAddress(derivedMeshAddress);
+                          setYggdrasilEnabled(true);
+                          setShowMeshSetup(false);
+                          setMeshSeedInput(''); // clear sensitive data from state
+                          setMeshPubKeyInput('');
+                          
+                          if (window.ghostlink?.isElectron) {
+                            try {
+                              await window.ghostlink.ghostMesh.startServer();
+                              addToast('Ghost Mesh activated and server started', 'success');
+                            } catch (err) {
+                              addToast('Saved, but failed to start TCP server: ' + err.message, 'error');
+                            }
+                          } else {
+                            addToast('Ghost Mesh configured for Web Mode', 'success');
+                          }
+                        }} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: th.accent, color: "#000", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 600 }}>
+                          Save & Enable Mesh
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            )}
+
+            {showBuyModal && (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 110, padding: isMobile ? 0 : 16 }} onClick={() => setShowBuyModal(false)}>
+                <div style={{ background: "#0a0a0f", border: `1px solid ${th.accent}30`, borderRadius: 14, width: "100%", maxWidth: buyStep === 1 ? 840 : 450, padding: 24, boxSizing: "border-box", display: "flex", flexDirection: "column", maxHeight: isMobile ? "90vh" : "95vh", overflowY: "auto", position: "relative", animation: "fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1)" }} onClick={e => e.stopPropagation()}>
+                  
+                  {/* Header */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <I t="key" s={18} c={th.accent} />
+                      <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", color: "#e0e0e8" }}>
+                        [ LICENSE PAYMENT PORTAL ]
+                      </span>
+                    </div>
+                    <button onClick={() => setShowBuyModal(false)} style={{ background: "none", border: "none", color: "#6a6a7a", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <I t="x" s={18} />
+                    </button>
+                  </div>
+
+                  {/* Step 1: Pricing Grid */}
+                  {buyStep === 1 && (
+                    <div style={{ animation: "fadeIn 0.25s ease" }}>
+                      <div style={{ textAlign: "center", marginBottom: 20 }}>
+                        <div style={{ fontSize: 18, fontWeight: 800, color: th.accent, marginBottom: 6 }}>Simple Pricing</div>
+                        <div style={{ fontSize: 11, color: "#8a8a9a" }}>Privacy shouldn't cost a fortune. Choose your tier.</div>
+                      </div>
+
+                      {/* 3-way Toggle */}
+                      <div style={{ display: "flex", justifyContent: "center", background: "#06060a", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 4, width: "fit-content", margin: "0 auto 24px auto" }}>
+                        {[
+                          { key: "monthly", label: "Monthly" },
+                          { key: "yearly", label: "Yearly — Save 37%" },
+                          { key: "lifetime", label: "Lifetime" }
+                        ].map(cycle => (
+                          <button
+                            key={cycle.key}
+                            onClick={() => setBuyBilling(cycle.key)}
+                            style={{
+                              padding: "6px 14px", borderRadius: 8, border: "none",
+                              background: buyBilling === cycle.key ? th.accent : "transparent",
+                              color: buyBilling === cycle.key ? "#000" : "#8a8a9a",
+                              fontSize: 10, fontWeight: 600, cursor: "pointer",
+                              transition: "all 0.15s ease", outline: "none"
+                            }}
+                          >
+                            {cycle.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Pricing Cards Grid */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, justifyContent: "center" }}>
+                        {/* PRO Card */}
+                        <div style={{ flex: "1 1 230px", maxWidth: 250, background: "rgba(255,255,255,0.01)", border: `1px solid ${buyPlan === 'PRO' ? th.accent : 'rgba(255,255,255,0.04)'}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setBuyPlan('PRO')}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#8a8a9a", textTransform: "uppercase", marginBottom: 8 }}>Pro Tier</div>
+                            <div style={{ fontSize: 24, fontWeight: 800, color: "#ffffff", marginBottom: 2 }}>
+                              ${pricingData['PRO'][buyBilling]}
+                            </div>
+                            <div style={{ fontSize: 9, color: "#5a5a6a", marginBottom: 16 }}>
+                              {buyBilling === 'monthly' ? 'per month' : buyBilling === 'yearly' ? 'per year (billed annually)' : 'forever (lifetime support)'}
+                            </div>
+                            <ul style={{ paddingLeft: 0, listStyle: "none", fontSize: 10, color: "#a0a0b0", lineHeight: 1.6, margin: "0 0 20px 0" }}>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent }}>✓</span> Everything in Free</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent }}>✓</span> Unlimited peers</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent }}>✓</span> Large files (up to 2GB)</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent }}>✓</span> Workspaces & Pro themes</li>
+                              <li style={{ display: "flex", gap: 6 }}><span style={{ color: th.accent }}>✓</span> Pro badge ✦</li>
+                            </ul>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setBuyPlan('PRO'); setBuyStep(2); }}
+                            style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: buyPlan === 'PRO' ? th.accent : "rgba(255,255,255,0.04)", color: buyPlan === 'PRO' ? "#000" : "#a0a0b0", fontWeight: 600, fontSize: 10, cursor: "pointer", transition: "all 0.15s ease" }}
+                          >
+                            [ Get Pro License ]
+                          </button>
+                        </div>
+
+                        {/* TEAM Card */}
+                        <div style={{ flex: "1 1 230px", maxWidth: 250, background: "rgba(255,255,255,0.01)", border: `1px solid ${buyPlan === 'TEAM' ? th.accent2 || th.accent : 'rgba(255,255,255,0.04)'}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setBuyPlan('TEAM')}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#8a8a9a", textTransform: "uppercase", marginBottom: 8 }}>Team Tier</div>
+                            <div style={{ fontSize: 24, fontWeight: 800, color: "#ffffff", marginBottom: 2 }}>
+                              ${pricingData['TEAM'][buyBilling]}
+                            </div>
+                            <div style={{ fontSize: 9, color: "#5a5a6a", marginBottom: 16 }}>
+                              {buyBilling === 'monthly' ? 'up to 5 members' : buyBilling === 'yearly' ? 'billed annually' : 'forever (lifetime support)'}
+                            </div>
+                            <ul style={{ paddingLeft: 0, listStyle: "none", fontSize: 10, color: "#a0a0b0", lineHeight: 1.6, margin: "0 0 20px 0" }}>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent2 || th.accent }}>✓</span> Everything in Pro</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent2 || th.accent }}>✓</span> 5 Pro seats/keys</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent2 || th.accent }}>✓</span> Shared team workspace</li>
+                              <li style={{ display: "flex", gap: 6 }}><span style={{ color: th.accent2 || th.accent }}>✓</span> Shared vault sync</li>
+                            </ul>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setBuyPlan('TEAM'); setBuyStep(2); }}
+                            style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: buyPlan === 'TEAM' ? th.accent2 || th.accent : "rgba(255,255,255,0.04)", color: buyPlan === 'TEAM' ? "#000" : "#a0a0b0", fontWeight: 600, fontSize: 10, cursor: "pointer", transition: "all 0.15s ease" }}
+                          >
+                            [ Get Team License ]
+                          </button>
+                        </div>
+
+                        {/* ENTERPRISE Card */}
+                        <div style={{ flex: "1 1 230px", maxWidth: 250, background: "rgba(255,255,255,0.01)", border: `1px solid ${buyPlan === 'ENTERPRISE' ? th.accent3 || th.accent : 'rgba(255,255,255,0.04)'}`, borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setBuyPlan('ENTERPRISE')}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: "#8a8a9a", textTransform: "uppercase", marginBottom: 8 }}>Enterprise Tier</div>
+                            <div style={{ fontSize: 24, fontWeight: 800, color: "#ffffff", marginBottom: 2 }}>
+                              ${pricingData['ENTERPRISE'][buyBilling]}
+                            </div>
+                            <div style={{ fontSize: 9, color: "#5a5a6a", marginBottom: 16 }}>
+                              {buyBilling === 'monthly' ? 'unlimited members' : buyBilling === 'yearly' ? 'billed annually' : 'forever (lifetime support)'}
+                            </div>
+                            <ul style={{ paddingLeft: 0, listStyle: "none", fontSize: 10, color: "#a0a0b0", lineHeight: 1.6, margin: "0 0 20px 0" }}>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent3 || th.accent }}>✓</span> Everything in Team</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent3 || th.accent }}>✓</span> Unlimited members & workspaces</li>
+                              <li style={{ display: "flex", gap: 6, marginBottom: 4 }}><span style={{ color: th.accent3 || th.accent }}>✓</span> Dedicated relay setups</li>
+                              <li style={{ display: "flex", gap: 6 }}><span style={{ color: th.accent3 || th.accent }}>✓</span> 24hr priority support</li>
+                            </ul>
+                          </div>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setBuyPlan('ENTERPRISE'); setBuyStep(2); }}
+                            style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: buyPlan === 'ENTERPRISE' ? th.accent3 || th.accent : "rgba(255,255,255,0.04)", color: buyPlan === 'ENTERPRISE' ? "#000" : "#a0a0b0", fontWeight: 600, fontSize: 10, cursor: "pointer", transition: "all 0.15s ease" }}
+                          >
+                            [ Get Enterprise ]
+                          </button>
+                        </div>
+                      </div>
+
+                      <div style={{ marginTop: 24, fontSize: 9, color: "#4a4a5a", textAlign: "center", lineHeight: 1.5 }}>
+                        * No active subscription or credit card storage. Payments are conducted via secure, native crypto transactions.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 2: Order Confirmation */}
+                  {buyStep === 2 && (
+                    <div style={{ animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: th.accent, marginBottom: 16, textTransform: "uppercase", textAlign: "center" }}>Order Confirmation</div>
+                      
+                      <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, color: "#8a8a9a" }}>Plan Selected:</span>
+                          <span style={{ fontSize: 11, color: "#fff", fontWeight: 600 }}>{buyPlan}</span>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                          <span style={{ fontSize: 11, color: "#8a8a9a" }}>Billing Cycle:</span>
+                          <span style={{ fontSize: 11, color: "#fff", fontWeight: 600, textTransform: "uppercase" }}>{buyBilling}</span>
+                        </div>
+
+                        {buyBilling !== 'lifetime' && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+                            <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600 }}>BILLING PERIOD DURATION:</span>
+                            <select
+                              value={buyDuration}
+                              onChange={e => setBuyDuration(parseInt(e.target.value))}
+                              style={{ width: "100%", padding: "10px 12px", background: "#0a0a14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, color: "#e0e0e0", fontSize: 11, cursor: "pointer", outline: "none" }}
+                            >
+                              {[1, 2, 3, 4, 5, 6].map(val => (
+                                <option key={val} value={val}>
+                                  {val} {buyBilling === 'monthly' ? `month(s) (${val * 30} days)` : `year(s) (${val * 365} days)`}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ background: `${th.accent}08`, border: `1px dashed ${th.accent}30`, borderRadius: 10, padding: 16, textAlign: "center", marginBottom: 20 }}>
+                        <div style={{ fontSize: 10, color: "#8a8a9a", marginBottom: 4 }}>TOTAL DUE PRICE (USD):</div>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: th.accent }}>${buyTotalPriceUSD}.00 USD</div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          onClick={() => setBuyStep(1)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Back to Plans ]
+                        </button>
+                        <button
+                          onClick={() => setBuyStep(3)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Next: Select Coin ]
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 3: Select Coin */}
+                  {buyStep === 3 && (
+                    <div style={{ animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: th.accent, marginBottom: 16, textTransform: "uppercase", textAlign: "center" }}>Select Payment Coin</div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                        {[
+                          { key: "BTC", name: "Bitcoin (BTC)", emoji: "🪙" },
+                          { key: "ETH", name: "Ethereum (ETH)", emoji: "🔷" },
+                          { key: "LTC", name: "Litecoin (LTC)", emoji: "⚡" },
+                          { key: "USDT", name: "Tether (USDT)", emoji: "💵" }
+                        ].map(c => (
+                          <button
+                            key={c.key}
+                            onClick={() => setBuyCoin(c.key)}
+                            style={{
+                              padding: 16, borderRadius: 10, border: buyCoin === c.key ? `2px solid ${th.accent}` : "1px solid rgba(255,255,255,0.06)",
+                              background: buyCoin === c.key ? `${th.accent}12` : "transparent",
+                              color: buyCoin === c.key ? th.accent : "#e8e8e8",
+                              fontSize: 11, fontWeight: 600, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, transition: "all 0.15s ease"
+                            }}
+                          >
+                            <span style={{ fontSize: 18 }}>{c.emoji}</span>
+                            <span>{c.name}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      {buyCoin === 'USDT' && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
+                          <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600 }}>TETHER USDT NETWORK:</span>
+                          <div style={{ display: "flex", gap: 10 }}>
+                            {["ERC20", "TRC20"].map(net => (
+                              <button
+                                key={net}
+                                onClick={() => setBuyUsdtNetwork(net)}
+                                style={{
+                                  flex: 1, padding: "8px 12px", borderRadius: 8, border: buyUsdtNetwork === net ? `2px solid ${th.accent}` : "1px solid rgba(255,255,255,0.08)",
+                                  background: buyUsdtNetwork === net ? `${th.accent}12` : "transparent",
+                                  color: buyUsdtNetwork === net ? th.accent : "#8a8a9a",
+                                  fontSize: 10, fontWeight: 600, cursor: "pointer"
+                                }}
+                              >
+                                USDT ({net})
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          onClick={() => setBuyStep(2)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Back ]
+                        </button>
+                        <button
+                          disabled={!buyCoin}
+                          onClick={() => { setBuyCountdown(900); setBuyStep(4); }}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", background: buyCoin ? th.accent : "#3a5e4a", color: buyCoin ? "#000" : "#a0a0b0", fontSize: 11, fontWeight: 600, cursor: buyCoin ? "pointer" : "not-allowed" }}
+                        >
+                          {buyCoin ? `[ Continue with ${buyCoin} ]` : '[ Select Coin ]'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 4: Payment Details */}
+                  {buyStep === 4 && (
+                    <div style={{ animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: th.accent, marginBottom: 16, textTransform: "uppercase", textAlign: "center" }}>Payment Details</div>
+
+                      {/* QR Code Container */}
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+                        {buyQrSvgStr ? (
+                          <div style={{ background: "#fff", padding: 12, borderRadius: 10, display: "inline-block", boxShadow: "0 4px 20px rgba(0,0,0,0.5)" }} dangerouslySetInnerHTML={{ __html: buyQrSvgStr }} />
+                        ) : (
+                          <div style={{ color: "#6a6a7a", fontSize: 10, padding: 20, border: "1px dashed rgba(255,255,255,0.06)", borderRadius: 10 }}>QR Code Rendering...</div>
+                        )}
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16 }}>
+                        <div>
+                          <div style={{ fontSize: 9, color: "#8a8a9a", fontWeight: 600, marginBottom: 4 }}>SEND EXACT CRYPTO AMOUNT:</div>
+                          <div style={{ fontSize: 20, fontWeight: 800, color: th.accent, fontFamily: "monospace" }}>
+                            {buyCryptoAmount} {buyCoin}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ fontSize: 9, color: "#8a8a9a", fontWeight: 600, marginBottom: 4 }}>TO WALLET ADDRESS:</div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <input
+                              type="text"
+                              readOnly
+                              value={buyWalletAddress}
+                              style={{ flex: 1, padding: "10px 12px", background: "#0a0a14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, color: "#8a8a9a", fontSize: 10, fontFamily: "monospace", outline: "none" }}
+                            />
+                            <button
+                              onClick={() => {
+                                navigator.clipboard?.writeText(buyWalletAddress);
+                                addToast('Wallet address copied', 'success');
+                              }}
+                              style={{ padding: "10px 14px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Countdown Display */}
+                      <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", borderRadius: 10, padding: 12, textAlign: "center", marginBottom: 20 }}>
+                        <div style={{ fontSize: 8, color: "#6a6a7a", textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 4 }}>Quote Exchange Rate Lock</div>
+                        <div style={{ fontSize: 18, fontWeight: 800, fontFamily: "monospace", color: buyCountdown <= 60 ? "#ff4466" : th.accent }}>
+                          {buyCountdownStr}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          onClick={() => setBuyStep(3)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Back ]
+                        </button>
+                        <button
+                          onClick={() => setBuyStep(5)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ I Have Paid ]
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 5: Confirm Payment (TXID + Screenshot + Email) */}
+                  {buyStep === 5 && (
+                    <div style={{ animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: th.accent, marginBottom: 16, textTransform: "uppercase", textAlign: "center" }}>Submit Payment Details</div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+                        <div>
+                          <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600, display: "block", marginBottom: 6 }}>TRANSACTION ID (TXID / HASH):</span>
+                          <input
+                            type="text"
+                            placeholder="Enter blockchain transaction hash"
+                            value={buyTxHash}
+                            onChange={e => setBuyTxHash(e.target.value)}
+                            style={{ width: "100%", padding: "10px 12px", background: "#0a0a14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, color: "#e0e0e0", fontSize: 11, fontFamily: "monospace", outline: "none" }}
+                          />
+                        </div>
+
+                        <div>
+                          <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600, display: "block", marginBottom: 6 }}>TRANSACTION SCREENSHOT:</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={e => {
+                              const file = e.target.files[0];
+                              if (file) {
+                                setBuyFileName(file.name);
+                                const reader = new FileReader();
+                                reader.onload = function(evt) {
+                                  setBuyFileBlob(new Blob([evt.target.result], { type: file.type }));
+                                };
+                                reader.readAsArrayBuffer(file);
+                              }
+                            }}
+                            style={{ width: "100%", padding: "8px 10px", background: "#0a0a14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, color: "#8a8a9a", fontSize: 11, outline: "none" }}
+                          />
+                        </div>
+
+                        <div>
+                          <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600, display: "block", marginBottom: 6 }}>DELIVERY EMAIL ADDRESS:</span>
+                          <input
+                            type="email"
+                            placeholder="Enter your email address"
+                            value={buyEmail}
+                            onChange={e => setBuyEmail(e.target.value)}
+                            style={{ width: "100%", padding: "10px 12px", background: "#0a0a14", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, color: "#e0e0e0", fontSize: 11, outline: "none" }}
+                          />
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <button
+                          onClick={() => setBuyStep(4)}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "#8a8a9a", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Back ]
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (!buyTxHash.trim()) { alert('TXID is required'); return; }
+                            if (!buyFileBlob) { alert('Screenshot is required'); return; }
+                            if (!buyEmail.trim() || !buyEmail.includes('@')) { alert('Valid delivery email is required'); return; }
+                            setBuyStep(6);
+                          }}
+                          style={{ flex: 1, padding: "12px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          [ Submit Verification ]
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 6: Verifying Payment (Spinner) */}
+                  {buyStep === 6 && (
+                    <div style={{ textAlign: "center", padding: "30px 10px", animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ display: "inline-block", width: 40, height: 40, border: `3px solid ${th.accent}20`, borderTopColor: th.accent, borderRadius: "50%", animation: "ripple 1s linear infinite", marginBottom: 20 }} />
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#e0e0e8", marginBottom: 8 }}>Querying Blockchain Network...</div>
+                      <div style={{ fontSize: 10, color: "#6a6a7a", fontFamily: "monospace" }}>Checking confirmations for tx {buyTxHash.substring(0, 16)}...</div>
+                    </div>
+                  )}
+
+                  {/* Step 7: Manual Submission (Email Draft) */}
+                  {buyStep === 7 && (
+                    <div style={{ animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#ff8800", marginBottom: 12, textAlign: "center" }}>⚠️ AUTOMATED CHECK UNRESOLVED</div>
+                      <div style={{ fontSize: 11, color: "#8a8a9a", lineHeight: 1.5, marginBottom: 16 }}>
+                        Our automated verifier could not immediately find your transaction confirmation on-chain. Please complete verification by sending your details to support manually.
+                      </div>
+
+                      <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, padding: 12, fontSize: 10, color: "#a0a0b0", lineHeight: 1.6, marginBottom: 16 }}>
+                        <div><strong>Reference ID:</strong> <span style={{ fontFamily: "monospace", color: th.accent }}>{buyRefId}</span></div>
+                        <div><strong>Delivery Email:</strong> {buyEmail}</div>
+                        <div><strong>Transaction:</strong> {buyCryptoAmount} {buyCoin}</div>
+                        <div style={{ wordBreak: "break-all" }}><strong>TXID:</strong> <span style={{ fontFamily: "monospace" }}>{buyTxHash}</span></div>
+                      </div>
+
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+                        <button
+                          onClick={() => {
+                            if (!buyFileBlob) return;
+                            const url = URL.createObjectURL(buyFileBlob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = buyFileName || 'ghostlink-receipt.png';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                          }}
+                          style={{ width: "100%", padding: "12px", borderRadius: 8, border: `1px solid ${th.accent}`, background: "transparent", color: th.accent, fontSize: 11, fontWeight: 600, cursor: "pointer", outline: "none" }}
+                        >
+                          📥 Download Payment Screenshot
+                        </button>
+                        
+                        <button
+                          onClick={() => {
+                            const durationStr = buyBilling === 'lifetime' ? 'LIFETIME' : `${buyDuration} ${buyBilling === 'monthly' ? 'MONTHS' : 'YEARS'}`;
+                            const subject = encodeURIComponent(`GhostLink License Request — ${buyPlan} — ${durationStr}`);
+                            const body = encodeURIComponent(
+                              `Plan: ${buyPlan}\n` +
+                              `Billing: ${buyBilling.toUpperCase()}\n` +
+                              `Duration: ${buyBilling === 'lifetime' ? 'Lifetime' : buyDuration + ' ' + (buyBilling === 'monthly' ? 'month(s)' : 'year(s)')}\n` +
+                              `Amount Paid: ${buyCryptoAmount} ${buyCoin} ($${buyTotalPriceUSD} USD)\n` +
+                              `Transaction Hash: ${buyTxHash}\n` +
+                              `Device ID: ${deviceId || 'N/A'}\n` +
+                              `Verification Status: Pending Manual Review\n` +
+                              `Reference ID: ${buyRefId}\n\n` +
+                              `[Screenshot attached separately — please attach the downloaded payment screenshot to this email before sending]`
+                            );
+                            window.location.href = `mailto:ghostlink@proton.me?subject=${subject}&body=${body}`;
+                            setBuyStep(8);
+                          }}
+                          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontSize: 11, fontWeight: 600, cursor: "pointer", outline: "none" }}
+                        >
+                          ✉️ Launch Email Client
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 8: Success/Instructions */}
+                  {buyStep === 8 && (
+                    <div style={{ textAlign: "center", animation: "fadeIn 0.2s ease" }}>
+                      <div style={{ fontSize: 32, marginBottom: 12 }}>📬</div>
+                      <div style={{ fontSize: 15, fontWeight: 800, color: th.accent, marginBottom: 8 }}>Verification Details Sent</div>
+                      <div style={{ fontSize: 11, color: "#8a8a9a", lineHeight: 1.6, marginBottom: 20 }}>
+                        We have queued your activation request under Reference ID: <strong style={{ color: "#fff", fontFamily: "monospace" }}>{buyRefId}</strong>.<br/><br/>
+                        Once the transaction has been verified by our team, your activation key will be delivered to: <strong style={{ color: "#fff" }}>{buyEmail}</strong>.<br/><br/>
+                        Copy the received license key and paste it directly into the Settings activation input field to unlock your Pro features.
+                      </div>
+                      
+                      <button
+                        onClick={() => setShowBuyModal(false)}
+                        style={{ width: "100%", padding: "12px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        [ Close Portal ]
+                      </button>
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            )}
           </div>
         );
       }

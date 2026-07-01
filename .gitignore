@@ -3,3 +3,5 @@ license-generator/
 license-test.html
 test-license.html
 ghostlink-website.html
+gmp-core/data/
+*.md

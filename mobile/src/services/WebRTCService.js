@@ -153,6 +153,44 @@ class WebRTCService extends Emitter {
     this._peers = new Map();
     /** @private @type {import('./SignalingService').default|null} */
     this._signaling = null;
+    /**
+     * Ghost Mesh peer address cache.
+     * Maps peerId → { yggdrasilAddress, publicKeyHex }
+     * Used to attempt direct mesh dial when Ghost Mesh is active.
+     * @private @type {Map<string, { yggdrasilAddress: string, publicKeyHex: string }>}
+     */
+    this._meshPeers = new Map();
+  }
+
+  /**
+   * Register a peer's Yggdrasil mesh address for future direct-dial attempts.
+   * Called when the app learns a peer's Yggdrasil identity (e.g. from signaling
+   * metadata or a cached peer profile).
+   *
+   * @param {string} peerId
+   * @param {string} yggdrasilAddress Peer's Yggdrasil IPv6 address.
+   * @param {string} [publicKeyHex] Peer's X25519 public key hex.
+   */
+  setMeshPeerAddress(peerId, yggdrasilAddress, publicKeyHex = '') {
+    this._meshPeers.set(peerId, {yggdrasilAddress, publicKeyHex});
+  }
+
+  /**
+   * Get a peer's cached Yggdrasil mesh info, if known.
+   *
+   * @param {string} peerId
+   * @returns {{ yggdrasilAddress: string, publicKeyHex: string } | null}
+   */
+  getMeshPeerAddress(peerId) {
+    return this._meshPeers.get(peerId) || null;
+  }
+
+  /**
+   * Remove a peer's cached mesh address.
+   * @param {string} peerId
+   */
+  removeMeshPeerAddress(peerId) {
+    this._meshPeers.delete(peerId);
   }
 
   /**

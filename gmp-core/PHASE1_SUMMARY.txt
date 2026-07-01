@@ -1,0 +1,114 @@
+GMP PHASE 1 — COMPLETED SUMMARY
+===============================
+Date: 2026-06-27
+
+DELIVERABLES
+------------
+1. gmp-core/PROTOCOL_SPEC.md — Protocol specification with wire format,
+   handshake flow, message types, and threat model (Section 7).
+
+2. gmp-core/identity.js — Platform-independent key derivation:
+   - PBKDF2(seedPhrase) → 32-byte seed
+   - X25519 keypair from seed (static identity)
+   - NodeID = SHA-512(staticPubKey) — 64 bytes, no truncation
+   - Ed25519 signing keypair derived via HMAC-SHA512("ed25519-signing", seed)
+
+3. gmp-core/link.js — Electron-only TCP single-link implementation:
+   - GMPNode: listen() and dial() for TCP connections
+   - GMPLink: handles handshake, encryption, messaging
+   - AES-256-GCM session encryption with forward secrecy via ephemeral ECDH
+   - PING/PONG keepalive (30s interval, 10s timeout)
+   - 2-message handshake: HELLO → HELLO_ACK with proof-of-key
+
+4. gmp-core/test/two-node-test.js — Test harness with 13 passing tests:
+   - Basic connection and handshake
+   - DATA message encryption (both directions)
+   - Replay protection (old timestamp rejection)
+   - Forged signature rejection
+   - Multiple simultaneous connections
+   - Keepalive mechanism
+
+5. gmp-core/PHASE1_REPORT.md — Implementation report with known
+   weaknesses and Phase 2 requirements.
+
+BUGS FIXED
+----------
+1. identity.js: x25519 was imported from wrong path in @noble/curves.
+   Fixed: import from '@noble/curves/ed25519' (the same module that
+   exports ed25519, which exports x25519 as x25519).
+
+2. identity.js: crypto.getRandomValues() does not exist in Node.js.
+   Fixed: replaced with crypto.randomBytes().
+
+3. identity.js: HKDF argument order was wrong. The @noble/hashes hkdf()
+   expects (hash, ikm, salt?, info?, length?). We were passing null for
+   salt which caused toBytes(null) to throw. Fixed: pass undefined
+   to trigger default salt behavior.
+
+4. link.js: HELLO_ACK signature offset was wrong. The spec says signature
+   starts at offset 216 (after 64+32+32+32+8+48 = 216 bytes of other fields).
+   The code had it at offset 200. Fixed the parsing and building of HELLO_ACK.
+
+5. link.js: AES-GCM IV format. AES-256-GCM requires 12-byte IVs but we were
+   using 8-byte counters. Fixed: build 12-byte IV from 64-bit counter with
+   4 zero bytes prefix: [0,0,0,0, counter bytes].
+
+6. link.js: _handleData loop was resetting currentMessageType to null before
+   calling _processMessage(), causing "Unknown message type: undefined" errors.
+   Fixed: capture type in local variable before resetting.
+
+7. link.js: dial() method was not emitting 'connection' event for outgoing
+   connections, only resolving the promise. Fixed: added emit('connection').
+
+8. link.js: Session key role assignment was wrong. In _handleHELLO (responder),
+   sendKey should be responderKey and recvKey should be initiatorKey.
+   Fixed the assignments to match protocol specification.
+
+9. link.js: The initiator's nonce verification in _handleHELLO_ACK was checking
+   against this.initiatorNonce which was never set because _sendHELLO sets it
+   after generating the nonce. Fixed: set this.initiatorNonce in _sendHELLO
+   before sending.
+
+TEST RESULTS
+------------
+All 13 tests pass:
+- Basic connection and handshake (8 assertions)
+- DATA message encryption (2 assertions)
+- Replay protection (1 assertion)
+- Multiple simultaneous connections (2 assertions)
+
+Run with: cd gmp-core && node test/two-node-test.js
+
+SECURITY PROPERTIES ACHIEVED
+----------------------------
+- Authentication: Ed25519 signatures + NodeID verification
+- Confidentiality: AES-256-GCM post-handshake encryption
+- Forward Secrecy: Fresh ephemeral X25519 per connection
+- Replay Protection: Timestamp check + GCM auth tag
+- MITM Resistance: ECDH + authenticated signatures
+
+KNOWN LIMITATIONS (Phase 2 must address)
+----------------------------------------
+1. No key rotation — compromised signing key compromises future sessions
+2. No nonce tracking across connections — replay within 5-min window possible
+3. No rate limiting — DoS resistance not implemented
+4. Clock dependency — timestamp checks fail if clock is manipulated
+5. No peer reputation — bad peers can reconnect freely
+6. No NAT traversal — requires direct reachability
+7. No multi-hop routing — single link only
+
+PHASE 2 REQUIREMENTS
+--------------------
+1. NAT Traversal (hardest part — TCP hole punching, relay nodes)
+2. Multi-hop Routing (DHT, routing table, loop detection)
+3. Address Truncation (Phase 1.5 — compact NodeID representation)
+4. Session Persistence (key rotation, graceful reconnection)
+5. Anti-eclipse measures (peer diversity, reputation)
+
+FILES MODIFIED/CREATED
+----------------------
+- gmp-core/PROTOCOL_SPEC.md (rewritten)
+- gmp-core/identity.js (fixed imports, HKDF)
+- gmp-core/link.js (fixed handshake, key roles, nonces, framing)
+- gmp-core/test/two-node-test.js (new test harness)
+- gmp-core/PHASE1_REPORT.md (new)

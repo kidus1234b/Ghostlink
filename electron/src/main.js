@@ -22,12 +22,15 @@ const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
 const os = require('os');
+const net = require('net');
 const { createTray, updateBadge, flashTray, destroyTray } = require('./tray');
 const { initUpdater } = require('./updater');
 const { createSignalingServer } = require('../../server/signaling-core');
 
 let signalingServer = null;
 let signalingPort = null;
+let ghostMeshServer = null;
+const activeMeshSockets = new Map();
 
 /* ─── Constants ─────────────────────────────────────────────── */
 
@@ -400,6 +403,152 @@ function setupIPC() {
     isQuitting = true;
     const { quitAndInstall } = require('./updater');
     quitAndInstall();
+  });
+
+  /* ── Ghost Mesh (Yggdrasil TCP Socket Bridge) ───────────────── */
+  ipcMain.handle('ghostmesh-start-server', async () => {
+    if (ghostMeshServer) {
+      return { success: true, message: 'Server already running' };
+    }
+    
+    return new Promise((resolve) => {
+      try {
+        ghostMeshServer = net.createServer((socket) => {
+          const connId = `mesh-${Math.random().toString(36).slice(2, 10)}`;
+          activeMeshSockets.set(connId, socket);
+          
+          mainWindow?.webContents.send('ghostmesh-peer-connected', {
+            connId,
+            remoteAddress: socket.remoteAddress,
+            type: 'incoming'
+          });
+          
+          let buffer = '';
+          socket.on('data', (data) => {
+            buffer += data.toString('utf8');
+            let boundary = buffer.indexOf('\n');
+            while (boundary !== -1) {
+              const line = buffer.slice(0, boundary).trim();
+              buffer = buffer.slice(boundary + 1);
+              if (line) {
+                mainWindow?.webContents.send('ghostmesh-data', { connId, data: line });
+              }
+              boundary = buffer.indexOf('\n');
+            }
+          });
+          
+          socket.on('close', () => {
+            activeMeshSockets.delete(connId);
+            mainWindow?.webContents.send('ghostmesh-peer-disconnected', { connId });
+          });
+          
+          socket.on('error', (err) => {
+            console.warn('[GhostMesh Server Socket Error]', err.message);
+          });
+        });
+        
+        ghostMeshServer.on('error', (err) => {
+          console.error('[GhostMesh Server Error]', err.message);
+          resolve({ success: false, error: err.message });
+        });
+        
+        ghostMeshServer.listen({ host: '::', port: 49500 }, () => {
+          console.log('[GhostMesh] Server listening on [::]:49500');
+          resolve({ success: true });
+        });
+      } catch (err) {
+        resolve({ success: false, error: err.message });
+      }
+    });
+  });
+
+  ipcMain.handle('ghostmesh-stop-server', async () => {
+    if (!ghostMeshServer) {
+      return { success: true };
+    }
+    return new Promise((resolve) => {
+      for (const [connId, socket] of activeMeshSockets.entries()) {
+        try { socket.end(); } catch (e) {}
+        activeMeshSockets.delete(connId);
+      }
+      ghostMeshServer.close(() => {
+        ghostMeshServer = null;
+        console.log('[GhostMesh] Server stopped');
+        resolve({ success: true });
+      });
+    });
+  });
+
+  ipcMain.handle('ghostmesh-dial', async (_e, { host, port = 49500 }) => {
+    return new Promise((resolve) => {
+      try {
+        console.log(`[GhostMesh] Dialing ${host}:${port}...`);
+        const socket = net.connect({ host, port }, () => {
+          const connId = `mesh-${Math.random().toString(36).slice(2, 10)}`;
+          activeMeshSockets.set(connId, socket);
+          
+          let buffer = '';
+          socket.on('data', (data) => {
+            buffer += data.toString('utf8');
+            let boundary = buffer.indexOf('\n');
+            while (boundary !== -1) {
+              const line = buffer.slice(0, boundary).trim();
+              buffer = buffer.slice(boundary + 1);
+              if (line) {
+                mainWindow?.webContents.send('ghostmesh-data', { connId, data: line });
+              }
+              boundary = buffer.indexOf('\n');
+            }
+          });
+          
+          socket.on('close', () => {
+            activeMeshSockets.delete(connId);
+            mainWindow?.webContents.send('ghostmesh-peer-disconnected', { connId });
+          });
+          
+          socket.on('error', (err) => {
+            console.warn('[GhostMesh Dial Socket Error]', err.message);
+          });
+          
+          resolve({ success: true, connId });
+        });
+        
+        socket.on('error', (err) => {
+          console.error('[GhostMesh Dial Error]', err.message);
+          resolve({ success: false, error: err.message });
+        });
+      } catch (err) {
+        resolve({ success: false, error: err.message });
+      }
+    });
+  });
+
+  ipcMain.handle('ghostmesh-send', async (_e, { connId, data }) => {
+    const socket = activeMeshSockets.get(connId);
+    if (socket) {
+      try {
+        socket.write(data + '\n');
+        return true;
+      } catch (err) {
+        console.error('[GhostMesh Send Error]', err.message);
+        return false;
+      }
+    }
+    return false;
+  });
+
+  ipcMain.handle('ghostmesh-close', async (_e, { connId }) => {
+    const socket = activeMeshSockets.get(connId);
+    if (socket) {
+      try {
+        socket.end();
+        activeMeshSockets.delete(connId);
+        return true;
+      } catch (err) {
+        return false;
+      }
+    }
+    return false;
   });
 }
 
