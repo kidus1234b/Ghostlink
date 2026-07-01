@@ -3,7 +3,8 @@ license-generator/
 license-test.html
 test-license.html
 ghostlink-website.html
-gmp-core/data/
+gmp-core/data/*
+!gmp-core/data/public-peers.example.json
 *.md
 *.txt
 !**/requirements.txt
