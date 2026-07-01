@@ -5,3 +5,5 @@ test-license.html
 ghostlink-website.html
 gmp-core/data/
 *.md
+*.txt
+!**/requirements.txt
