@@ -34,7 +34,8 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@babel/preset-react": "^8.0.1",
+    "@babel/preset-react": "^7.26.0",
     "esbuild": "^0.28.1"
   }
 }
+
