@@ -25,12 +25,31 @@ const os = require('os');
 const net = require('net');
 const { createTray, updateBadge, flashTray, destroyTray } = require('./tray');
 const { initUpdater } = require('./updater');
-const { createSignalingServer } = require('../../server/signaling-core');
+// We no longer start the old signaling server.
+let gmpManager = null;
+let gmpBridge = null;
 
-let signalingServer = null;
-let signalingPort = null;
-let ghostMeshServer = null;
-const activeMeshSockets = new Map();
+async function startGMPNode(seedPhrase) {
+  if (gmpManager) return;
+  const { GMPNodeManager } = await import('../../gmp-core/gmp-node-manager.js');
+  const { startBridge } = await import('../../gmp-core/gmp-bridge.js');
+
+  gmpManager = new GMPNodeManager({ seedPhrase, port: 49500 });
+  gmpBridge = startBridge(gmpManager, 3002);
+  await gmpManager.start();
+  console.log('[Electron GMP] Node Manager started on port 49500, Bridge on 3002');
+}
+
+function stopGMPNode() {
+  if (gmpBridge && gmpBridge.wss) {
+    try { gmpBridge.wss.close(); } catch(e){}
+  }
+  if (gmpManager) {
+    try { gmpManager.stop(); } catch(e){}
+  }
+  gmpManager = null;
+  gmpBridge = null;
+}
 
 /* ─── Constants ─────────────────────────────────────────────── */
 
@@ -380,9 +399,20 @@ function setupIPC() {
     return true;
   });
 
-  /* ── Signaling server status ────────────────────────────────── */
-  ipcMain.handle('signaling-status', () => {
-    return signalingServer ? signalingServer.getStatus() : { running: false };
+  /* ── GMP Node/Bridge IPC Handlers ───────────────────────────── */
+  ipcMain.handle('gmp-get-seed', () => store.get('gmp_seed_phrase') || null);
+  ipcMain.handle('gmp-set-seed', (_e, seed) => {
+    store.set('gmp_seed_phrase', seed);
+    return true;
+  });
+  ipcMain.handle('gmp-start', async (_e, seed) => {
+    store.set('gmp_seed_phrase', seed);
+    await startGMPNode(seed);
+    return true;
+  });
+  ipcMain.handle('gmp-status', () => {
+    if (!gmpManager) return { started: false };
+    return { started: true, nodeId: gmpManager.node?.identity?.nodeIdHex };
   });
 
   ipcMain.handle('get-network-info', () => {
@@ -632,13 +662,14 @@ function generateFallbackIcon() {
    ═══════════════════════════════════════════════════════════════ */
 
 app.whenReady().then(async () => {
-  // Start embedded signaling server
-  try {
-    signalingServer = createSignalingServer({ port: 3001, serveStatic: false });
-    signalingPort = await signalingServer.start();
-    console.log(`[GhostLink] Embedded signaling server on port ${signalingPort}`);
-  } catch (err) {
-    console.error('[GhostLink] Failed to start signaling server:', err.message);
+  // Auto-start GMP node on app launch if seed exists
+  const savedSeed = store.get('gmp_seed_phrase');
+  if (savedSeed) {
+    try {
+      await startGMPNode(savedSeed);
+    } catch (err) {
+      console.error('[Electron GMP] Failed to auto-start GMP Node:', err.message);
+    }
   }
 
   setupIPC();
@@ -678,7 +709,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
-  if (signalingServer) signalingServer.stop();
+  stopGMPNode();
   globalShortcut.unregisterAll();
   destroyTray(tray);
   secureVault.clear();

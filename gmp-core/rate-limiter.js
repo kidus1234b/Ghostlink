@@ -1,40 +1,19 @@
 /**
- * GMP Rate Limiter — Phase 2a
+ * GMP Rate Limiter — Phase 2a / Phase 7
  * Per-IP connection rate limiting and global connection cap.
- *
- * Defense against:
- * - Connection flood attacks (many rapid connections from same IP)
- * - Resource exhaustion from handshake crypto amplification
- * - Slow-loris style attacks (connections opened but never completing handshake)
- *
- * Default limits:
- * - Per-IP: 10 new connections per 60-second sliding window
- * - Global: 100 concurrent connections
- * - Handshake timeout: 10s for initial HELLO, 10s for full handshake completion
  */
 
 import { EventEmitter } from 'events';
-
-const DEFAULT_WINDOW_MS = 60000;
-const DEFAULT_MAX_PER_IP = 10;
-const DEFAULT_MAX_GLOBAL = 100;
-const DEFAULT_HELLO_TIMEOUT_MS = 10000;
-const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10000;
+import config from './config.js';
 
 class RateLimiter extends EventEmitter {
-  constructor({
-    windowMs = DEFAULT_WINDOW_MS,
-    maxPerIp = DEFAULT_MAX_PER_IP,
-    maxGlobal = DEFAULT_MAX_GLOBAL,
-    helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS,
-    handshakeTimeoutMs = DEFAULT_HANDSHAKE_TIMEOUT_MS,
-  } = {}) {
+  constructor(options = {}) {
     super();
-    this.windowMs = windowMs;
-    this.maxPerIp = maxPerIp;
-    this.maxGlobal = maxGlobal;
-    this.helloTimeoutMs = helloTimeoutMs;
-    this.handshakeTimeoutMs = handshakeTimeoutMs;
+    this.windowMs = options.windowMs || config.GMP_RATE_LIMIT_WINDOW_MS || 60000;
+    this.maxPerIp = options.maxPerIp || config.GMP_RATE_LIMIT_MAX_PER_IP || 10;
+    this.maxGlobal = options.maxGlobal || config.GMP_RATE_LIMIT_MAX_GLOBAL || 100;
+    this.helloTimeoutMs = options.helloTimeoutMs || config.GMP_HELLO_TIMEOUT_MS || 10000;
+    this.handshakeTimeoutMs = options.handshakeTimeoutMs || config.GMP_HANDSHAKE_TIMEOUT_MS || 10000;
 
     this._ipWindows = new Map();
     this._globalCount = 0;
@@ -140,4 +119,4 @@ class RateLimiter extends EventEmitter {
   }
 }
 
-export { RateLimiter, DEFAULT_WINDOW_MS, DEFAULT_MAX_PER_IP, DEFAULT_MAX_GLOBAL, DEFAULT_HELLO_TIMEOUT_MS, DEFAULT_HANDSHAKE_TIMEOUT_MS };
+export { RateLimiter };

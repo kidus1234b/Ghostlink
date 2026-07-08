@@ -8,3 +8,41 @@ gmp-core/data/*
 *.md
 *.txt
 !**/requirements.txt
+
+# TLS certs / keys (mkcert + self-signed) — never commit private keys
+*.pem
+*.pem.*
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+
+# Backups and temporary files
+*.bak
+*~
+*.swp
+*.bin
+small_test.txt
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs and editors
+.vscode/
+.idea/
+
+# AI tool internals
+.claude/
+.opencode/
+.antigravity/
+.aider*
+CLAUDE.md
+.cursorrules

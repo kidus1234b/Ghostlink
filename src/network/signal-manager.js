@@ -73,12 +73,15 @@
       // 3. ws://localhost:3001
       urls.push('ws://localhost:3001');
 
-      // 4. ws://[hostname]:[port]
+      // 4. [scheme]://[hostname]:[port] — must match page security: an https://
+      //    page can only reach a wss:// relay (ws:// to a LAN IP is blocked as
+      //    mixed content).
       try {
         if (typeof location !== 'undefined' && location.hostname) {
+          const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
           const port = location.port || 3001;
-          urls.push(`ws://${location.hostname}:${port}`);
-          urls.push(`ws://${location.hostname}:3001`);
+          urls.push(`${scheme}${location.hostname}:${port}`);
+          urls.push(`${scheme}${location.hostname}:3001`);
         }
       } catch (e) { /* location not available */ }
 

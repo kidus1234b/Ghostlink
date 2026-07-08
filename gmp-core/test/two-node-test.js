@@ -176,12 +176,13 @@ async function testNodeIdMismatch() {
     const fakeSocket = new net.Socket();
     fakeSocket.connect(49502, '127.0.0.1', () => {
       console.log('  Sending HELLO with random garbage (invalid NodeID)...');
-      const fakeHelloPayload = Buffer.alloc(264);
+      const fakeHelloPayload = Buffer.alloc(265);
       crypto.randomFillSync(fakeHelloPayload);
-      fakeHelloPayload.writeBigUInt64BE(BigInt(Date.now()), 160);
+      fakeHelloPayload[0] = 0x01; // valid version
+      fakeHelloPayload.writeBigUInt64BE(BigInt(Date.now()), 161);
 
       const lenBuf = Buffer.alloc(4);
-      lenBuf.writeUInt32BE(264, 0);
+      lenBuf.writeUInt32BE(265, 0);
       const fakeFrame = Buffer.concat([lenBuf, Buffer.from([0x01]), fakeHelloPayload]);
 
       fakeSocket.write(fakeFrame);
@@ -223,24 +224,25 @@ async function testTimestampReplay() {
       console.log('  Sending HELLO with stale timestamp (>10 minutes ago)...');
 
       const oldTimestamp = Date.now() - (10 * 60 * 1000);
-      const fakeHelloPayload = Buffer.alloc(264);
+      const fakeHelloPayload = Buffer.alloc(265);
 
-      fakeHelloPayload.set(Buffer.from(serverIdentity.nodeId), 0);
-      fakeHelloPayload.set(Buffer.from(serverIdentity.staticPubKey), 64);
-      fakeHelloPayload.set(Buffer.from(serverIdentity.signingPubKey), 96);
-      fakeHelloPayload.set(Buffer.from(crypto.randomBytes(32)), 128);
-      fakeHelloPayload.writeBigUInt64BE(BigInt(oldTimestamp), 160);
-      fakeHelloPayload.set(crypto.randomBytes(32), 168);
+      fakeHelloPayload[0] = 0x01; // valid version
+      fakeHelloPayload.set(Buffer.from(serverIdentity.nodeId), 1);
+      fakeHelloPayload.set(Buffer.from(serverIdentity.staticPubKey), 65);
+      fakeHelloPayload.set(Buffer.from(serverIdentity.signingPubKey), 97);
+      fakeHelloPayload.set(Buffer.from(crypto.randomBytes(32)), 129);
+      fakeHelloPayload.writeBigUInt64BE(BigInt(oldTimestamp), 161);
+      fakeHelloPayload.set(crypto.randomBytes(32), 169);
 
-      const signedPortion = fakeHelloPayload.slice(0, 200);
+      const signedPortion = fakeHelloPayload.slice(0, 201);
       const signature = signMessage(
         new Uint8Array(serverIdentity.signingPrivKey),
         new Uint8Array(signedPortion)
       );
-      fakeHelloPayload.set(Buffer.from(signature), 200);
+      fakeHelloPayload.set(Buffer.from(signature), 201);
 
       const lenBuf = Buffer.alloc(4);
-      lenBuf.writeUInt32BE(264, 0);
+      lenBuf.writeUInt32BE(265, 0);
       const fakeFrame = Buffer.concat([lenBuf, Buffer.from([0x01]), fakeHelloPayload]);
 
       fakeSocket.write(fakeFrame);
@@ -281,19 +283,20 @@ async function testForgedSignature() {
     fakeSocket.connect(49503, '127.0.0.1', async () => {
       console.log('  Sending HELLO with valid NodeID but forged signature...');
 
-      const fakeHelloPayload = Buffer.alloc(264);
+      const fakeHelloPayload = Buffer.alloc(265);
+      fakeHelloPayload[0] = 0x01; // valid version
       // Fill correct NodeID matching the temporary client's staticPubkey
-      fakeHelloPayload.set(Buffer.from(tempIdentity.nodeId), 0);
-      fakeHelloPayload.set(Buffer.from(tempIdentity.staticPubKey), 64);
-      fakeHelloPayload.set(Buffer.from(tempIdentity.signingPubKey), 96);
-      fakeHelloPayload.set(Buffer.from(crypto.randomBytes(32)), 128); // ephemeral pubkey
-      fakeHelloPayload.writeBigUInt64BE(BigInt(Date.now()), 160);
-      fakeHelloPayload.set(crypto.randomBytes(32), 168); // nonce
+      fakeHelloPayload.set(Buffer.from(tempIdentity.nodeId), 1);
+      fakeHelloPayload.set(Buffer.from(tempIdentity.staticPubKey), 65);
+      fakeHelloPayload.set(Buffer.from(tempIdentity.signingPubKey), 97);
+      fakeHelloPayload.set(Buffer.from(crypto.randomBytes(32)), 129); // ephemeral pubkey
+      fakeHelloPayload.writeBigUInt64BE(BigInt(Date.now()), 161);
+      fakeHelloPayload.set(crypto.randomBytes(32), 169); // nonce
       // Forge signature (invalid signature bytes)
-      fakeHelloPayload.set(crypto.randomBytes(64), 200);
+      fakeHelloPayload.set(crypto.randomBytes(64), 201);
 
       const lenBuf = Buffer.alloc(4);
-      lenBuf.writeUInt32BE(264, 0);
+      lenBuf.writeUInt32BE(265, 0);
       const fakeFrame = Buffer.concat([lenBuf, Buffer.from([0x01]), fakeHelloPayload]);
 
       fakeSocket.write(fakeFrame);

@@ -1,4 +1,5 @@
 import net from 'net';
+import logger from './logger.js';
 
 /**
  * Attempts direct P2P connection, falling back to simultaneous-open hole punching.
@@ -29,11 +30,18 @@ export async function holePunchConnect({
   // Fast path: try direct connection first
   if (previouslyKnownAddress) {
     try {
-      console.log(`[HolePunch] Fast path: Attempting direct connection to ${previouslyKnownAddress.address}:${previouslyKnownAddress.port}`);
+      logger.info('hole-punch', 'direct-connect-attempt', `Fast path: Attempting direct connection to ${previouslyKnownAddress.address}:${previouslyKnownAddress.port}`, {
+        peerNodeId,
+        address: previouslyKnownAddress.address,
+        port: previouslyKnownAddress.port
+      });
       const result = await node.dial(previouslyKnownAddress.address, previouslyKnownAddress.port);
       return result;
     } catch (e) {
-      console.log(`[HolePunch] Fast path direct connection failed: ${e.message}. Proceeding to simultaneous-open hole punching.`);
+      logger.info('hole-punch', 'direct-connect-failed', `Fast path direct connection failed: ${e.message}. Proceeding to simultaneous-open hole punching.`, {
+        peerNodeId,
+        err: e.message
+      });
     }
   }
 
@@ -41,11 +49,19 @@ export async function holePunchConnect({
   const now = Date.now();
   const waitMs = attemptTimestamp - now;
   if (waitMs > 0) {
-    console.log(`[HolePunch] Waiting ${waitMs}ms until coordinated timestamp ${attemptTimestamp} to start hole punching...`);
+    logger.info('hole-punch', 'waiting-timestamp', `Waiting ${waitMs}ms until coordinated timestamp ${attemptTimestamp} to start hole punching...`, {
+      peerNodeId,
+      waitMs,
+      attemptTimestamp
+    });
     await new Promise(resolve => setTimeout(resolve, waitMs));
   }
 
-  console.log(`[HolePunch] Starting simultaneous-open TCP connections to ${peerObservedAddress.address}:${peerObservedAddress.port}...`);
+  logger.info('hole-punch', 'simultaneous-open-start', `Starting simultaneous-open TCP connections to ${peerObservedAddress.address}:${peerObservedAddress.port}...`, {
+    peerNodeId,
+    address: peerObservedAddress.address,
+    port: peerObservedAddress.port
+  });
 
   return new Promise((resolve, reject) => {
     const sockets = [];
@@ -95,7 +111,11 @@ export async function holePunchConnect({
           sockets.splice(idx, 1);
         }
 
-        console.log(`[HolePunch] TCP connection established! Running GMP handshake...`);
+        logger.info('hole-punch', 'tcp-established', `TCP connection established! Running GMP handshake...`, {
+          peerNodeId,
+          address: peerObservedAddress.address,
+          port: peerObservedAddress.port
+        });
         cleanup(null); // Cleanup other pending sockets
 
         // Hand over the connected socket to GMPNode to run the handshake

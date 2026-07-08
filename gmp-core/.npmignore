@@ -1,0 +1,20 @@
+# Exclude test files and test suites
+test/
+
+# Exclude local runtime data, logs, and cache
+data/
+logs/
+*.log
+
+# Exclude historical phase reports
+PHASE*_REPORT.md
+AUDIT_REPORT.md
+PHASE1_REVIEW_SUMMARY.txt
+PHASE1_SUMMARY.txt
+
+# Exclude local envs or configurations
+.env
+config.json
+
+# Keep source code, documentation, specs, and config examples
+# package.json, README.md, PROTOCOL_SPEC.md, config.example.json, and all *.js source files are included by default

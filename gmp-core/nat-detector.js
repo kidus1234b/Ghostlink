@@ -1,4 +1,5 @@
 import { querySinglePeer } from './public-peer-list.js';
+import logger from './logger.js';
 
 /**
  * Heuristically classify the NAT type based on 3 public peer queries.
@@ -72,19 +73,31 @@ export async function detectNATType(node, publicPeers, timeoutMs = 5000) {
   try {
     q1 = await querySinglePeer(node, peer1, timeoutMs);
   } catch (e) {
-    console.warn(`[NATDetector] Query 1 to ${peer1.address}:${peer1.port} failed:`, e.message);
+    logger.warn('nat-detector', 'query-failed', `Query 1 to ${peer1.address}:${peer1.port} failed: ${e.message}`, {
+      address: peer1.address,
+      port: peer1.port,
+      err: e.message
+    });
   }
 
   try {
     q2 = await querySinglePeer(node, peer1, timeoutMs);
   } catch (e) {
-    console.warn(`[NATDetector] Query 2 to ${peer1.address}:${peer1.port} failed:`, e.message);
+    logger.warn('nat-detector', 'query-failed', `Query 2 to ${peer1.address}:${peer1.port} failed: ${e.message}`, {
+      address: peer1.address,
+      port: peer1.port,
+      err: e.message
+    });
   }
 
   try {
     q3 = await querySinglePeer(node, peer2, timeoutMs);
   } catch (e) {
-    console.warn(`[NATDetector] Query 3 to ${peer2.address}:${peer2.port} failed:`, e.message);
+    logger.warn('nat-detector', 'query-failed', `Query 3 to ${peer2.address}:${peer2.port} failed: ${e.message}`, {
+      address: peer2.address,
+      port: peer2.port,
+      err: e.message
+    });
   }
 
   const type = classifyNAT(q1, q2, q3);

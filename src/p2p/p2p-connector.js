@@ -95,9 +95,12 @@
       if (typeof GHOSTLINK_SIGNAL_URL !== 'undefined') candidates.push(GHOSTLINK_SIGNAL_URL);
       const { protocol, hostname } = window.location;
       if (hostname) {
+        // Match page security: https pages can only reach a wss:// relay
+        // (ws:// to a LAN IP is blocked by the browser as mixed content).
+        const scheme = protocol === 'https:' ? 'wss://' : 'ws://';
         const port = window.location.port || 3001;
-        candidates.push(`ws://${hostname}:${port}`);
-        candidates.push(`ws://${hostname}:3001`);
+        candidates.push(`${scheme}${hostname}:${port}`);
+        candidates.push(`${scheme}${hostname}:3001`);
       }
       candidates.push('ws://localhost:3001');
 

@@ -3,8 +3,10 @@ import asyncio
 import json
 import logging
 import os
+import ssl
 import sys
 import time
+from http import HTTPStatus
 import websockets
 
 # ── Configuration ──
@@ -19,6 +21,23 @@ logging.basicConfig(
 
 RELAY_PORT = int(os.environ.get("RELAY_PORT", 3001))
 ALLOWED_ORIGINS_ENV = os.environ.get("ALLOWED_ORIGINS", "*")
+
+# ── TLS ──
+# When the app is served over HTTPS, browsers block plain ws:// / http:// to a
+# LAN IP as mixed content, so the relay must speak wss:// (TLS). Point RELAY_CERT
+# / RELAY_KEY at a cert whose SAN covers the address the client uses; by default
+# we reuse the project's mkcert cert one directory up. If the files are absent
+# the relay falls back to plain ws:// (fine for localhost-only use).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+RELAY_CERT = os.environ.get("RELAY_CERT", os.path.join(_SCRIPT_DIR, "..", "cert.pem"))
+RELAY_KEY = os.environ.get("RELAY_KEY", os.path.join(_SCRIPT_DIR, "..", "key.pem"))
+
+def build_ssl_context():
+    if os.path.exists(RELAY_CERT) and os.path.exists(RELAY_KEY):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(RELAY_CERT, RELAY_KEY)
+        return ctx
+    return None
 
 # Parse origins
 ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
@@ -291,6 +310,22 @@ async def handle_connection(websocket, path=None):
 
 # ── Server Startup ──
 
+def health_check(connection, request):
+    """
+    Answer plain HTTP GET /health with a small JSON body so the web client can
+    probe relay availability before attempting a WebSocket upgrade. Returning a
+    Response short-circuits the handshake for this request; returning None lets
+    the normal WebSocket upgrade proceed. A permissive CORS header is included
+    because the probe is cross-origin (page on :8443, relay on :3001) and the
+    browser must be allowed to read the response. No payloads are logged here.
+    """
+    path = request.path.split("?", 1)[0]
+    if path == "/health":
+        response = connection.respond(HTTPStatus.OK, '{"status":"ok"}')
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+    return None
+
 async def expiration_cleanup_loop():
     """
     Background worker that runs every 30 seconds to clean up inactive rooms
@@ -319,9 +354,16 @@ async def expiration_cleanup_loop():
                     del rooms[room_code]
 
 async def main():
+    ssl_context = build_ssl_context()
+    scheme = "wss" if ssl_context else "ws"
+
     # Print welcome block
-    logging.info(f"Starting GhostLink WebSocket Signaling Relay on port {RELAY_PORT}...")
+    logging.info(f"Starting GhostLink WebSocket Signaling Relay on {scheme}://0.0.0.0:{RELAY_PORT} ...")
     logging.info(f"Allowed Origins: {ALLOWED_ORIGINS_ENV}")
+    if ssl_context:
+        logging.info(f"TLS enabled using cert: {os.path.abspath(RELAY_CERT)}")
+    else:
+        logging.warning("TLS disabled (cert/key not found) — serving plain ws://; browsers on HTTPS pages will block this from a LAN IP.")
 
     # Set max payload size to 64KB (65536 bytes) for security.
     # websockets.serve closes connection if single frame size exceeds this limit.
@@ -329,7 +371,9 @@ async def main():
         handle_connection,
         "0.0.0.0",
         RELAY_PORT,
-        max_size=65536
+        max_size=65536,
+        ssl=ssl_context,
+        process_request=health_check
     ):
         # Run the expiration loop concurrently
         await expiration_cleanup_loop()

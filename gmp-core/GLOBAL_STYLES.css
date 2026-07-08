@@ -1,0 +1,54 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-radius: 0 !important;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+body {
+  background: #000000;
+  color: #e8e8e8;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+*:focus {
+  outline: none;
+  border-color: #00ffa3;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2a2a2a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00ffa3;
+}
+
+::-webkit-scrollbar-thumb,
+::-webkit-scrollbar-corner {
+  border-radius: 0;
+}
+
+::selection {
+  background: #00ffa3;
+  color: #000000;
+}
+
+::-moz-selection {
+  background: #00ffa3;
+  color: #000000;
+}
+
+::-webkit-input-placeholder {
+  color: #444444;
+}
+
+::placeholder {
+  color: #444444;
+}

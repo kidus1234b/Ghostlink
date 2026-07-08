@@ -1,33 +1,41 @@
 /**
- * GMP Nonce Store — Phase 2a
+ * GMP Nonce Store — Phase 2a / Phase 5 / Phase 7
  * Persists nonce high-water marks to defend against nonce reuse attacks.
- *
- * Defense in depth: Even if ephemeral key uniqueness (LRU check in link.js) fails,
- * this provides a second independent check by persisting and comparing nonce counters
- * across process restarts.
- *
- * File format: gmp-core/data/nonce-state.json
+ * Encrypted at rest using AES-256-GCM.
  */
 
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
+import config from './config.js';
+import logger from './logger.js';
 
 const DEFAULT_STATE_FILE = path.join(process.cwd(), 'gmp-core', 'data', 'nonce-state.json');
-const PRUNE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 class NonceStore extends EventEmitter {
-  constructor({ stateFile = DEFAULT_STATE_FILE } = {}) {
+  constructor({ stateFile = DEFAULT_STATE_FILE, pruneAgeMs, seedPhrase } = {}) {
     super();
     this.stateFile = stateFile;
+    this.pruneAgeMs = pruneAgeMs || config.GMP_NONCE_PRUNE_AGE_MS || 90 * 24 * 60 * 60 * 1000;
     this.state = {
       entries: {},      // keyed by "peerNodeId:sessionKeyFingerprint"
       version: 1,
     };
+    this.encryptionKey = null;
+
+    if (seedPhrase) {
+      this.encryptionKey = crypto.pbkdf2Sync(seedPhrase, 'ghostlink-nonce-store-v1', 100000, 32, 'sha256');
+    }
+
     this._loaded = false;
     this._dirty = false;
     this._saveTimer = null;
+  }
+
+  setEncryptionKey(key) {
+    this.encryptionKey = key;
+    this.load();
   }
 
   _getKey(peerNodeId, sessionKeyFingerprint) {
@@ -35,51 +43,76 @@ class NonceStore extends EventEmitter {
     return `${peerHex}:${sessionKeyFingerprint}`;
   }
 
-  _fingerprintKey(sessionKey) {
-    return crypto.createHash('sha256').update(Buffer.from(sessionKey)).digest('hex').slice(0, 16);
-  }
-
-  async load() {
+  load() {
+    if (!this.encryptionKey) {
+      this.state = { entries: {}, version: 1 };
+      this._loaded = true;
+      return this;
+    }
     try {
       if (fs.existsSync(this.stateFile)) {
-        const data = fs.readFileSync(this.stateFile, 'utf8');
-        const parsed = JSON.parse(data);
-        if (parsed.version === 1) {
-          this.state = parsed;
+        const raw = fs.readFileSync(this.stateFile, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.iv && parsed.ciphertext && parsed.version === 1) {
+          const iv = Buffer.from(parsed.iv, 'hex');
+          const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
+          const authTag = encryptedBlob.slice(0, 16);
+          const ciphertext = encryptedBlob.slice(16);
+          const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+          decipher.setAuthTag(authTag);
+          const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+          const stateObj = JSON.parse(decrypted.toString('utf8'));
+          if (stateObj && stateObj.version === 1) {
+            this.state = stateObj;
+          }
+        } else {
+          logger.warn('nonce-store', 'format-mismatch', 'Nonce state file format mismatch or plaintext, starting fresh.');
+          this.state = { entries: {}, version: 1 };
         }
+      } else {
+        this.state = { entries: {}, version: 1 };
       }
     } catch (err) {
-      console.warn(`[NonceStore] Failed to load state file: ${err.message}`);
+      logger.warn('nonce-store', 'load-failed', `Failed to load state file, starting fresh: ${err.message}`, { err: err.message });
+      this.state = { entries: {}, version: 1 };
     }
     this._loaded = true;
     this._pruneOldEntries();
     return this;
   }
 
-  _persist() {
-    if (!this._loaded) return;
+  save() {
     this._dirty = true;
-
-    if (this._saveTimer) {
-      clearTimeout(this._saveTimer);
-    }
+    if (this._saveTimer) return;
 
     this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
       this._saveNow();
-    }, 1000);
+    }, 1000); // Debounce disk writes by 1 second
   }
 
   _saveNow() {
-    if (!this._dirty) return;
+    if (!this._dirty || !this.encryptionKey) return;
     try {
       const dir = path.dirname(this.stateFile);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      fs.writeFileSync(this.stateFile, JSON.stringify(this.state, null, 2));
+      const plaintextJson = JSON.stringify(this.state);
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+      const ciphertext = Buffer.concat([cipher.update(plaintextJson, 'utf8'), cipher.final()]);
+      const authTag = cipher.getAuthTag();
+      const encryptedBlob = Buffer.concat([authTag, ciphertext]);
+      const encryptedObj = {
+        iv: iv.toString('hex'),
+        ciphertext: encryptedBlob.toString('hex'),
+        version: 1
+      };
+      fs.writeFileSync(this.stateFile, JSON.stringify(encryptedObj, null, 2));
       this._dirty = false;
     } catch (err) {
-      console.error(`[NonceStore] Failed to save state: ${err.message}`);
+      logger.error('nonce-store', 'save-failed', `Failed to save state: ${err.message}`, { err: err.message });
     }
   }
 
@@ -87,99 +120,53 @@ class NonceStore extends EventEmitter {
     const now = Date.now();
     let pruned = 0;
     for (const [key, entry] of Object.entries(this.state.entries)) {
-      if (now - entry.lastActivity > PRUNE_AGE_MS) {
+      if (now - entry.lastActivity > this.pruneAgeMs) {
         delete this.state.entries[key];
         pruned++;
       }
     }
     if (pruned > 0) {
-      this._persist();
+      this.save();
     }
-    return pruned;
   }
 
-  checkAndUpdate(peerNodeId, sessionKey, sendNonceCounter, recvNonceCounter) {
-    const fingerprint = this._fingerprintKey(sessionKey);
-    const key = this._getKey(peerNodeId, fingerprint);
-    const now = Date.now();
+  checkNonce(peerNodeId, sessionKeyFingerprint, nonce) {
+    if (!this._loaded) {
+      this.load();
+    }
 
-    let entry = this.state.entries[key];
+    const key = this._getKey(peerNodeId, sessionKeyFingerprint);
+    const entry = this.state.entries[key];
 
     if (!entry) {
-      entry = {
-        sendHighWater: -1,
-        recvHighWater: -1,
-        firstSeen: now,
-        lastActivity: now,
+      this.state.entries[key] = {
+        highWaterMark: nonce,
+        lastActivity: Date.now(),
       };
-      this.state.entries[key] = entry;
+      this.save();
+      return { valid: true };
     }
 
-    if (sendNonceCounter <= entry.sendHighWater) {
+    if (nonce <= entry.highWaterMark) {
       return {
-        allowed: false,
-        reason: 'send nonce would overlap',
-        existingHighWater: entry.sendHighWater,
-        requestedCounter: sendNonceCounter,
+        valid: false,
+        reason: `Reused or old nonce: received ${nonce}, high-water mark is ${entry.highWaterMark}`,
       };
     }
 
-    if (recvNonceCounter <= entry.recvHighWater) {
-      return {
-        allowed: false,
-        reason: 'recv nonce would overlap',
-        existingHighWater: entry.recvHighWater,
-        requestedCounter: recvNonceCounter,
-      };
-    }
-
-    entry.sendHighWater = sendNonceCounter;
-    entry.recvHighWater = recvNonceCounter;
-    entry.lastActivity = now;
-    this._persist();
-
-    return { allowed: true };
-  }
-
-  updateCounters(peerNodeId, sessionKey, sendNonceCounter, recvNonceCounter) {
-    const fingerprint = this._fingerprintKey(sessionKey);
-    const key = this._getKey(peerNodeId, fingerprint);
-    const now = Date.now();
-
-    let entry = this.state.entries[key];
-
-    if (!entry) {
-      entry = {
-        sendHighWater: -1,
-        recvHighWater: -1,
-        firstSeen: now,
-        lastActivity: now,
-      };
-      this.state.entries[key] = entry;
-    }
-
-    if (sendNonceCounter > entry.sendHighWater) {
-      entry.sendHighWater = sendNonceCounter;
-    }
-    if (recvNonceCounter > entry.recvHighWater) {
-      entry.recvHighWater = recvNonceCounter;
-    }
-    entry.lastActivity = now;
-    this._persist();
-  }
-
-  getEntry(peerNodeId, sessionKey) {
-    const fingerprint = this._fingerprintKey(sessionKey);
-    const key = this._getKey(peerNodeId, fingerprint);
-    return this.state.entries[key] || null;
+    entry.highWaterMark = nonce;
+    entry.lastActivity = Date.now();
+    this.save();
+    return { valid: true };
   }
 
   close() {
     if (this._saveTimer) {
       clearTimeout(this._saveTimer);
+      this._saveTimer = null;
     }
     this._saveNow();
   }
 }
 
-export { NonceStore, PRUNE_AGE_MS };
+export { NonceStore };

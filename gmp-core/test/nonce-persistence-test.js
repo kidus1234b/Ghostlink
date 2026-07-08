@@ -1,11 +1,11 @@
 /**
- * GMP Nonce Persistence Test — Phase 2a
+ * GMP Nonce Persistence Test — Phase 2a / Phase 5
  *
- * Tests the nonce store's persistence and restart simulation:
+ * Tests the nonce store's persistence, encryption, and pruning:
  * 1. Create a nonce store, add some entries
  * 2. Simulate process restart by creating a new instance pointing at same file
  * 3. Confirm entries are loaded correctly
- * 4. Test pruning of old entries
+ * 4. Test pruning of old entries with new 90-day default and 30-day override
  * 5. Test session key uniqueness check behavior
  *
  * Run: node test/nonce-persistence-test.js
@@ -68,7 +68,7 @@ async function testBasicPersistence() {
 
   await cleanup();
 
-  const store1 = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store1 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store1.load();
 
   const fakePeerId = new Uint8Array(64);
@@ -81,7 +81,7 @@ async function testBasicPersistence() {
 
   store1.close();
 
-  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store2.load();
 
   const entry = store2.getEntry(fakePeerId, fakeSessionKey);
@@ -98,7 +98,7 @@ async function testNonceOverlapRejection() {
 
   await cleanup();
 
-  const store = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store.load();
 
   const fakePeerId = new Uint8Array(64);
@@ -126,12 +126,13 @@ async function testNonceOverlapRejection() {
   await cleanup();
 }
 
-async function testPruning() {
-  console.log('\n=== Test 3: Old Entry Pruning ===');
+async function testPruningOverride() {
+  console.log('\n=== Test 3a: Pruning Override Option (e.g. 30 days) ===');
 
   await cleanup();
 
-  const store = new NonceStore({ stateFile: TEST_STATE_FILE });
+  // Create store with 30-day override
+  const store = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED, pruneAgeMs: 30 * 24 * 60 * 60 * 1000 });
   await store.load();
 
   const fakePeerId = new Uint8Array(64);
@@ -142,19 +143,68 @@ async function testPruning() {
   store.checkAndUpdate(fakePeerId, fakeSessionKey, 1, 1);
 
   const entry = store.state.entries[Object.keys(store.state.entries)[0]];
-  const oldTimestamp = Date.now() - (31 * 24 * 60 * 60 * 1000);
+  const oldTimestamp = Date.now() - (31 * 24 * 60 * 60 * 1000); // 31 days old
   entry.lastActivity = oldTimestamp;
   entry.firstSeen = oldTimestamp;
 
   store.close();
 
-  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED, pruneAgeMs: 30 * 24 * 60 * 60 * 1000 });
   await store2.load();
 
   const entryAfterPrune = store2.getEntry(fakePeerId, fakeSessionKey);
-  assert(entryAfterPrune === null, 'Old entries (>30 days) are pruned on load');
+  assert(entryAfterPrune === null, 'Entries > 30 days are pruned when override is set to 30 days');
 
   store2.close();
+  await cleanup();
+}
+
+async function testPruningDefault90Days() {
+  console.log('\n=== Test 3b: Pruning Default (90 days) ===');
+
+  await cleanup();
+
+  const store = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  assertEqual(store.pruneAgeMs, 90 * 24 * 60 * 60 * 1000, "Default prune age is 90 days");
+
+  await store.load();
+
+  const fakePeerId = new Uint8Array(64);
+  fakePeerId.fill(0x61);
+  const fakeSessionKey = new Uint8Array(32);
+  fakeSessionKey.fill(0x62);
+
+  store.checkAndUpdate(fakePeerId, fakeSessionKey, 1, 1);
+
+  const entry = store.state.entries[Object.keys(store.state.entries)[0]];
+  const oldTimestamp = Date.now() - (31 * 24 * 60 * 60 * 1000); // 31 days old (should NOT be pruned)
+  entry.lastActivity = oldTimestamp;
+  entry.firstSeen = oldTimestamp;
+
+  store.close();
+
+  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  await store2.load();
+
+  const entryAfter31Days = store2.getEntry(fakePeerId, fakeSessionKey);
+  assert(entryAfter31Days !== null, 'Entries at 31 days are NOT pruned under 90-day default');
+
+  // Now simulate 91 days
+  const entryInStore2 = store2.state.entries[Object.keys(store2.state.entries)[0]];
+  const veryOldTimestamp = Date.now() - (91 * 24 * 60 * 60 * 1000); // 91 days old
+  entryInStore2.lastActivity = veryOldTimestamp;
+  entryInStore2.firstSeen = veryOldTimestamp;
+  store2._dirty = true;
+
+  store2.close();
+
+  const store3 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  await store3.load();
+
+  const entryAfter91Days = store3.getEntry(fakePeerId, fakeSessionKey);
+  assert(entryAfter91Days === null, 'Entries > 90 days ARE pruned under 90-day default');
+
+  store3.close();
   await cleanup();
 }
 
@@ -163,7 +213,7 @@ async function testMultiplePeers() {
 
   await cleanup();
 
-  const store = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store.load();
 
   const peer1Id = new Uint8Array(64);
@@ -187,7 +237,7 @@ async function testMultiplePeers() {
 
   store.close();
 
-  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store2 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store2.load();
 
   const keys = Object.keys(store2.state.entries);
@@ -214,7 +264,7 @@ async function testUpdateCounters() {
 
   await cleanup();
 
-  const store = new NonceStore({ stateFile: TEST_STATE_FILE });
+  const store = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store.load();
 
   const fakePeerId = new Uint8Array(64);
@@ -236,13 +286,14 @@ async function testUpdateCounters() {
 
 async function runTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
-  console.log('║  GMP Phase 2a — Nonce Persistence Test                  ║');
+  console.log('║  GMP Phase 2a / 5 — Nonce Persistence & Pruning Test       ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
 
   try {
     await testBasicPersistence();
     await testNonceOverlapRejection();
-    await testPruning();
+    await testPruningOverride();
+    await testPruningDefault90Days();
     await testMultiplePeers();
     await testUpdateCounters();
 

@@ -1,9 +1,31 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <script>
+      /* Defensive stub. Some browser wallet/privacy extensions inject
+         `window.ethereum.selectedAddress = ...` into every page they load.
+         GhostLink is not a Web3 app and never provides a wallet, so on this
+         page `window.ethereum` is undefined and that injected assignment throws
+         "TypeError: undefined is not an object". Predefine a harmless, writable
+         placeholder so the injected code no-ops instead of crashing the page.
+         Guarded so the stub itself can never break anything. */
+      (function () {
+        try {
+          if (typeof window.ethereum === "undefined") {
+            Object.defineProperty(window, "ethereum", {
+              value: { selectedAddress: undefined, isGhostLinkStub: true },
+              writable: true,
+              configurable: true
+            });
+          }
+        } catch (e) { /* ignore: a real provider already owns window.ethereum */ }
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GhostLink v2</title>
+    <!-- Inline SVG favicon (data URI) — avoids the /favicon.ico 404 with no extra file/request -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230a0a0f'/%3E%3Ctext%20x='16'%20y='23'%20font-size='20'%20text-anchor='middle'%20fill='%2300ffa3'%3E%F0%9F%91%BB%3C/text%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -129,7 +151,7 @@
     <script src="src/license/index.js"></script>
     <script src="src/license/workspace-components.js"></script>
     <script>window.GLLicenseAPI = window.GhostLink;</script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js" crossorigin></script>
     <script>
       // Overwrite default react preset to force classic runtime (using React.createElement)
       // instead of automatic runtime (which generates ES module imports)
@@ -137,6 +159,23 @@
         Babel.availablePresets['react'],
         { runtime: 'classic' }
       ]);
+
+      // The whole app is one in-browser-compiled <script type="text/babel"> that
+      // exceeds 500KB, so @babel/generator auto-enables compact output and logs a
+      // benign "[BABEL] Note: ...deoptimised the styling..." message via console.error.
+      // Compact mode is already applied and has no functional effect; the standalone
+      // script-tag runner gives no way to pass `compact` explicitly, so we filter out
+      // just this one note to keep the console clean. All other errors pass through.
+      (function () {
+        const origError = console.error;
+        console.error = function (...args) {
+          if (typeof args[0] === 'string' &&
+              args[0].startsWith('[BABEL] Note: The code generator has deoptimised')) {
+            return;
+          }
+          return origError.apply(console, args);
+        };
+      })();
     </script>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -874,11 +913,7 @@
 
         async createOffer(identity) {
           const pc = new RTCPeerConnection({
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' }
-            ]
+            iceServers: getIceServers()
           });
 
           // Create 3 data channels: messages, files, presence
@@ -914,11 +949,7 @@
           }
 
           const pc = new RTCPeerConnection({
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' },
-              { urls: 'stun:stun2.l.google.com:19302' }
-            ]
+            iceServers: getIceServers()
           });
 
           // setRemoteDescription(offer from bundle)
@@ -999,40 +1030,49 @@
 
       // ==================== SHAMIR SECRET SHARING (GF-256) ====================
       const ShamirSSS = (() => {
-        const PRIME = 0x11b;
-        const LOG = new Uint8Array(256), EXP = new Uint8Array(512);
-        let x = 1;
-        for (let i = 0; i < 255; i++) {
-          EXP[i] = EXP[i+255] = x; LOG[x] = i;
-          x = (x << 1) ^ (x & 128 ? PRIME : 0);
-        }
-        const mul = (a,b) => (!a||!b) ? 0 : EXP[LOG[a]+LOG[b]];
-        const div = (a,b) => !a ? 0 : EXP[(LOG[a]-LOG[b]+255)%255];
-        const eval_ = (c,x) => { let r=0; for (let i=c.length-1;i>=0;i--) r=mul(r,x)^c[i]; return r; };
+        const GF_EXP = new Uint8Array(512);
+        const GF_LOG = new Uint8Array(256);
+        (function buildTables() {
+          let x = 1;
+          for (let i = 0; i < 255; i++) {
+            GF_EXP[i] = x; GF_LOG[x] = i;
+            x ^= (x << 1) ^ (x & 0x80 ? 0x1B : 0);
+            x &= 0xFF;
+          }
+          for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+          GF_LOG[0] = 0;
+        })();
+        function gfMul(a, b) { if (a === 0 || b === 0) return 0; return GF_EXP[GF_LOG[a] + GF_LOG[b]]; }
+        function gfDiv(a, b) { if (b === 0) throw new RangeError("GF division by zero"); if (a === 0) return 0; return GF_EXP[(GF_LOG[a] - GF_LOG[b] + 255) % 255]; }
+        function polyEval(coeffs, x) { let result = 0; for (let i = coeffs.length - 1; i >= 0; i--) result = (gfMul(result, x) ^ coeffs[i]); return result; }
         return {
           split(secret, n, k) {
-            const shares = Array.from({length:n},(_,i)=>({x:i+1, y:new Uint8Array(secret.length)}));
-            for (let i=0;i<secret.length;i++) {
-              const c = new Uint8Array(k); c[0]=secret[i];
-              for (let j=1;j<k;j++) c[j]=crypto.getRandomValues(new Uint8Array(1))[0];
-              shares.forEach(s=>{ s.y[i]=eval_(Array.from(c),s.x); });
+            const shares = Array.from({length:n}, (_,i) => ({x: i+1, y: new Uint8Array(secret.length)}));
+            const coeffs = new Uint8Array(k);
+            for (let b = 0; b < secret.length; b++) {
+              coeffs[0] = secret[b];
+              for (let j = 1; j < k; j++) coeffs[j] = crypto.getRandomValues(new Uint8Array(1))[0];
+              shares.forEach(s => { s.y[b] = polyEval(Array.from(coeffs), s.x); });
             }
+            coeffs.fill(0);
             return shares;
           },
           combine(shares) {
-            const len=shares[0].y.length, out=new Uint8Array(len);
-            for (let i=0;i<len;i++) {
-              let s=0;
-              for (let j=0;j<shares.length;j++) {
-                let n=shares[j].y[i], d=1;
-                for (let m=0;m<shares.length;m++) {
-                  if (m!==j) { n=mul(n,shares[m].x); d=mul(d,shares[j].x^shares[m].x); }
+            const len = shares[0].y.length;
+            const k = shares.length;
+            const secret = new Uint8Array(len);
+            for (let b = 0; b < len; b++) {
+              for (let i = 0; i < k; i++) {
+                let num = 1, den = 1;
+                for (let j = 0; j < k; j++) {
+                  if (i === j) continue;
+                  num = gfMul(num, shares[j].x);
+                  den = gfMul(den, shares[i].x ^ shares[j].x);
                 }
-                s^=div(n,d);
+                secret[b] ^= gfMul(shares[i].y[b], gfDiv(num, den));
               }
-              out[i]=s;
             }
-            return out;
+            return secret;
           }
         };
       })();
@@ -1051,7 +1091,13 @@
         }
         async verify() {
           for (let i = 1; i < this.blocks.length; i++) {
-            if (this.blocks[i].prevHash !== this.blocks[i - 1].hash) return false;
+            const curr = this.blocks[i];
+            const prev = this.blocks[i - 1];
+            if (curr.prevHash !== prev.hash) return false;
+            if (curr.isReceived) continue;
+            const data = JSON.stringify({ sender: curr.sender, content: curr.content, type: curr.type, ts: curr.ts, meta: curr.meta || {} });
+            const recomputed = await CryptoEngine.sha256(curr.prevHash + data + curr.ts);
+            if (curr.hash !== recomputed) return false;
           }
           return true;
         }
@@ -1263,6 +1309,302 @@
         return <audio ref={audioRef} autoPlay />;
       };
 
+      // ==================== BRIDGE URL HELPER ====================
+      // Reads ?bridge=IP:PORT from the URL to allow LAN devices to specify
+      // the bridge host. Falls back to localhost:3002 when absent.
+      // Uses wss:// when the page is loaded over HTTPS to avoid mixed-content
+      // blocking (browsers refuse plain ws:// from an https:// page).
+      // The GMP node's listen port. Configurable via ?gmpPort= so multiple nodes can
+      // run on one host (e.g. LAN testing); defaults to 49500. Must agree across the
+      // bridge 'start' message (actual listen port), the GHOST invite code (advertised
+      // port), and the joiner's dial — so all three call sites read it from here.
+      function getGmpPort() {
+        const p = parseInt(new URLSearchParams(window.location.search).get('gmpPort'), 10);
+        return Number.isInteger(p) && p > 0 && p < 65536 ? p : 49500;
+      }
+
+      function getBridgeWsUrl() {
+        const isSecurePage = window.location.protocol === 'https:';
+        const scheme = isSecurePage ? 'wss' : 'ws';
+        const params = new URLSearchParams(window.location.search);
+        const bridge = params.get('bridge');   // e.g. 192.168.1.15:3002
+        if (bridge) {
+          // If user only passed an IP (no port), append default port
+          const target = bridge.includes(':') ? bridge : bridge + ':3002';
+          return `${scheme}://${target}`;
+        }
+        const bridgePort = params.get('bridgePort') || '3002';
+        return `${scheme}://localhost:${bridgePort}`;
+      }
+
+      // When a ?bridge= target is present but the page is served over plain
+      // http://, getBridgeWsUrl() can only produce ws:// — which cannot reach a
+      // LAN-mode bridge (it runs wss://), and on a LAN IP the app also loses
+      // WebCrypto. Both are fixed only by serving this page over HTTPS. Returns
+      // the HTTPS URL to reopen at (preserving ?bridge=), or null when fine.
+      function getBridgeInsecureHttpsUrl() {
+        try {
+          const loc = window.location;
+          const params = new URLSearchParams(loc.search);
+          if (!params.get('bridge')) return null;
+          if (loc.protocol === 'https:') return null;
+          return `https://${loc.host}${loc.pathname}${loc.search}`;
+        } catch (e) { return null; }
+      }
+
+      // ICE server list for every RTCPeerConnection: always the public STUN
+      // servers, plus any user-configured TURN servers (Settings → TURN) when
+      // the TURN fallback toggle is enabled. TURN relays are what let a
+      // connection succeed through symmetric/strict NAT (mobile carriers) or on
+      // networks where mDNS host candidates don't resolve between peers — the
+      // usual cause of "Could not establish a direct connection". Reads the same
+      // localStorage keys the settings UI writes, so this works from both the
+      // React component and the top-level ManualSignaling helper.
+      function getIceServers() {
+        const servers = [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ];
+        try {
+          if (localStorage.getItem('gl_turn_fallback') === 'true') {
+            const turn = JSON.parse(localStorage.getItem('gl_turn_servers') || '[]');
+            for (const s of (Array.isArray(turn) ? turn : [])) {
+              if (s && typeof s.url === 'string' && s.url.trim()) {
+                const entry = { urls: s.url.trim() };
+                if (s.username) entry.username = s.username;
+                if (s.credential) entry.credential = s.credential;
+                servers.push(entry);
+              }
+            }
+          }
+        } catch (e) { /* malformed config — fall back to STUN-only */ }
+        return servers;
+      }
+
+      // Helper to discover the local LAN IP address of this device using WebRTC
+      async function getLocalIPAddress() {
+        return new Promise((resolve) => {
+          try {
+            const pc = new RTCPeerConnection({ iceServers: [] });
+            pc.createDataChannel('');
+            pc.createOffer().then(offer => pc.setLocalDescription(offer));
+            
+            let resolved = false;
+            pc.onicecandidate = (ice) => {
+              if (resolved) return;
+              if (ice && ice.candidate && ice.candidate.candidate) {
+                const parts = ice.candidate.candidate.split(' ');
+                const ip = parts[4];
+                if (ip && ip.match(/^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/)) {
+                  resolved = true;
+                  pc.close();
+                  resolve(ip);
+                }
+              }
+            };
+            setTimeout(() => {
+              if (!resolved) {
+                pc.close();
+                // fallback to location.hostname if WebRTC IP gathering fails or times out
+                if (window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                  resolve(window.location.hostname);
+                } else {
+                  resolve('127.0.0.1');
+                }
+              }
+            }, 800);
+          } catch (e) {
+            resolve(window.location.hostname || '127.0.0.1');
+          }
+        });
+      }
+
+      // ==================== GMP BRIDGE CONNECTOR ====================
+      class GMPBridgeConnector {
+        constructor(identity) {
+          this._listeners = {};
+          this.identity = identity;
+          this.ws = null;
+          this.wsOpen = false;
+          this.knownPeers = {};
+          this.meshConns = {}; // mock for index.html compatibility
+          this.states = {};
+        }
+
+        on(event, fn) {
+          (this._listeners[event] = this._listeners[event] || []).push(fn);
+          return this;
+        }
+
+        off(event, fn) {
+          if (!this._listeners[event]) return this;
+          this._listeners[event] = this._listeners[event].filter(f => f !== fn);
+          return this;
+        }
+
+        emit(event, ...args) {
+          if (!this._listeners[event]) return;
+          this._listeners[event].forEach(fn => { try { fn(...args); } catch (e) { console.error(e); } });
+        }
+
+        async connect() {
+          return new Promise((resolve, reject) => {
+            try {
+              const gmpPort = getGmpPort();
+
+              this.ws = new WebSocket(getBridgeWsUrl());
+              this.ws.onopen = () => {
+                this.wsOpen = true;
+                const seedStr = window.seedPhrase ? window.seedPhrase.join(" ") : "";
+                this.ws.send(JSON.stringify({
+                  type: 'start',
+                  seedPhrase: seedStr,
+                  port: gmpPort
+                }));
+                resolve();
+              };
+
+              this.ws.onmessage = (evt) => {
+                let msg;
+                try {
+                  msg = JSON.parse(evt.data);
+                } catch (e) {
+                  return;
+                }
+
+                if (msg.type === 'started') {
+                  this.emit('signaling-connected');
+                  if (window.setConnectionMode) window.setConnectionMode('Ghost Mesh Active');
+                  if (window.setSignalingConnected) window.setSignalingConnected(true);
+                  if (window.setSignalingAvailable) window.setSignalingAvailable(true);
+                } else if (msg.type === 'peer-connected') {
+                  this.states[msg.nodeId] = 'connected';
+                  this.meshConns[msg.nodeId] = { connId: msg.nodeId }; // mock
+                  this.emit('peer-connected', msg.nodeId, { mode: 'Ghost Mesh' });
+                } else if (msg.type === 'peer-disconnected') {
+                  this.states[msg.nodeId] = 'disconnected';
+                  delete this.meshConns[msg.nodeId];
+                  this.emit('peer-disconnected', msg.nodeId);
+                } else if (msg.type === 'message') {
+                  try {
+                    const parsed = JSON.parse(msg.payload);
+                    if (parsed.type === 'file-meta' || parsed.type === 'file-chunk' || parsed.type === 'file-done' || parsed.type === 'file-ack') {
+                      this.emit('file-chunk', msg.fromNodeId, parsed);
+                    } else {
+                      this.emit('message', msg.fromNodeId, parsed);
+                    }
+                  } catch (e) {
+                    this.emit('message', msg.fromNodeId, msg.payload);
+                  }
+                }
+              };
+
+              this.ws.onclose = () => {
+                this.wsOpen = false;
+                this.emit('signaling-disconnected');
+                if (window.setConnectionMode) window.setConnectionMode('Offline');
+                if (window.setSignalingConnected) window.setSignalingConnected(false);
+              };
+
+              this.ws.onerror = (err) => {
+                const bridgeUrl = getBridgeWsUrl();
+                if (bridgeUrl.startsWith('wss://')) {
+                  const httpsUrl = bridgeUrl.replace('wss://', 'https://');
+                  console.warn(
+                    `[GMP Bridge] WSS connection failed. If using a self-signed certificate, ` +
+                    `open ${httpsUrl} in a new tab first and accept the certificate, then reload this page.`
+                  );
+                }
+                this.emit('signaling-error', err);
+                reject(err);
+              };
+            } catch (e) {
+              reject(e);
+            }
+          });
+        }
+
+        sendMessage(peerId, dataObj) {
+          if (!this.wsOpen) return false;
+          const payload = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+          this.ws.send(JSON.stringify({
+            type: 'send',
+            destinationNodeId: peerId,
+            payload
+          }));
+          return true;
+        }
+
+        sendOnChannel(peerId, channelName, dataObj) {
+          if (!this.wsOpen) return false;
+          const payload = typeof dataObj === 'string' ? dataObj : JSON.stringify(dataObj);
+          if (channelName === 'presence') {
+            this.ws.send(JSON.stringify({
+              type: 'sendDirect',
+              destinationNodeId: peerId,
+              payload
+            }));
+          } else {
+            this.ws.send(JSON.stringify({
+              type: 'send',
+              destinationNodeId: peerId,
+              payload
+            }));
+          }
+          return true;
+        }
+
+        sendPresence(peerId, dataObj) {
+          return this.sendOnChannel(peerId, 'presence', dataObj);
+        }
+
+        isConnected(peerId) {
+          return this.states[peerId] === 'connected';
+        }
+
+        disconnect() {
+          if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+          }
+          this.wsOpen = false;
+        }
+
+        joinRoom(code) {
+          console.log('[GMP Bridge Connector] joinRoom called with:', code);
+          const clean = code.replace(/^(GHOST-|GL-)/i, '');
+          const parts = clean.split('-');
+          if (parts.length >= 2) {
+            const port = parseInt(parts[parts.length - 1]);
+            const ipParts = parts.slice(0, parts.length - 1);
+            const address = ipParts.join('.');
+            if (address && !isNaN(port)) {
+              console.log(`[GMP Bridge Connector] Dialing GMP peer at ${address}:${port}`);
+              if (this.wsOpen) {
+                this.ws.send(JSON.stringify({
+                  type: 'connect',
+                  address,
+                  port
+                }));
+              }
+              return;
+            }
+          }
+          console.warn('[GMP Bridge Connector] Invalid GMP connection code format:', code);
+        }
+
+        async createManualOffer() {
+          return { offerBase64: '' };
+        }
+        async processManualOffer(offerBase64) {
+          return { answerBase64: '', peerInfo: {} };
+        }
+        async processManualAnswer(answerBase64) {
+          return true;
+        }
+      }
+
       // ==================== MAIN APP ====================
       function GhostLinkApp() {
         const WorkspacePanel = window.WorkspacePanel || (() => null);
@@ -1272,14 +1614,26 @@
         const WorkspaceJoinModal = window.WorkspaceJoinModal || (() => null);
         const WorkspaceInviteModal = window.WorkspaceInviteModal || (() => null);
 
-        // WebCrypto check — must be on HTTPS or localhost
+        // WebCrypto check — crypto.subtle is only exposed in a secure context
+        // (HTTPS, or http://localhost / http://127.0.0.1). A LAN IP over plain
+        // http:// is NOT secure, so guide the user to the correct HTTPS URL.
         if (!crypto?.subtle) {
+          const loc = window.location;
+          const httpsUrl = `https://${loc.host}${loc.pathname}${loc.search}`;
+          const onInsecureHttp = loc.protocol === 'http:';
+          const hasBridgeParam = new URLSearchParams(loc.search).has('bridge');
           return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0f', color: '#ff4466', fontFamily: "'JetBrains Mono', monospace", textAlign: 'center', padding: 20 }}>
             <div>
               <div style={{ fontSize: 24, marginBottom: 8 }}>WebCrypto Required</div>
-              <div style={{ fontSize: 13, color: '#8a8a9a', maxWidth: 400, lineHeight: 1.6 }}>
-                This app requires Web Crypto API (HTTPS or localhost).<br/>
-                Try <span style={{ color: '#00ffa3' }}>http://localhost:8080</span> instead of 127.0.0.1.
+              <div style={{ fontSize: 13, color: '#8a8a9a', maxWidth: 420, lineHeight: 1.6 }}>
+                GhostLink needs the Web Crypto API, which browsers only expose in a
+                secure context: <b>HTTPS</b>, or <b>http://localhost</b> / <b>127.0.0.1</b>.<br/><br/>
+                {onInsecureHttp
+                  ? <>You're on an insecure <b>http://</b> connection. Open{' '}
+                      <span style={{ color: '#00ffa3', wordBreak: 'break-all' }}>{httpsUrl}</span>{' '}
+                      instead and accept the certificate.</>
+                  : <>Load this page over HTTPS, or via http://localhost.</>}
+                {hasBridgeParam && <><br/><br/><span style={{ color: '#ff8844' }}>The Ghost Mesh bridge (<b>?bridge=</b>) also requires HTTPS — over <b>http://</b> it cannot connect either. The HTTPS link above keeps your <b>?bridge=</b> setting.</span></>}
               </div>
             </div>
           </div>;
@@ -1392,6 +1746,7 @@
         const [msgInput, setMsgInput] = useState("");
         const [chain] = useState(new Chain());
         const [messages, setMessages] = useState({});
+        const [sending, setSending] = useState(false);
         const [chainValid, setChainValid] = useState(true);
         const [searchQuery, setSearchQuery] = useState("");
         const [showSearch, setShowSearch] = useState(false);
@@ -1511,6 +1866,7 @@
         const [masterKeyTemp, setMasterKeyTemp] = useState(null);
         const [fragmentInputs, setFragmentInputs] = useState(["", "", ""]);
         const [combineStatus, setCombineStatus] = useState(null);
+        const [gmpSetupStatus, setGmpSetupStatus] = useState("connecting"); // "connecting" | "failed"
 
         // P2P & WebRTC
         const [peerManager, setPeerManager] = useState(null);
@@ -1671,6 +2027,14 @@
         const activeConvoRef = useRef(null);
         useEffect(() => { peersRef.current = peers; }, [peers]);
         useEffect(() => { activeConvoRef.current = activeConvo; }, [activeConvo]);
+
+        useEffect(() => {
+          window.setConnectionMode = setConnectionMode;
+          window.setSignalingConnected = setSignalingConnected;
+          window.setSignalingAvailable = setSignalingAvailable;
+          window.setView = setView;
+          window.seedPhrase = seedPhrase;
+        }, [setConnectionMode, setSignalingConnected, setSignalingAvailable, setView, seedPhrase]);
 
         // Call history — populated from real calls
         const [callHistory, setCallHistory] = useState([]);
@@ -1990,13 +2354,16 @@
             if (window.GHOSTLINK_SIGNAL_URL) { _cachedSignalingUrl = window.GHOSTLINK_SIGNAL_URL; return _cachedSignalingUrl; }
             // 2. Electron preload provides it
             if (window.ghostlink?.signalingUrl) { _cachedSignalingUrl = window.ghostlink.signalingUrl; return _cachedSignalingUrl; }
+            // Match the page's security: an https:// page can only reach a wss://
+            // relay (browsers block ws:// / http:// to a LAN IP as mixed content).
+            const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
             // 3. If served by the signaling server, use same host
             if (window.location.protocol !== 'file:' && window.location.hostname) {
-              const sameHost = `ws://${window.location.hostname}:${window.location.port || 3001}`;
+              const sameHost = `${wsScheme}${window.location.hostname}:${window.location.port || 3001}`;
               if (await probeSignaling(sameHost)) { _cachedSignalingUrl = sameHost; localStorage.setItem('gl_signaling_url', sameHost); return sameHost; }
               // Try port 3001 explicitly if served on different port
               if (window.location.port !== '3001') {
-                const port3001 = `ws://${window.location.hostname}:3001`;
+                const port3001 = `${wsScheme}${window.location.hostname}:3001`;
                 if (await probeSignaling(port3001)) { _cachedSignalingUrl = port3001; localStorage.setItem('gl_signaling_url', port3001); return port3001; }
               }
             }
@@ -2033,29 +2400,24 @@
             }
           };
 
-          // Initialize WebRTC peer manager (REAL)
-          const initP2P = async () => {
-            if (typeof GhostLinkP2P === 'undefined' || !GhostLinkP2P.P2PConnector) {
-              setTimeout(() => { if (!p2pConnectorRef.current) initP2P(); }, 300);
-              return;
-            }
+          const setupEvents = async (conn) => {
 
-            const conn = new GhostLinkP2P.P2PConnector(identity);
-            p2pConnectorRef.current = conn;
-            setPeerManager(conn); // backward compat
-
-            // signaling events
+            // signaling events (now bridge events)
             conn.on('signaling-connected', () => {
               setSignalingConnected(true);
               setSignalingAvailable(true);
-              addToast('Connected to signaling server', 'success');
+              if (conn && conn.constructor.name === 'GMPBridgeConnector') {
+                addToast('Connected to Ghost Mesh bridge', 'success');
+              }
             });
             conn.on('signaling-disconnected', () => {
               setSignalingConnected(false);
-              addToast('Signaling disconnected', 'error');
+              if (conn && conn.constructor.name === 'GMPBridgeConnector') {
+                addToast('Ghost Mesh disconnected', 'error');
+              }
             });
             conn.on('signaling-error', (err) => {
-              console.warn('Signaling error:', err);
+              console.warn('Bridge/Signaling error:', err);
               setSignalingAvailable(false);
             });
 
@@ -2139,6 +2501,9 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
             // Unified message handler for chat, voice, file metadata
             conn.on('message', async (peerId, msg) => {
+              if (peerId === identity?.fingerprint || msg?.fromNodeId === identity?.fingerprint || msg?.from === identity?.fingerprint || msg?.senderId === identity?.fingerprint) {
+                return;
+              }
               try {
                 const getConvoKey = (pid) => {
                   const p = peersRef.current.find(x => x.fingerprint === pid || x.id === pid);
@@ -2177,11 +2542,28 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
                 if (msg.type === 'chat' || msg.type === 'queued-message') {
                   const convoKey = getConvoKey(peerId);
+                  const convoMsgs = messages[convoKey] || [];
+                  if (msg.blockHash && convoMsgs.some(m => m.hash === msg.blockHash)) {
+                    return; // discard duplicate silently
+                  }
+
                   const msgType = msg.msgType || 'text';
                   const content = msg.content;
                   const block = await chain.add(msg.sender || 'Peer', content, msgType, msg.meta || {});
+                  if (msg.blockHash) {
+                    block.hash = msg.blockHash;
+                    block.isReceived = true;
+                  }
                   block.encrypted = msg.encrypted || (await CryptoEngine.encrypt(content, identity.fingerprint));
-                  setMessages(prev => ({ ...prev, [convoKey]: [...(prev[convoKey] || []), block] }));
+                  
+                  const isDuplicate = (msgs, newBlock) =>
+                    msgs.some(m => m.hash === newBlock.hash);
+
+                  setMessages(prev => {
+                    const convo = prev[convoKey] || [];
+                    if (isDuplicate(convo, block)) return prev;
+                    return { ...prev, [convoKey]: [...convo, block] };
+                  });
                   setPeers(prev => prev.map(p =>
                     (p.fingerprint === peerId || p.id === peerId) && convoKey !== activeConvoRef.current
                       ? { ...p, unread: (p.unread || 0) + 1 } : p
@@ -2241,7 +2623,13 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                 } else if (msg.type === 'call-ice') {
                   const pc = callConnectionRef.current;
                   if (pc && msg.candidate) {
-                    pc.addIceCandidate(msg.candidate).catch(e => console.error('call ICE error:', e));
+                    // msg.candidate is a deserialized plain object - wrap it in RTCIceCandidate
+                    try {
+                      const cand = new RTCIceCandidate(msg.candidate);
+                      pc.addIceCandidate(cand).catch(e => console.error('call ICE error:', e));
+                    } catch (e) {
+                      console.error('call ICE error (bad candidate):', e);
+                    }
                   }
                 } else if (msg.type === 'call-end') {
                   // Peer ended the call
@@ -2434,6 +2822,64 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
             return;
           };
 
+          // Initialize P2P peer manager (supports GMP bridge and WebRTC fallback)
+          const initP2P = async () => {
+            if (typeof GhostLinkP2P === 'undefined' || !GhostLinkP2P.P2PConnector) {
+              setTimeout(() => { if (!p2pConnectorRef.current) initP2P(); }, 300);
+              return;
+            }
+
+            const gmpMode = localStorage.getItem('gl_gmp_mode');
+            if (gmpMode === 'degraded') {
+              console.log('[GMP] Degraded mode active, starting WebRTC');
+              const conn = new GhostLinkP2P.P2PConnector(identity);
+              
+              // Disable signaling server websocket connection
+              conn.connect = async () => {
+                console.log('[P2PConnector] Serverless mode: WebRTC manual signaling only.');
+                setSignalingConnected(false);
+                setSignalingAvailable(false);
+              };
+              conn._connectWs = () => {};
+
+              p2pConnectorRef.current = conn;
+              setPeerManager(conn);
+              setConnectionMode('WebRTC Mode');
+              setupEvents(conn);
+            } else {
+              console.log('[GMP] Connecting to GMP bridge...');
+              const bridgeConn = new GMPBridgeConnector(identity);
+              try {
+                // Wait up to 2 seconds for the bridge websocket connection
+                await Promise.race([
+                  bridgeConn.connect(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
+                ]);
+                p2pConnectorRef.current = bridgeConn;
+                setPeerManager(bridgeConn);
+                setConnectionMode('Ghost Mesh Active');
+                setupEvents(bridgeConn);
+              } catch (e) {
+                console.warn('[GMP] Bridge connection failed, falling back to WebRTC:', e.message);
+                addToast('Ghost Mesh unavailable', 'error');
+                const conn = new GhostLinkP2P.P2PConnector(identity);
+                
+                // Disable signaling server websocket connection
+                conn.connect = async () => {
+                  console.log('[P2PConnector] Serverless mode: WebRTC manual signaling only.');
+                  setSignalingConnected(false);
+                  setSignalingAvailable(false);
+                };
+                conn._connectWs = () => {};
+
+                p2pConnectorRef.current = conn;
+                setPeerManager(conn);
+                setConnectionMode('WebRTC Mode');
+                setupEvents(conn);
+              }
+            }
+          };
+
           // Initialize offline queue
           const initOfflineQueue = async () => {
             if (typeof OfflineQueue !== 'undefined') {
@@ -2476,7 +2922,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
           initSignalProtocol();
           initP2P();
-          initOfflineQueue();
+          // initOfflineQueue(); // Disabled: signaling server is no longer used
           initQR();
 
           // Ensure cleanup uses the new connector
@@ -2549,6 +2995,63 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           setSetupStep("seed");
         };
 
+        const attemptGmpSetup = async (seed) => {
+          setGmpSetupStatus("connecting");
+          const ws = new WebSocket(getBridgeWsUrl());
+          let resolved = false;
+
+          const timeout = setTimeout(() => {
+            if (!resolved) {
+              resolved = true;
+              try { ws.close(); } catch (e) {}
+              setGmpSetupStatus("failed");
+            }
+          }, 5000);
+
+          ws.onopen = () => {
+            ws.send(JSON.stringify({
+              type: 'start',
+              seedPhrase: seed.join(" "),
+              port: getGmpPort()
+            }));
+          };
+
+          ws.onmessage = (evt) => {
+            try {
+              const msg = JSON.parse(evt.data);
+              if (msg.type === 'started') {
+                resolved = true;
+                clearTimeout(timeout);
+                try { ws.close(); } catch (e) {}
+                localStorage.setItem('gl_gmp_mode', 'active');
+                setView("main");
+              }
+            } catch (e) {}
+          };
+
+          // Fail fast on connection error / early close instead of spinning on the
+          // "connecting" screen until the 5s timeout — gives the user the RETRY /
+          // degraded-mode choice immediately when the bridge is unreachable.
+          const failFast = () => {
+            if (!resolved) {
+              resolved = true;
+              clearTimeout(timeout);
+              setGmpSetupStatus("failed");
+            }
+          };
+          ws.onerror = failFast;
+          ws.onclose = failFast;
+        };
+
+        const skipGmpSetup = () => {
+          localStorage.setItem('gl_gmp_mode', 'degraded');
+          setView("main");
+        };
+
+        const retryGmpSetup = () => {
+          attemptGmpSetup(pendingSeed || seedPhrase);
+        };
+
         const setupIdentity = async () => {
           const seed = pendingSeed;
           if (!seed) return;
@@ -2564,7 +3067,17 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           }));
           setShamirFragments(fragments);
           setIdentity(identityObj);
-          setView("main");
+
+          if (window.ghostlink?.isElectron) {
+            try {
+              await window.ghostlink.gmp.start(seed.join(" "));
+            } catch (err) {
+              console.error('[GMP Setup] Failed to save seed to Electron store:', err);
+            }
+          }
+
+          setSetupStep("gmp_setup");
+          attemptGmpSetup(seed);
         };
 
         // Step 1: validate seed + derive key, try localStorage first, else advance to fragments
@@ -2574,6 +3087,14 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           setRestoreStatus("loading");
           try {
             const masterKey = await CryptoEngine.deriveKeyFromSeed(words);
+            setSeedPhrase(words);
+            if (window.ghostlink?.isElectron) {
+              try {
+                await window.ghostlink.gmp.start(words.join(" "));
+              } catch (err) {
+                console.error('[GMP Setup] Failed to save seed to Electron store:', err);
+              }
+            }
             const saved = localStorage.getItem("gl_identity");
             if (saved) {
               const d = JSON.parse(saved);
@@ -2663,7 +3184,9 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
         };
 
         const sendMessage = async (content, type = "text", meta = {}) => {
+          if (sending) return;
           if (!content?.trim() && type === "text") return;
+          setSending(true);
           try {
           if (replyTo) meta.replyTo = { index: replyTo.index, sender: replyTo.sender, preview: replyTo.content?.slice(0, 60) };
           if (selfDestruct > 0) meta.selfDestruct = selfDestruct;
@@ -2754,6 +3277,9 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
             } catch (e) { console.error('Offline queue failed:', e); }
           }
           } catch (e) { console.error('sendMessage error:', e); addToast(e.message || 'Failed to send message', 'error'); }
+          finally {
+            setSending(false);
+          }
         };
 
         const sendFile = async (fileName, fileSize, fileObj, targetPeerId = null) => {
@@ -2963,15 +3489,66 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
             }
 
             // Get local media stream
-            const constraints = type === 'video' ? { audio: true, video: true } : { audio: true };
-            const localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            callLocalStreamRef.current = localStream;
-            setLocalStream(localStream);
+            let localStream;
+            try {
+              const constraints = type === 'video' ? { audio: true, video: true } : { audio: true };
+              localStream = await navigator.mediaDevices.getUserMedia(constraints);
+              callLocalStreamRef.current = localStream;
+              setLocalStream(localStream);
+            } catch (err) {
+              if (err.name === 'NotAllowedError') {
+                addToast('Microphone/camera permission denied', 'error');
+              } else if (err.name === 'NotFoundError') {
+                addToast('No microphone or camera found', 'error');
+              } else {
+                addToast('Could not access media: ' + err.message, 'error');
+              }
+              return;
+            }
 
             // Create a new RTCPeerConnection for this call
-            const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            const callConfig = {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                ...getIceServers().filter(s => !s.urls.includes('google.com'))
+              ]
+            };
+            const pc = new RTCPeerConnection(callConfig);
             pc.__peerId = peerId;
             callConnectionRef.current = pc;
+
+            // Handle ICE connection state changes
+            pc.addEventListener('iceconnectionstatechange', () => {
+              if (pc.iceConnectionState === 'failed') {
+                addToast(
+                  'Could not establish call. ' +
+                  'This can happen across different networks. ' +
+                  'Try on the same WiFi.',
+                  'error'
+                );
+                endCall();
+              }
+              if (pc.iceConnectionState === 'disconnected') {
+                if (typeof pc.restartIce === 'function') {
+                  pc.restartIce();
+                }
+              }
+            });
+
+            // Handle ICE errors with detail
+            pc.addEventListener('icecandidateerror', (event) => {
+              console.error('call ICE error:', {
+                errorCode: event.errorCode,
+                errorText: event.errorText,
+                hostCandidate: event.hostCandidate,
+                url: event.url,
+                address: event.address,
+                port: event.port,
+              });
+            });
 
             // Add local tracks
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -3117,16 +3694,68 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
           try {
             // Get local media
-            const constraints = withVideo ? { audio: true, video: true } : { audio: true };
-            const localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            callLocalStreamRef.current = localStream;
-            setLocalStream(localStream);
-            setCamOn(withVideo);
+            let localStream;
+            try {
+              const constraints = withVideo ? { audio: true, video: true } : { audio: true };
+              localStream = await navigator.mediaDevices.getUserMedia(constraints);
+              callLocalStreamRef.current = localStream;
+              setLocalStream(localStream);
+              setCamOn(withVideo);
+            } catch (err) {
+              if (err.name === 'NotAllowedError') {
+                addToast('Microphone/camera permission denied', 'error');
+              } else if (err.name === 'NotFoundError') {
+                addToast('No microphone or camera found', 'error');
+              } else {
+                addToast('Could not access media: ' + err.message, 'error');
+              }
+              setIncomingCall(null);
+              return;
+            }
 
             // Create RTCPeerConnection for the call
-            const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            const callConfig = {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                ...getIceServers().filter(s => !s.urls.includes('google.com'))
+              ]
+            };
+            const pc = new RTCPeerConnection(callConfig);
             callConnectionRef.current = pc;
             pc.__peerId = callerPeerId;
+
+            // Handle ICE connection state changes
+            pc.addEventListener('iceconnectionstatechange', () => {
+              if (pc.iceConnectionState === 'failed') {
+                addToast(
+                  'Could not establish call. ' +
+                  'This can happen across different networks. ' +
+                  'Try on the same WiFi.',
+                  'error'
+                );
+                endCall();
+              }
+              if (pc.iceConnectionState === 'disconnected') {
+                if (typeof pc.restartIce === 'function') {
+                  pc.restartIce();
+                }
+              }
+            });
+
+            // Handle ICE errors with detail
+            pc.addEventListener('icecandidateerror', (event) => {
+              console.error('call ICE error:', {
+                errorCode: event.errorCode,
+                errorText: event.errorText,
+                hostCandidate: event.hostCandidate,
+                url: event.url,
+                address: event.address,
+                port: event.port,
+              });
+            });
 
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
@@ -3322,35 +3951,95 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
         const [qrSvgMarkup, setQrSvgMarkup] = useState(null);
 
         const genInvite = async () => {
-          const code = CryptoEngine.genInvite();
-          setInviteCode(code);
           setShowInvite(true);
-          // Auto-detect: if no signaling available, default to manual tab
-          setInviteTab(signalingAvailable === false ? "manual" : "create");
-          setManualSignalStep('idle');
-          setManualOfferString('');
-          setManualAnswerString('');
-          setManualPeerInput('');
+          setInviteCode('generating');
+          setQrSvgMarkup(null);
 
-          // Join the signaling room so we receive peer connections from joiners
+          // Wait for identity to be fully initialized
+          let attempts = 0;
+          while ((!identity || !identity.fingerprint || (!identity.privateKey && !identity.keyPair)) && attempts < 20) {
+            await new Promise(r => setTimeout(r, 200));
+            attempts++;
+          }
+
+          if (!identity || !identity.fingerprint) {
+            console.error('Identity failed to initialize.');
+            setInviteCode('GHOST-ERROR-IDENTITY');
+            return;
+          }
+
+          let code;
           const conn = p2pConnectorRef.current;
-          if (conn) conn.joinRoom(code, identity.publicKeyHex);
+          const isGmp = conn && conn.constructor.name === 'GMPBridgeConnector';
 
-          // Generate QR code SVG if QRInvite class is available
-          const qrInstance = qrInviteRef.current || qrInviteData;
-          if (qrInstance && typeof qrInstance.generateQRCodeSVG === 'function') {
+          if (isGmp) {
+            const gmpPort = getGmpPort();
+            const lanIp = await getLocalIPAddress();
+            const cleanIp = lanIp.replace(/\./g, '-');
+            code = `GHOST-${cleanIp}-${gmpPort}`;
+            setInviteCode(code);
+            setInviteTab('create');
+            setManualSignalStep('idle');
+            setManualOfferString('');
+            setManualAnswerString('');
+            setManualPeerInput('');
+
+            // Join the signaling room so we receive peer connections from joiners
+            if (conn) conn.joinRoom(code, identity.publicKeyHex);
+
+            // Generate QR code SVG if QRInvite class is available
+            const qrInstance = qrInviteRef.current || qrInviteData;
+            if (qrInstance && typeof qrInstance.generateQRCodeSVG === 'function') {
+              try {
+                const svg = await qrInstance.generateQRCodeSVG(200);
+                setQrSvgMarkup(svg);
+              } catch (e) { console.error('QR generation failed:', e); }
+            } else if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+              try {
+                const qrData = JSON.stringify({ c: code, n: identity?.name || '', p: identity?.publicKeyHex || '', t: Date.now() });
+                const { matrix } = qrEncode(qrData);
+                const svg = matrixToSVG(matrix, matrix.length, 200);
+                setQrSvgMarkup(svg);
+              } catch (e) { console.error('QR fallback generation failed:', e); }
+            }
+          } else {
+            // degraded/WebRTC mode — serverless manual connection
+            setInviteTab('manual');
+            setManualSignalStep('creating');
+            setManualOfferString('');
+            setManualAnswerString('');
+            setManualPeerInput('');
             try {
-              const svg = await qrInstance.generateQRCodeSVG(200);
-              setQrSvgMarkup(svg);
-            } catch (e) { console.error('QR generation failed:', e); }
-          } else if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
-            // Fallback: use raw QR encode functions directly
-            try {
-              const qrData = JSON.stringify({ c: code, n: identity?.name || '', p: identity?.publicKeyHex || '', t: Date.now() });
-              const { matrix } = qrEncode(qrData);
-              const svg = matrixToSVG(matrix, matrix.length, 200);
-              setQrSvgMarkup(svg);
-            } catch (e) { console.error('QR fallback generation failed:', e); }
+              const result = await ManualSignaling.createOffer(identity);
+              manualPcRef.current = result.pc;
+              manualDcsRef.current = result.dcs;
+
+              if (result.encoded.length > 2900) {
+                setQrCodeWarning(true);
+              } else {
+                setQrCodeWarning(false);
+              }
+
+              setManualOfferString(result.encoded);
+              setInviteCode(result.encoded);
+              setManualSignalStep('offer-ready');
+
+              // Generate QR code SVG for SDP offer
+              try {
+                if (typeof qrEncode !== 'undefined' && typeof matrixToSVG !== 'undefined') {
+                  const { matrix } = qrEncode(result.encoded);
+                  const svg = matrixToSVG(matrix, matrix.length, 200);
+                  setQrSvgMarkup(svg);
+                }
+              } catch (qrErr) {
+                console.warn('QR code for SDP too large:', qrErr);
+              }
+            } catch (e) {
+              console.error('Failed to generate manual offer:', e);
+              addToast('Failed to create offer: ' + e.message, 'error');
+              setManualSignalStep('idle');
+              setInviteCode('');
+            }
           }
         };
         const copyInvite = () => { navigator.clipboard?.writeText(inviteCode); setCopied(true); setTimeout(() => setCopied(false), 2000); };
@@ -3393,13 +4082,42 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
               (p.fingerprint === peerId || p.id === peerId) ? { ...p, status: 'offline', lastSeen: fmtTime(Date.now()) } : p
             ));
           };
+          // Track seen messages to prevent double-processing (both P2P connector
+          // and manual signaling may attach handlers to the same data channel)
+          const seenMsgKeys = new Set();
+          
           dc.onmessage = async (evt) => {
             try {
               const msg = JSON.parse(evt.data);
               if (msg.type === 'chat') {
+                if (peerId === identity?.fingerprint || msg.fromNodeId === identity?.fingerprint || msg.from === identity?.fingerprint || msg.senderId === identity?.fingerprint) {
+                  return;
+                }
+                // Deduplicate: check if we've already processed this exact message
+                const msgKey = `${msg.sender}:${msg.content}:${msg.meta?.ts || 0}`;
+                if (seenMsgKeys.has(msgKey)) return; // already processed this exact message
+                seenMsgKeys.add(msgKey);
+                
+                const convoMsgs = messages[peerId] || [];
+                if (msg.blockHash && convoMsgs.some(m => m.hash === msg.blockHash)) {
+                  return; // discard duplicate silently
+                }
+
                 const block = await chain.add(msg.sender, msg.content, msg.msgType || 'text', msg.meta || {});
+                if (msg.blockHash) {
+                  block.hash = msg.blockHash;
+                  block.isReceived = true;
+                }
                 block.encrypted = msg.iv ? { iv: msg.iv, ciphertext: msg.ciphertext } : await CryptoEngine.encrypt(msg.content, identity.fingerprint);
-                setMessages(prev => ({ ...prev, [peerId]: [...(prev[peerId] || []), block] }));
+                
+                const isDuplicate = (msgs, newBlock) =>
+                  msgs.some(m => m.hash === newBlock.hash);
+
+                setMessages(prev => {
+                  const convo = prev[peerId] || [];
+                  if (isDuplicate(convo, block)) return prev;
+                  return { ...prev, [peerId]: [...convo, block] };
+                });
                 setPeers(prev => prev.map(p =>
                   (p.fingerprint === peerId || p.id === peerId) && peerId !== activeConvo
                     ? { ...p, unread: (p.unread || 0) + 1 } : p
@@ -3457,16 +4175,18 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
             const bundle = await ManualSignaling.processAnswer(manualPeerInput.trim(), pc);
             const peerId = bundle.fingerprint;
 
-            // Register connection in direct connector
-            conn.pcs[peerId] = pc;
-            conn.dcs[peerId] = dcs;
-            conn.states[peerId] = 'connecting';
-            conn.knownPeers[peerId] = { name: bundle.name, publicKey: bundle.pubKeyHex };
+            // Register connection in direct connector (works for both P2PConnector and GMPBridgeConnector)
+            if (conn.pcs) conn.pcs[peerId] = pc;
+            if (conn.dcs) conn.dcs[peerId] = dcs;
+            if (conn.states) conn.states[peerId] = 'connecting';
+            if (conn.knownPeers) conn.knownPeers[peerId] = { name: bundle.name, publicKey: bundle.pubKeyHex };
 
             // Setup direct data channels
-            conn._setupDc(peerId, 'messages', dcs.messages);
-            conn._setupDc(peerId, 'files', dcs.files);
-            conn._setupDc(peerId, 'presence', dcs.presence);
+            if (typeof conn._setupDc === 'function') {
+              conn._setupDc(peerId, 'messages', dcs.messages);
+              conn._setupDc(peerId, 'files', dcs.files);
+              conn._setupDc(peerId, 'presence', dcs.presence);
+            }
 
             // Connection state change listener
             let reconnectTimer = null;
@@ -3528,8 +4248,8 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           }
         };
 
-        const processManualOffer = async () => {
-          const rawInput = manualPeerInput.trim();
+        const processManualOffer = async (inputCode) => {
+          const rawInput = (inputCode || manualPeerInput).trim();
           if (!rawInput || !identity || !p2pConnectorRef.current) return;
           setManualSignalStep('processing-offer');
           try {
@@ -3537,14 +4257,16 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
             const conn = p2pConnectorRef.current;
             const peerId = result.peerInfo.fingerprint;
 
-            // Register connection in direct connector
-            conn.pcs[peerId] = result.pc;
-            conn.knownPeers[peerId] = { name: result.peerInfo.name, publicKey: result.peerInfo.pubKeyHex };
+            // Register connection in direct connector (works for both P2PConnector and GMPBridgeConnector)
+            if (conn.pcs) conn.pcs[peerId] = result.pc;
+            if (conn.knownPeers) conn.knownPeers[peerId] = { name: result.peerInfo.name, publicKey: result.peerInfo.pubKeyHex };
 
             // Setup data channel listener to bind channels to direct connector as they open
             result.pc.ondatachannel = (e) => {
               const label = e.channel.label;
-              conn._setupDc(peerId, label, e.channel);
+              if (typeof conn._setupDc === 'function') {
+                conn._setupDc(peerId, label, e.channel);
+              }
             };
 
             // Connection state change listener
@@ -3738,11 +4460,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
               setConnectionMode('Via Relay');
 
               const pc = new RTCPeerConnection({
-                iceServers: [
-                  { urls: 'stun:stun.l.google.com:19302' },
-                  { urls: 'stun:stun1.l.google.com:19302' },
-                  { urls: 'stun:stun2.l.google.com:19302' }
-                ]
+                iceServers: getIceServers()
               });
               quickPcRef.current = pc;
               pc.__mode = 'P2P Direct';
@@ -3911,11 +4629,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
             if (data.type === 'offer') {
               const pc = new RTCPeerConnection({
-                iceServers: [
-                  { urls: 'stun:stun.l.google.com:19302' },
-                  { urls: 'stun:stun1.l.google.com:19302' },
-                  { urls: 'stun:stun2.l.google.com:19302' }
-                ]
+                iceServers: getIceServers()
               });
               quickPcRef.current = pc;
               pc.__mode = 'P2P Direct';
@@ -4460,6 +5174,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
           ::-webkit-scrollbar { width: 4px; }
           ::-webkit-scrollbar-track { background: transparent; }
           ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius: 4px; }
+          @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
           @keyframes ghostFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
           @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
           @keyframes fadeInScale { from { opacity:0; transform: scale(0.95); } to { opacity:1; transform: scale(1); } }
@@ -4636,7 +5351,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                     GENERATE IDENTITY
                   </button>
                 </>
-              ) : (
+              ) : setupStep === "seed" ? (
                 <>
                   <div style={{ fontSize: 11, color: "#5a5a6a", marginBottom: 14, lineHeight: 1.7 }}>
                     Write down your <span style={{ color: th.accent }}>12-word seed phrase</span> and store it offline. This is the <strong style={{ color: "#e0e0e8" }}>only way</strong> to recover your identity on a new device.
@@ -4663,6 +5378,56 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                   <button onClick={() => setSetupStep("name")} style={{ marginTop: 8, width: "100%", background: "transparent", border: "none", color: "#4a5568", cursor: "pointer", fontFamily: "inherit", fontSize: 11, padding: 6 }}>
                     ← Back
                   </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ textAlign: "center", marginBottom: 20 }}>
+                    <h3 style={{ fontSize: 18, fontWeight: 700, color: th.accent, margin: "0 0 10px 0" }}>Starting Ghost Mesh...</h3>
+                    {gmpSetupStatus === "connecting" ? (
+                      <div>
+                        <div style={{ fontSize: 12, color: "#8a8a9a", lineHeight: 1.6, marginBottom: 20 }}>
+                          Establishing direct decentralized transport connection on port {getGmpPort()}...
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "center", gap: 6, margin: "20px 0" }}>
+                          {[0, 1, 2].map(i => <div key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: th.accent, animation: "pulse 1.2s ease-in-out infinite", animationDelay: `${i * 0.3}s` }} />)}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{ fontSize: 12, color: "#ff4444", fontWeight: 700, marginBottom: 16 }}>
+                          Ghost Mesh bridge not found.
+                        </div>
+                        {getBridgeInsecureHttpsUrl() && (
+                          <div style={{ fontSize: 11, color: "#ff8844", textAlign: "left", lineHeight: 1.6, background: "rgba(255,136,68,0.08)", padding: 12, borderRadius: 8, border: "1px solid rgba(255,136,68,0.25)", marginBottom: 16 }}>
+                            <strong>Insecure connection — switch to HTTPS.</strong> This page is loaded over <b>http://</b>, so it can only open a <code>ws://</code> bridge, but the LAN bridge runs <b>wss://</b> (TLS) and can't be reached. Reopen over HTTPS (your <code>?bridge=</code> setting is kept):<br/>
+                            <a href={getBridgeInsecureHttpsUrl()} style={{ color: "#00ffa3", wordBreak: "break-all" }}>{getBridgeInsecureHttpsUrl()}</a>
+                          </div>
+                        )}
+                        <div style={{ fontSize: 11, color: "#8a8a9a", textAlign: "left", lineHeight: 1.6, background: "rgba(0,0,0,0.2)", padding: 12, borderRadius: 8, border: "1px solid rgba(255,255,255,0.05)", marginBottom: 20 }}>
+                          Ghost Mesh is required for GhostLink's secure transport layer. Please check:<br/>
+                          <strong>Option 1:</strong> Start the GhostLink desktop app (recommended)<br/>
+                          <strong>Option 2:</strong> Run manually: <code style={{ color: "#e0e0e8" }}>node gmp-core/gmp-bridge.js</code><br/>
+                          <strong>Option 3:</strong> Continue in degraded mode (limited functionality — WebRTC direct only)
+                        </div>
+                        <button onClick={retryGmpSetup} style={{
+                          width: "100%", background: `linear-gradient(135deg, ${th.accent}, ${th.accent2})`,
+                          border: "none", borderRadius: 12, padding: "12px 0", color: "#000",
+                          fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                          letterSpacing: 1, marginBottom: 8
+                        }}>
+                          RETRY CONNECTION
+                        </button>
+                        <button onClick={skipGmpSetup} style={{
+                          width: "100%", background: "rgba(255,255,255,0.05)",
+                          border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12, padding: "12px 0", color: "#8a8a9a",
+                          fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                          letterSpacing: 1
+                        }}>
+                          CONTINUE (DEGRADED MODE)
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </>
               )}
             </div>
@@ -5538,7 +6303,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
 
                   {/* Tab row: Create Invite / Join Channel / Manual P2P / Quick Connect */}
                   <div style={{ display: "flex", gap: 4, marginBottom: 20, background: "rgba(255,255,255,0.03)", borderRadius: 10, padding: 3 }}>
-                    {["create", "join", "manual", ...(settings.relayServerUrl ? ["quick"] : [])].map(t => (
+                    {["create", "join", "manual"].map(t => (
                       <button key={t} onClick={() => {
                         setInviteTab(t);
                         if (t !== 'quick') closeQuickConnect();
@@ -5684,9 +6449,16 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                         Share this invite code via any messaging app, email, or in person. This connects you directly to your peer.
                       </p>
                       <div style={{ background: `${th.accent}06`, border: `1px dashed ${th.accent}30`, borderRadius: 12, padding: 18, textAlign: "center", marginBottom: 14 }}>
-                        <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700 }}>{inviteCode}</div>
+                        {!inviteCode || inviteCode === 'generating' || inviteCode.includes('*') ? (
+                          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "10px 0" }}>
+                            <div style={{ width: 24, height: 24, borderRadius: "50%", border: `2px solid ${th.accent}30`, borderTopColor: th.accent, animation: "spin 1s linear infinite" }} />
+                            <div style={{ fontSize: 11, color: "#8a8a9a" }}>Generating secure invite...</div>
+                          </div>
+                        ) : (
+                          <div style={{ fontFamily: "monospace", fontSize: 17, color: th.accent, letterSpacing: 3, fontWeight: 700, wordBreak: "break-all" }}>{inviteCode}</div>
+                        )}
                       </div>
-                      <Btn accent style={{ width: "100%" }} onClick={copyInvite}>
+                      <Btn accent style={{ width: "100%" }} onClick={copyInvite} disabled={!inviteCode || inviteCode === 'generating'}>
                         <I t={copied ? "check" : "copy"} s={15} c="#000" /> {copied ? "COPIED TO CLIPBOARD" : "COPY INVITE CODE"}
                       </Btn>
                       {!signalingAvailable && (
@@ -5714,16 +6486,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                         if (code && !code.startsWith('GHOST-') && !code.startsWith('GL-')) {
                           setManualPeerInput(code);
                           setInviteTab('manual');
-                          setManualSignalStep('processing-offer');
-                          try {
-                            const result = await p2pConnectorRef.current.processManualOffer(code);
-                            setManualAnswerString(result.answerBase64);
-                            setManualSignalStep('answer-ready');
-                            setManualPeerInfo(result.peerInfo);
-                          } catch (e) {
-                            addToast('Invalid signal: ' + e.message, 'error');
-                            setManualSignalStep('idle');
-                          }
+                          await processManualOffer(code);
                         } else {
                           joinPeer(code);
                         }
@@ -5865,8 +6628,14 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                           })()}
 
                           {manualSignalStep === 'answer-ready' && (
-                            <div style={{ fontSize: 10, color: "#5a5a6a", textAlign: "center", lineHeight: 1.6, marginTop: 8 }}>
-                              Once your peer processes your answer response, the P2P connection will establish automatically.
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginTop: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.05)" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <div className="spinner" style={{ width: 14, height: 14, borderRadius: "50%", border: `2px solid ${th.accent}30`, borderTopColor: th.accent, animation: "spin 1s linear infinite" }} />
+                                <span style={{ fontSize: 11, color: th.accent2, fontWeight: 600 }}>Waiting for host to accept...</span>
+                              </div>
+                              <div style={{ fontSize: 9, color: "#5a5a6a", textAlign: "center", lineHeight: 1.4 }}>
+                                Once the host pastes your response answer, your direct secure channel will open.
+                              </div>
                             </div>
                           )}
 
@@ -5952,11 +6721,10 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                         { label: "CONNECTION", value: signalingConnected ? "ONLINE" : "OFFLINE", color: signalingConnected ? "#00cc66" : "#ff4444" },
                         {
                           label: "MODE",
-                          value: connectionMode || "—",
-                          color: connectionMode === "P2P Direct" ? "#00cc66" :
-                                 connectionMode === "Via Relay" ? "#ffaa00" :
-                                 (connectionMode === "Manual Signal" || connectionMode === "Manual Signal — Pending" || connectionMode === "Reconnecting") ? "#8a8a9a" :
-                                 connectionMode === "Connection Failed" ? "#ff4444" : th.accent2
+                          value: connectionMode || "Offline",
+                          color: connectionMode === "Ghost Mesh Active" ? "#00cc66" :
+                                 connectionMode === "WebRTC Mode" ? "#ffaa00" :
+                                 connectionMode === "Offline" ? "#ff4444" : "#ff4444"
                         },
                         { label: "SIGNALING", value: signalingAvailable ? "READY" : "RETRYING", color: signalingAvailable ? th.accent : "#ff8844" },
                       ].map(b => (
@@ -6512,12 +7280,10 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                     <div style={{
                       marginTop: 8,
                       fontSize: 9,
-                      color: connectionMode === "P2P Direct" ? "#00cc66" :
-                             connectionMode === "Via Relay" ? "#ffaa00" :
-                             (connectionMode === "Manual Signal" || connectionMode === "Manual Signal — Pending" || connectionMode === "Reconnecting") ? "#8a8a9a" :
-                             connectionMode === "Connection Failed" ? "#ff4444" : "#3a3a4a"
+                      color: connectionMode === "Ghost Mesh Active" ? "#00cc66" :
+                             connectionMode === "WebRTC Mode" ? "#ffaa00" : "#ff4444"
                     }}>
-                      {connectionMode ? `Connection: ${connectionMode}` : signalingConnected ? 'Relay connected' : 'Offline — use Manual P2P in invite'}
+                      Connection: {connectionMode || 'Offline'}
                     </div>
                   </div>
 

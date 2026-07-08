@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import logger from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,7 +14,7 @@ export function loadPublicPeers(filePath = DEFAULT_PEERS_FILE) {
       return JSON.parse(data);
     }
   } catch (e) {
-    console.error('[PublicPeerList] Failed to load public peers:', e.message);
+    logger.error('public-peer-list', 'load-failed', `Failed to load public peers: ${e.message}`, { err: e.message });
   }
   return [];
 }
@@ -27,7 +28,7 @@ export function savePublicPeers(peers, filePath = DEFAULT_PEERS_FILE) {
     fs.writeFileSync(filePath, JSON.stringify(peers, null, 2), 'utf8');
     return true;
   } catch (e) {
-    console.error('[PublicPeerList] Failed to save public peers:', e.message);
+    logger.error('public-peer-list', 'save-failed', `Failed to save public peers: ${e.message}`, { err: e.message });
     return false;
   }
 }
@@ -46,7 +47,7 @@ export async function querySinglePeer(node, peer, timeoutMs = 5000) {
       reject(new Error(`Timeout querying peer ${peer.address}:${peer.port}`));
     }, timeoutMs);
 
-    node.dial(peer.address, peer.port)
+    node.dial(peer.address, peer.port, { tls: peer.tls === true || peer.port === 443 })
       .then(({ connId, link: activeLink }) => {
         if (finished) {
           activeLink.destroy();

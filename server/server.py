@@ -1,4 +1,5 @@
 import socket
+import ssl
 import threading
 import hashlib
 import base64
@@ -9,8 +10,27 @@ import sys
 import time
 
 # --- Configuration ---
-PORT = 3001
+PORT = int(os.environ.get("RELAY_PORT", os.environ.get("PORT", 3001)))
 WEB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# --- TLS ---
+# When the web app is served over HTTPS, browsers block plain ws:// / http:// to
+# a LAN IP as mixed content, so this server must speak wss:// (TLS). Point
+# RELAY_CERT / RELAY_KEY at a cert whose SAN covers the address clients use; by
+# default we reuse the project's mkcert cert in WEB_ROOT. If the files are absent
+# the server falls back to plain http/ws (fine for localhost-only use).
+RELAY_CERT = os.environ.get("RELAY_CERT", os.path.join(WEB_ROOT, "cert.pem"))
+RELAY_KEY = os.environ.get("RELAY_KEY", os.path.join(WEB_ROOT, "key.pem"))
+
+def build_ssl_context():
+    if os.path.exists(RELAY_CERT) and os.path.exists(RELAY_KEY):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(RELAY_CERT, RELAY_KEY)
+        return ctx
+    return None
+
+# Set in main(); each connection thread wraps its socket with this if present.
+SSL_CONTEXT = None
 
 # --- MIME Types ---
 MIME_TYPES = {
@@ -129,6 +149,19 @@ def cleanup_peer(peer_id):
 # --- Connection Handler ---
 def handle_client(sock, addr):
     try:
+        # Upgrade to TLS if configured. Done here (in the per-connection thread)
+        # rather than in the accept loop so a slow/failed handshake can't stall
+        # new connections. A plain-HTTP client hitting the TLS port fails here.
+        if SSL_CONTEXT is not None:
+            try:
+                sock = SSL_CONTEXT.wrap_socket(sock, server_side=True)
+            except (ssl.SSLError, OSError):
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                return
+
         # Read HTTP request header
         request_data = bytearray()
         while b'\r\n\r\n' not in request_data:
@@ -425,6 +458,9 @@ def handle_client(sock, addr):
             pass
 
 def main():
+    global SSL_CONTEXT
+    SSL_CONTEXT = build_ssl_context()
+
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     
@@ -446,10 +482,16 @@ def main():
         sys.exit(1)
         
     server_sock.listen(128)
+    _scheme = "https" if SSL_CONTEXT else "http"
+    _ws = "wss" if SSL_CONTEXT else "ws"
     print(f"\n  GhostLink Python Server Ready:")
-    print(f"  Web App:    http://localhost:{actual_port}")
-    print(f"  Signaling:  ws://localhost:{actual_port}")
-    print(f"  Health:     http://localhost:{actual_port}/health\n")
+    if SSL_CONTEXT:
+        print(f"  TLS:        enabled (cert: {os.path.abspath(RELAY_CERT)})")
+    else:
+        print(f"  TLS:        disabled (cert/key not found) — plain http/ws; HTTPS pages will block this from a LAN IP")
+    print(f"  Web App:    {_scheme}://localhost:{actual_port}")
+    print(f"  Signaling:  {_ws}://localhost:{actual_port}")
+    print(f"  Health:     {_scheme}://localhost:{actual_port}/health\n")
     
     while True:
         try:

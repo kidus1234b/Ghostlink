@@ -36,6 +36,10 @@ const INVOKE_CHANNELS = [
   'ghostmesh-dial',
   'ghostmesh-send',
   'ghostmesh-close',
+  'gmp-get-seed',
+  'gmp-set-seed',
+  'gmp-start',
+  'gmp-status',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -138,6 +142,13 @@ contextBridge.exposeInMainWorld('ghostlink', {
     onPeerConnected: (callback) => secureOn('ghostmesh-peer-connected', callback),
     onData: (callback) => secureOn('ghostmesh-data', callback),
     onPeerDisconnected: (callback) => secureOn('ghostmesh-peer-disconnected', callback),
+  },
+
+  gmp: {
+    getSeed: () => secureInvoke('gmp-get-seed'),
+    setSeed: (seed) => secureInvoke('gmp-set-seed', seed),
+    start: (seed) => secureInvoke('gmp-start', seed),
+    getStatus: () => secureInvoke('gmp-status'),
   },
 
   /* ── Drag-and-drop support ──────────────────────────────────── */

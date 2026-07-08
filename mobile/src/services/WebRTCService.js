@@ -160,6 +160,53 @@ class WebRTCService extends Emitter {
      * @private @type {Map<string, { yggdrasilAddress: string, publicKeyHex: string }>}
      */
     this._meshPeers = new Map();
+    this._gmpActive = false;
+    this._gmpWs = null;
+    this._initGMPConnection();
+  }
+
+  _initGMPConnection() {
+    try {
+      this._gmpWs = new WebSocket('ws://localhost:3002');
+      this._gmpWs.onopen = () => {
+        this._gmpActive = true;
+        console.log('[Mobile GMP] Connected to GMP bridge, using Ghost Mesh transport');
+      };
+      
+      this._gmpWs.onmessage = (evt) => {
+        let msg;
+        try {
+          msg = JSON.parse(evt.data);
+        } catch (e) {
+          return;
+        }
+        
+        if (msg.type === 'peer-connected') {
+          this.emit('peer-state', { peerId: msg.nodeId, state: PeerState.CONNECTED });
+          this.emit('datachannel-open', { peerId: msg.nodeId });
+        } else if (msg.type === 'peer-disconnected') {
+          this.emit('peer-state', { peerId: msg.nodeId, state: PeerState.DISCONNECTED });
+          this.emit('datachannel-close', { peerId: msg.nodeId });
+        } else if (msg.type === 'message') {
+          try {
+            const parsed = JSON.parse(msg.payload);
+            this.emit('message', { peerId: msg.fromNodeId, data: parsed });
+          } catch (e) {
+            this.emit('message', { peerId: msg.fromNodeId, data: msg.payload });
+          }
+        }
+      };
+      
+      this._gmpWs.onerror = () => {
+        this._gmpActive = false;
+      };
+      
+      this._gmpWs.onclose = () => {
+        this._gmpActive = false;
+      };
+    } catch (e) {
+      this._gmpActive = false;
+    }
   }
 
   /**
@@ -222,6 +269,24 @@ class WebRTCService extends Emitter {
    * @returns {Promise<PeerSession>}
    */
   async createConnection(peerId, { initiator = true } = {}) {
+    if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
+      this.emit('peer-state', { peerId, state: PeerState.CONNECTING });
+      const cached = this.getMeshPeerAddress(peerId);
+      if (cached && cached.yggdrasilAddress) {
+        const parts = cached.yggdrasilAddress.split(':');
+        const addr = parts[0];
+        const port = parts[1] ? parseInt(parts[1]) : 49500;
+        this._gmpWs.send(JSON.stringify({
+          type: 'connect',
+          address: addr,
+          port: port
+        }));
+      }
+      const session = new PeerSession(peerId, { close: () => {} });
+      this._peers.set(peerId, session);
+      return session;
+    }
+
     if (this._peers.has(peerId)) {
       return this._peers.get(peerId);
     }
@@ -418,6 +483,16 @@ class WebRTCService extends Emitter {
    * @returns {boolean} True if sent, false if channel not ready.
    */
   sendMessage(peerId, data) {
+    if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
+      const payload = typeof data === 'string' ? data : JSON.stringify(data);
+      this._gmpWs.send(JSON.stringify({
+        type: 'send',
+        destinationNodeId: peerId,
+        payload
+      }));
+      return true;
+    }
+
     const session = this._peers.get(peerId);
     if (!session || !session.dataChannel) return false;
 

@@ -1,9 +1,22 @@
 {
-  "name": "gmp-core",
-  "version": "1.2.0",
-  "description": "Ghost Mesh Protocol — Phase 1 + Phase 2a (Identity, Wire Format, Single Link, Nonce Tracking, Rate Limiting)",
+  "name": "@ghostlink/gmp-core",
+  "version": "1.0.0",
+  "description": "Ghost Mesh Protocol — GhostLink's peer-to-peer encrypted mesh networking stack",
   "type": "module",
-  "main": "link.js",
+  "main": "gmp-node-manager.js",
+  "exports": {
+    ".": "./gmp-node-manager.js",
+    "./bridge": "./gmp-bridge.js",
+    "./config": "./config.js",
+    "./logger": "./logger.js",
+    "./metrics": "./metrics.js"
+  },
+  "bin": {
+    "gmp": "./cli.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "test": "node test/two-node-test.js",
     "test:two-node": "node test/two-node-test.js",
@@ -12,10 +25,13 @@
     "test:binding": "node test/binding-test.js",
     "test:nat": "node test/nat-detection-test.js",
     "test:hole-punch": "node test/hole-punch-test.js",
-    "test:all": "node test/two-node-test.js && node test/nonce-persistence-test.js && node test/rate-limit-test.js && node test/binding-test.js && node test/nat-detection-test.js && node test/hole-punch-test.js"
+    "test:multihop": "node test/multi-hop-test.js",
+    "test:topology": "node test/topology-maintenance-test.js",
+    "test:all": "node test/two-node-test.js && node test/nonce-persistence-test.js && node test/rate-limit-test.js && node test/binding-test.js && node test/nat-detection-test.js && node test/hole-punch-test.js && node test/multi-hop-test.js && node test/topology-maintenance-test.js && node test/peer-exchange-test.js && node test/peer-cache-test.js && node test/bootstrap-test.js && node test/network-health-test.js && node test/encryption-at-rest-test.js && node test/key-rotation-test.js && node test/clock-hardening-test.js && node test/peer-reputation-test.js && node test/bridge-security-test.js"
   },
   "dependencies": {
     "@noble/curves": "^1.4.0",
-    "@noble/hashes": "^1.4.0"
+    "@noble/hashes": "^1.4.0",
+    "ws": "^8.21.0"
   }
 }
