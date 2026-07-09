@@ -187,6 +187,22 @@ async function startNode(isPublic = false) {
   const options = { seedPhrase };
   if (isPublic) {
     options.isPublicPeer = true;
+    if (process.env.PORT) {
+      const port = parseInt(process.env.PORT, 10);
+      options.GMP_PORT = port;
+      const logger = (await import('./logger.js')).default;
+      logger.info('cli', 'port-select', `Using port ${port} from PORT environment variable for GMP public-peer`);
+    } else {
+      const port = config.GMP_PORT || 49500;
+      options.GMP_PORT = port;
+      const logger = (await import('./logger.js')).default;
+      logger.info('cli', 'port-select', `Using port ${port} for GMP public-peer`);
+    }
+  } else {
+    const port = config.GMP_PORT || 49500;
+    options.GMP_PORT = port;
+    const logger = (await import('./logger.js')).default;
+    logger.info('cli', 'port-select', `Using port ${port} for GMP node`);
   }
 
   console.log(`Starting Ghost Link Node (isPublicPeer=${isPublic || false})...`);

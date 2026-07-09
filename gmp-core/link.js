@@ -260,6 +260,23 @@ class GMPLink extends EventEmitter {
   _handleData(data) {
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
 
+    // Intercept plain HTTP GET/HEAD requests (e.g. from reverse proxy health checks)
+    if (this.recvBuffer.length >= 4) {
+      const prefix = this.recvBuffer.slice(0, 4).toString('utf8');
+      if (prefix === 'GET ' || prefix === 'HEAD') {
+        const response = 
+          "HTTP/1.1 200 OK\r\n" +
+          "Content-Type: application/json\r\n" +
+          "Content-Length: 20\r\n" +
+          "Connection: close\r\n\r\n" +
+          '{"status":"healthy"}';
+        this.socket.write(response, () => {
+          this.socket.end();
+        });
+        return;
+      }
+    }
+
     while (this.recvBuffer.length >= 5) {
       if (this.expectedPayloadLen === 0) {
         this.expectedPayloadLen = readUint32BE(this.recvBuffer, 0);
@@ -1535,7 +1552,8 @@ class GMPNode extends EventEmitter {
       });
 
       this.server.on('error', reject);
-      this.server.listen({ host: '::', port: this.port }, () => {
+      const bindHost = this.isPublicPeer ? '0.0.0.0' : '::';
+      this.server.listen({ host: bindHost, port: this.port }, () => {
         this.bootstrap.start();
         resolve({ port: this.port });
       });

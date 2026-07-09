@@ -112,6 +112,37 @@ gmp generate-seed
 → does not save it anywhere, purely prints it once
 → user is responsible for saving it securely
 
+#### 4.1.1 Railway Deployment & Reverse Proxy Setup
+
+> [!IMPORTANT]
+> **IMPORTANT ARCHITECTURAL NOTE**: GMP is a raw TCP protocol, not HTTP. Railway's automatic HTTPS domain generation is designed for HTTP(S) web services, not raw TCP servers. For a raw TCP service like GMP, we need Railway's **TCP Proxy** feature instead of the standard HTTP domain. Standard HTTPS/HTTP requests sent to the GMP TCP port (like Railway's default health check) will be intercepted by the node and reply with an HTTP `200 OK` health status, but full protocol communication must go through a raw TCP connection.
+
+To set up your GMP Public Peer on Railway:
+
+1. **Variables**: Set the `GMP_SEED_PHRASE` and ensure your service starts with `gmp public-peer`. Railway automatically sets a `PORT` environment variable which the GMP CLI detects and uses as its internal listening port.
+2. **Enable TCP Proxy**:
+   - In your Railway dashboard, navigate to your service's **Settings** tab.
+   - Go to the **Networking** section.
+   - Click on **TCP Proxy** (available under Railway's $5 Free Trial and paid developer/hobby plans).
+   - Enter your GMP internal port (matched dynamically to the `PORT` env var).
+   - Railway will assign a public domain and a random public port (e.g. `shuttle.proxy.rlwy.net:15140`).
+3. **Public Peer Entry**: Once Railway assigns the TCP proxy, add it to your `public_peers.json` file in the following format:
+   ```json
+   {
+     "address": "shuttle.proxy.rlwy.net",
+     "port": 15140
+   }
+   ```
+4. **Verifying Connectivity**:
+   - Standard HTTP/HTTPS `curl` requests or browser checks against the TCP proxy will receive a JSON health check: `{"status":"healthy"}`.
+   - For a real TCP connection test, use netcat:
+     ```bash
+     nc -zv shuttle.proxy.rlwy.net 15140
+     ```
+     Or execute a client test script to handshake.
+
+*Note: If Railway's TCP Proxy is not available or you are on a restricted free plan that does not support raw TCP routing, you should host your node on Render.com or another VPS provider that allows raw TCP port exposure.*
+
 ---
 
 ## 5. Monitoring & Observability
