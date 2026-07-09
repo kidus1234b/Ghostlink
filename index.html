@@ -1605,6 +1605,22 @@
         }
       }
 
+      // SECURITY NOTE: These are real production wallet addresses. Any 
+      // change to this file must be reviewed carefully — 
+      // a typo or unauthorized edit here could redirect 
+      // real user payments. Consider moving these to an 
+      // environment variable or config file for production 
+      // rather than hardcoding, so they aren't exposed in 
+      // client-side source and can be rotated without a 
+      // code deployment.
+      const PAYMENT_WALLETS = {
+        BTC: 'bc1qgj37vvzv2p3tyu566paffyu85thtseh6xfz5n2',
+        ETH: '0x840b7Bf6d5A809611eD08855a2b2180A2EB1DB56',
+        USDT_ERC20: '0x840b7Bf6d5A809611eD08855a2b2180A2EB1DB56',
+        USDT_TRC20: 'TFcjDEFZUghaA6TwaFPmLmAFmrHXH68rKW',
+        LTC: 'ltc1qe8yvnvax4cen6slpgq5fc820edfqvux9hxl73v',
+      };
+
       // ==================== MAIN APP ====================
       function GhostLinkApp() {
         const WorkspacePanel = window.WorkspacePanel || (() => null);
@@ -1708,7 +1724,7 @@
 
         // Countdown timer for rate quote lock in payment details
         useEffect(() => {
-          if (showBuyModal && buyStep === 4 && buyCountdown > 0) {
+          if (showBuyModal && buyStep === 4) {
             const timer = setInterval(() => {
               setBuyCountdown(prev => {
                 if (prev <= 1) {
@@ -1722,7 +1738,7 @@
             }, 1000);
             return () => clearInterval(timer);
           }
-        }, [showBuyModal, buyStep, buyCountdown]);
+        }, [showBuyModal, buyStep]);
 
         // Simulated verification query latency
         useEffect(() => {
@@ -5518,11 +5534,11 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
         const buyTotalPriceUSD = buyBilling === 'lifetime' ? buyBasePrice : buyBasePrice * buyDuration;
 
         const buyAddresses = {
-          'BTC': '1GLBtc789xyz789xyz789xyz789xyz789x',
-          'ETH': '0xGLeth789xyz789xyz789xyz789xyz789xyz7',
-          'USDT-ERC20': '0xGLusdt789xyz789xyz789xyz789xyz789xyz',
-          'USDT-TRC20': 'TGLusdt789xyz789xyz789xyz789xyz789xyz',
-          'LTC': 'LGLltc789xyz789xyz789xyz789xyz789xyz'
+          'BTC': PAYMENT_WALLETS.BTC,
+          'ETH': PAYMENT_WALLETS.ETH,
+          'USDT-ERC20': PAYMENT_WALLETS.USDT_ERC20,
+          'USDT-TRC20': PAYMENT_WALLETS.USDT_TRC20,
+          'LTC': PAYMENT_WALLETS.LTC
         };
         const buyWalletKey = buyCoin === 'USDT' ? `USDT-${buyUsdtNetwork}` : buyCoin;
         const buyWalletAddress = buyAddresses[buyWalletKey] || 'YOUR_WALLET_ADDRESS_HERE';
@@ -8358,20 +8374,26 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
                           <span style={{ fontSize: 10, color: "#8a8a9a", fontWeight: 600 }}>TETHER USDT NETWORK:</span>
                           <div style={{ display: "flex", gap: 10 }}>
-                            {["ERC20", "TRC20"].map(net => (
-                              <button
-                                key={net}
-                                onClick={() => setBuyUsdtNetwork(net)}
-                                style={{
-                                  flex: 1, padding: "8px 12px", borderRadius: 8, border: buyUsdtNetwork === net ? `2px solid ${th.accent}` : "1px solid rgba(255,255,255,0.08)",
-                                  background: buyUsdtNetwork === net ? `${th.accent}12` : "transparent",
-                                  color: buyUsdtNetwork === net ? th.accent : "#8a8a9a",
-                                  fontSize: 10, fontWeight: 600, cursor: "pointer"
-                                }}
-                              >
-                                USDT ({net})
-                              </button>
-                            ))}
+                            {["ERC20", "TRC20"].map(net => {
+                              const netLabel = net === "ERC20" ? "USDT (ERC-20 / Ethereum)" : "USDT (TRC-20 / Tron)";
+                              return (
+                                <button
+                                  key={net}
+                                  onClick={() => setBuyUsdtNetwork(net)}
+                                  style={{
+                                    flex: 1, padding: "8px 12px", borderRadius: 8, border: buyUsdtNetwork === net ? `2px solid ${th.accent}` : "1px solid rgba(255,255,255,0.08)",
+                                    background: buyUsdtNetwork === net ? `${th.accent}12` : "transparent",
+                                    color: buyUsdtNetwork === net ? th.accent : "#8a8a9a",
+                                    fontSize: 10, fontWeight: 600, cursor: "pointer"
+                                  }}
+                                >
+                                  {netLabel}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div style={{ padding: 10, borderRadius: 8, background: '#ff444410', border: '1px solid #ff444430', color: '#ff4466', fontSize: 9, lineHeight: 1.4, textAlign: 'left', marginTop: 4 }}>
+                            <strong>IMPORTANT:</strong> Select the correct network. Sending ERC-20 USDT to a TRC-20 address (or vice versa) will result in permanent loss of funds.
                           </div>
                         </div>
                       )}
@@ -8428,7 +8450,7 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                             <button
                               onClick={() => {
                                 navigator.clipboard?.writeText(buyWalletAddress);
-                                addToast('Wallet address copied', 'success');
+                                addToast('Copied to clipboard', 'success');
                               }}
                               style={{ padding: "10px 14px", borderRadius: 8, border: "none", background: th.accent, color: "#000", fontWeight: 600, fontSize: 11, cursor: "pointer" }}
                             >
@@ -8437,6 +8459,12 @@ conn.on('peer-connected', async (peerId, peerInfo) => {
                           </div>
                         </div>
                       </div>
+
+                      {buyCoin === 'USDT' && (
+                        <div style={{ padding: 10, borderRadius: 8, background: '#ff444410', border: '1px solid #ff444430', color: '#ff4466', fontSize: 9, lineHeight: 1.4, textAlign: 'left', marginBottom: 16 }}>
+                          <strong>IMPORTANT:</strong> Select the correct network. Sending ERC-20 USDT to a TRC-20 address (or vice versa) will result in permanent loss of funds.
+                        </div>
+                      )}
 
                       {/* Countdown Display */}
                       <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.04)", borderRadius: 10, padding: 12, textAlign: "center", marginBottom: 20 }}>
