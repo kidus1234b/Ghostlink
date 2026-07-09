@@ -6,6 +6,7 @@ import http from 'http';
 import readline from 'readline';
 import { Writable } from 'stream';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import config, { loadConfig } from './config.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -127,7 +128,7 @@ function formatNumber(num) {
 }
 
 // BIP-39 word subset for safe local key rotation demonstration
-const WORDLIST = [
+const BIP39_WORDS = [
   "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract", "absurd", "abuse", "access", "accident",
   "account", "accuse", "achieve", "acid", "acoustic", "acquire", "across", "act", "action", "active", "actor", "actress",
   "actual", "adapt", "add", "addict", "address", "adjust", "admit", "adult", "advance", "advice", "advise", "aerobic",
@@ -141,19 +142,38 @@ const WORDLIST = [
 function generateSeedPhrase() {
   const words = [];
   for (let i = 0; i < 12; i++) {
-    const idx = Math.floor(Math.random() * WORDLIST.length);
-    words.push(WORDLIST[idx]);
+    const idx = Math.floor(Math.random() * BIP39_WORDS.length);
+    words.push(BIP39_WORDS[idx]);
+  }
+  return words.join(' ');
+}
+
+function generateCryptoSeedPhrase() {
+  const words = [];
+  const randomValues = new Uint32Array(12);
+  const webCrypto = globalThis.crypto || crypto.webcrypto;
+  webCrypto.getRandomValues(randomValues);
+  for (let i = 0; i < 12; i++) {
+    const idx = randomValues[i] % BIP39_WORDS.length;
+    words.push(BIP39_WORDS[idx]);
   }
   return words.join(' ');
 }
 
 async function startNode(isPublic = false) {
-  // Check if seed phrase is in config
-  let seedPhrase = config.GMP_SEED_PHRASE || process.env.GMP_SEED_PHRASE;
+  // Check if seed phrase is in environment variable
+  let seedPhrase = process.env.GMP_SEED_PHRASE;
 
-  if (!seedPhrase) {
-    console.log('No seed phrase configured.');
-    seedPhrase = await askQuestion('Enter 12-word seed phrase: ', true);
+  if (seedPhrase) {
+    const logger = (await import('./logger.js')).default;
+    logger.info('cli', 'env-seed-phrase', 'Using seed phrase from GMP_SEED_PHRASE environment variable');
+  } else {
+    // Fall back to the existing interactive prompt behavior exactly as it works now
+    seedPhrase = config.GMP_SEED_PHRASE;
+    if (!seedPhrase) {
+      console.log('No seed phrase configured.');
+      seedPhrase = await askQuestion('Enter 12-word seed phrase: ', true);
+    }
     if (!seedPhrase || seedPhrase.split(/\s+/).length !== 12) {
       console.error('Invalid seed phrase. Must be exactly 12 words.');
       process.exit(1);
@@ -207,6 +227,11 @@ async function main() {
   const metricsUrl = `http://127.0.0.1:${getMetricsPort()}`;
 
   switch (command) {
+    case 'generate-seed': {
+      const seed = generateCryptoSeedPhrase();
+      console.log(seed);
+      break;
+    }
     case 'start': {
       await startNode(false);
       break;
@@ -344,6 +369,7 @@ function printHelp() {
   console.log('  gmp peers           Lists currently connected peers');
   console.log('  gmp rotate-key      Walks through seed generation and rotating identity keys');
   console.log('  gmp ping <nodeId>   Pings a NodeID through the multi-hop mesh');
+  console.log('  gmp generate-seed   Generates a cryptographically random 12-word seed phrase');
 }
 
 main().catch(err => {
