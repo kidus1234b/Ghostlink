@@ -3,6 +3,113 @@
 (function(exports) {
   'use strict';
 
+  // ── Console interception (module-level singleton) ────────────────────────
+  // Exactly one set of wrappers is installed no matter how many GhostLinkDebug
+  // instances exist. Per-instance wrappers would capture each other's patched
+  // methods as their "originals", so every message would be emitted once per
+  // instance, and restoreConsole() would reinstate a wrapper instead of the
+  // native method.
+
+  const CONSOLE_LEVELS = { log: 'info', error: 'error', warn: 'warn', debug: 'debug' };
+
+  // Every live instance, so ownership can be handed over instead of the
+  // wrappers being torn out from under instances that are still running.
+  const _instances = new Set();
+  let _consoleOwner = null;
+  let _nativeConsole = null;
+  let _consoleWrappers = null;
+  let _logging = false;
+
+  // Serialize each argument independently so one unserializable value
+  // (circular ref, throwing getter/toJSON/proxy trap, BigInt) can't drop the
+  // whole message. Every branch that touches the value is inside the guard —
+  // even `instanceof` can throw on a Proxy with a getPrototypeOf trap.
+  const _fmtOne = (a) => {
+    if (typeof a === 'string') return a;
+    try {
+      if (a === null || typeof a !== 'object') return String(a);
+      // Stringify inside the guard: `stack` is a writable property and may hold
+      // an object whose toString throws, which would otherwise blow up later in
+      // _fmt's join() — outside this try — and drop the whole message.
+      if (a instanceof Error) return a.stack ? String(a.stack) : `${a.name}: ${a.message}`;
+      const seen = new WeakSet();
+      return JSON.stringify(a, (k, v) => {
+        if (typeof v === 'bigint') return `${v}n`;
+        if (v && typeof v === 'object') {
+          if (seen.has(v)) return '[Circular]';
+          seen.add(v);
+        }
+        return v;
+      }, 2);
+    } catch (e) {
+      try { return String(a); } catch (e2) { return '[unserializable]'; }
+    }
+  };
+
+  const _fmt = (args) => `[GhostLink Debug] ${args.map(_fmtOne).join(' ')}`;
+
+  function _installWrappers() {
+    _nativeConsole = {};
+    _consoleWrappers = {};
+    Object.keys(CONSOLE_LEVELS).forEach((name) => {
+      const orig = console[name];
+      const level = CONSOLE_LEVELS[name];
+      _nativeConsole[name] = orig;
+      const wrapper = (...args) => {
+        orig.apply(console, args);
+        const log = _consoleOwner && _consoleOwner._log;
+        // With no GhostLink logger configured, _log falls back to console
+        // itself — forwarding there would print every message a second time.
+        if (!log || log === console) return;
+        if (_logging) return;
+        _logging = true;
+        try { log[level](_fmt(args)); } catch (e) { } finally { _logging = false; }
+      };
+      _consoleWrappers[name] = wrapper;
+      console[name] = wrapper;
+    });
+  }
+
+  function _uninstallWrappers() {
+    if (!_nativeConsole) return;
+    Object.keys(_nativeConsole).forEach((name) => {
+      // Only restore where our wrapper is still the installed method; something
+      // else may have patched console after us.
+      if (console[name] === _consoleWrappers[name]) console[name] = _nativeConsole[name];
+    });
+    _nativeConsole = null;
+    _consoleWrappers = null;
+  }
+
+  /** Register an instance; the first one installs the wrappers. */
+  function _attachInstance(inst) {
+    _instances.add(inst);
+    if (!_consoleOwner) {
+      _consoleOwner = inst;
+      _installWrappers();
+    }
+    return _consoleOwner === inst;
+  }
+
+  /**
+   * Unregister an instance. If it owned the console and others are still live,
+   * hand ownership over and keep the wrappers installed — tearing them out
+   * would silently stop forwarding for every remaining instance. Native methods
+   * come back only once the last instance is gone.
+   */
+  function _detachInstance(inst) {
+    if (!_instances.delete(inst)) return;
+    if (_consoleOwner !== inst) return;
+    const next = _instances.values().next().value || null;
+    if (next) {
+      _consoleOwner = next;
+      next._ownsConsole = true;
+      return;
+    }
+    _uninstallWrappers();
+    _consoleOwner = null;
+  }
+
   class GhostLinkDebug {
     constructor() {
       this._peers = {};
@@ -440,23 +547,12 @@
     }
 
     _installConsole() {
-      const self = this;
-      const _orig = { log: console.log, error: console.error, warn: console.warn, debug: console.debug };
-      const _fmt = (args) => `[GhostLink Debug] ${args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ')}`;
-      console.log = (...args) => { _orig.log.apply(console, args); self._log.info(_fmt(args)); };
-      console.error = (...args) => { _orig.error.apply(console, args); self._log.error(_fmt(args)); };
-      console.warn = (...args) => { _orig.warn.apply(console, args); self._log.warn(_fmt(args)); };
-      console.debug = (...args) => { _orig.debug.apply(console, args); self._log.debug(_fmt(args)); };
-      this._origConsole = _orig;
+      this._ownsConsole = _attachInstance(this);
     }
 
     restoreConsole() {
-      if (this._origConsole) {
-        console.log = this._origConsole.log;
-        console.error = this._origConsole.error;
-        console.warn = this._origConsole.warn;
-        console.debug = this._origConsole.debug;
-      }
+      _detachInstance(this);
+      this._ownsConsole = false;
     }
 
     destroy() {

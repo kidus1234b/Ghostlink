@@ -20,7 +20,9 @@
     "install:server": "cd server && npm install",
     "install:mobile": "cd mobile && npm install",
     "install:desktop": "cd electron && npm install",
-    "install:all": "npm run install:server && npm run install:mobile && npm run install:desktop"
+    "install:all": "npm run install:server && npm run install:mobile && npm run install:desktop",
+    "build": "esbuild index-entry.js --bundle --minify --format=esm --external:crypto --external:fs --external:path --external:os --external:stream --outfile=app.bundle.js",
+    "test": "node test/debug-console.test.js && node test/message-vault.test.js && node test/peer-lifecycle.test.js"
   },
   "repository": {
     "type": "git",

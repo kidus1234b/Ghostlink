@@ -80,6 +80,12 @@
       // Options
       this.trickleIce = true;
 
+      // Peers we have already announced as connected. A peer opens three data
+      // channels and may also connect over ICE/mesh, so the raw events fire
+      // several times per peer; listeners must see exactly one connect and one
+      // disconnect.
+      this._announced = new Set();
+
       // Ghost Mesh (Yggdrasil TCP client/server)
       this.meshConns = {}; // peerId -> { connId, sharedKey, name, publicKey }
       this._meshListeners = [];
@@ -176,6 +182,7 @@
         }
         case 'peer-left': {
           this._cleanupPeer(msg.peerId);
+          this._announceDisconnected(msg.peerId);
           this.emit('peer-left', msg.peerId);
           break;
         }
@@ -255,8 +262,10 @@
       };
       pc.oniceconnectionstatechange = () => {
         if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
+          // Tear the WebRTC path down first, then announce only if no other
+          // transport (e.g. Ghost Mesh) is still carrying this peer.
           this._cleanupPeer(peerId);
-          this.emit('peer-disconnected', peerId);
+          this._announceDisconnected(peerId);
         } else if (pc.iceConnectionState === 'connected') {
           // ICE connected but data channel may not be open yet — emit connected state
           this.states[peerId] = 'connected';
@@ -276,16 +285,49 @@
       });
     }
 
+    /**
+     * True while at least one transport to this peer can still carry a message.
+     * A peer commonly has three data channels and may also have a Ghost Mesh
+     * session, so losing one of them is not losing the peer.
+     */
+    _isPeerLive(peerId) {
+      if (this.meshConns[peerId]) return true;
+      const dcs = this.dcs[peerId];
+      return !!(dcs && Object.values(dcs).some((ch) => ch && ch.readyState === 'open'));
+    }
+
+    /** Emit peer-connected at most once per peer, until it disconnects. */
+    _announceConnected(peerId, info) {
+      this.states[peerId] = 'connected';
+      if (this._announced.has(peerId)) return false;
+      this._announced.add(peerId);
+      this.emit('peer-connected', peerId, info);
+      return true;
+    }
+
+    /**
+     * Emit peer-disconnected once, and only once the peer is actually
+     * unreachable. Pass force for a deliberate teardown (removePeer/disconnect),
+     * where remaining transports are being closed on purpose.
+     */
+    _announceDisconnected(peerId, force = false) {
+      if (!force && this._isPeerLive(peerId)) return false;
+      if (!this._announced.delete(peerId)) return false;
+      this.emit('peer-disconnected', peerId);
+      return true;
+    }
+
     _setupDc(peerId, label, ch) {
       if (!this.dcs[peerId]) this.dcs[peerId] = { messages: null, files: null, presence: null };
       this.dcs[peerId][label] = ch;
       ch.onopen = () => {
-        this.states[peerId] = 'connected';
-        this.emit('peer-connected', peerId, { mode: this.pcs[peerId]?.__mode || 'P2P Direct' });
+        this._announceConnected(peerId, { mode: this.pcs[peerId]?.__mode || 'P2P Direct' });
       };
       ch.onclose = () => {
+        // Another channel (or a mesh session) may still be usable.
+        if (this._isPeerLive(peerId)) return;
         this.states[peerId] = 'disconnected';
-        this.emit('peer-disconnected', peerId);
+        this._announceDisconnected(peerId);
       };
       ch.onmessage = (evt) => {
         if (label === 'messages') this._onMessageChannel(peerId, evt.data);
@@ -347,8 +389,9 @@
         sdp: pc.localDescription.sdp, publicKey: this.identity.publicKeyHex,
         name: this.identity.name
       });
-      // Emit peer-connected so UI knows about this peer (data channel will fire onopen next)
-      this.emit('peer-connected', peerId, { mode: 'relay', name: msg.name, publicKey: msg.publicKey });
+      // Deliberately no peer-connected here: SDP is negotiated but ICE and the
+      // data channel are not up yet, so isConnected()/sendOnChannel() would both
+      // fail. _setupDc's onopen announces once the peer is actually usable.
     }
 
     async _handleSignalingAnswer(msg) {
@@ -494,6 +537,22 @@
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
 
+    /** Force-drop a single peer (public counterpart of _cleanupPeer). */
+    removePeer(peerId) {
+      // Close the Ghost Mesh session, not just its lookup entry — dropping the
+      // map entry alone leaves the underlying connId open and streaming.
+      const mesh = this.meshConns[peerId];
+      delete this.meshConns[peerId];
+      if (mesh) {
+        try { window.ghostlink?.ghostMesh?.close(mesh.connId); } catch (e) {}
+      }
+      this._cleanupPeer(peerId);
+      // Forced: every transport is being closed on purpose. Emitting here also
+      // consumes the flag, so the resulting close handlers stay silent.
+      this._announceDisconnected(peerId, true);
+      return true;
+    }
+
     _cleanupPeer(peerId) {
       if (this.pcs[peerId]) {
         try { this.pcs[peerId].close(); } catch (e) {}
@@ -507,6 +566,16 @@
       }
       if (this.pendingIce[peerId]) delete this.pendingIce[peerId];
       delete this.states[peerId];
+    }
+
+    /**
+     * Full teardown for when this connector is being replaced. disconnect()
+     * already closes every peer transport; this additionally drops listeners so
+     * nothing can emit into stale handlers afterwards.
+     */
+    destroy() {
+      this.disconnect();
+      this._events = {};
     }
 
     joinRoom(roomId, publicKey) {
@@ -524,7 +593,6 @@
       if (this.wsPingInterval) clearInterval(this.wsPingInterval);
       if (this.ws) { this.ws.close(); this.ws = null; }
       this.wsOpen = false;
-      Object.keys(this.pcs).forEach(id => this._cleanupPeer(id));
 
       // Cleanup Mesh
       this._meshListeners.forEach(un => { try { un(); } catch (e) {} });
@@ -532,7 +600,19 @@
       for (const conn of Object.values(this.meshConns)) {
         try { window.ghostlink?.ghostMesh?.close(conn.connId); } catch (e) {}
       }
+
+      // Every peer we ever announced gets exactly one disconnect, including
+      // mesh-only peers that have no entry in this.pcs.
+      const peerIds = new Set([
+        ...this._announced,
+        ...Object.keys(this.pcs),
+        ...Object.keys(this.meshConns),
+      ]);
       this.meshConns = {};
+      peerIds.forEach((id) => {
+        this._cleanupPeer(id);
+        this._announceDisconnected(id, true);
+      });
     }
 
     _initGhostMesh() {
@@ -624,8 +704,7 @@
             await window.ghostlink.ghostMesh.send(connId, JSON.stringify(identMsg));
           }
           
-          this.states[peerId] = 'connected';
-          this.emit('peer-connected', peerId, { mode: 'Ghost Mesh', name: msg.name, publicKey: msg.publicKeyHex });
+          this._announceConnected(peerId, { mode: 'Ghost Mesh', name: msg.name, publicKey: msg.publicKeyHex });
           
           if (msg.yggdrasilAddress) {
             this.cacheMeshPeer(peerId, msg.yggdrasilAddress, msg.name);
@@ -667,8 +746,9 @@
       }
       if (peerId) {
         delete this.meshConns[peerId];
+        if (this._isPeerLive(peerId)) return; // WebRTC path still usable
         this.states[peerId] = 'disconnected';
-        this.emit('peer-disconnected', peerId);
+        this._announceDisconnected(peerId);
       }
     }
 
