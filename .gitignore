@@ -56,3 +56,9 @@ mobile/android/local.properties
 mobile/android/.gradle/
 mobile/android/build/
 mobile/android/app/build/
+
+# Marketing site — kept out of the repo, built and deployed separately.
+landing.html
+ghostlink-website.html
+assets/site-shell.css
+assets/app-screenshot.png
