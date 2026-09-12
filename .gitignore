@@ -46,3 +46,14 @@ Thumbs.db
 .aider*
 CLAUDE.md
 .cursorrules
+gmp-core/dist/
+
+# Android release signing — losing these means never being able to update the
+# app, but committing them means anyone can sign a build as us.
+mobile/android/app/*.keystore
+!mobile/android/app/debug.keystore
+mobile/android/keystore.properties
+mobile/android/local.properties
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/

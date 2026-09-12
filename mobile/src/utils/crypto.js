@@ -1,10 +1,34 @@
 import * as Keychain from 'react-native-keychain';
+import {sha256 as nobleSha256} from '@noble/hashes/sha256';
+import {hmac as nobleHmac} from '@noble/hashes/hmac';
+import {pbkdf2Async} from '@noble/hashes/pbkdf2';
+import {gcm} from '@noble/ciphers/aes';
+import {p256} from '@noble/curves/p256';
+import {WORDLIST, SEED_PHRASE_WORDS} from './wordlist';
 
+/**
+ * React Native ships no Web Crypto. Every primitive below comes from @noble —
+ * audited, pure JS, and already a dependency for the curve maths.
+ *
+ * The randomness comes from the platform CSPRNG via
+ * react-native-get-random-values, which polyfills crypto.getRandomValues onto
+ * globalThis from Android's SecureRandom / iOS's SecRandomCopyBytes. That
+ * polyfill is imported once at the app entry point (index.js) and must stay
+ * there: it has to run before any of this module is used.
+ */
 function getSecureRandomValues(array) {
-  for (let i = 0; i < array.length; i++) {
-    array[i] = Math.floor(Math.random() * 256);
+  const c = globalThis.crypto;
+  if (!c || typeof c.getRandomValues !== 'function') {
+    // Never fall back to Math.random. A predictable "random" value here is a
+    // predictable private key, nonce, or secret share — a silent, total
+    // compromise that looks exactly like a working app. Fail instead.
+    throw new Error(
+      '[GhostLink:crypto] No secure random source. ' +
+        "Ensure `import 'react-native-get-random-values';` runs at app startup " +
+        '(index.js) before any crypto is used.',
+    );
   }
-  return array;
+  return c.getRandomValues(array);
 }
 
 function getRandomBytes(n) {
@@ -23,419 +47,142 @@ function hexToBytes(hex) {
   return new Uint8Array(matched.map(b => parseInt(b, 16)));
 }
 
+const utf8 = str => new TextEncoder().encode(str);
+
+/**
+ * SHA-256 over the UTF-8 bytes of `data`, hex encoded.
+ *
+ * Kept async because every caller awaits it, and because that matches the web
+ * app's crypto.subtle.digest-based CryptoEngine.sha256 — fingerprints computed
+ * here have to equal the ones computed there, or peers cannot verify each other.
+ */
 async function sha256(data) {
-  const encoder = new TextEncoder();
-  const msgBuffer = encoder.encode(data);
-  let hash = 0x811c9dc5;
-  const prime = 0x01000193;
-  for (let i = 0; i < msgBuffer.length; i++) {
-    hash ^= msgBuffer[i];
-    hash = Math.imul(hash, prime);
-  }
-  let h1 = hash >>> 0;
-  let h2 = (h1 * 0x5bd1e995) >>> 0;
-  let h3 = (h2 * 0xcc9e2d51) >>> 0;
-  let h4 = (h3 * 0x1b873593) >>> 0;
-  const parts = [h1, h2, h3, h4, h1 ^ h2, h2 ^ h3, h3 ^ h4, h4 ^ h1];
-  return parts.map(v => v.toString(16).padStart(8, '0')).join('');
+  return bytesToHex(nobleSha256(typeof data === 'string' ? utf8(data) : data));
 }
 
 function hmacSha256(key, message) {
-  const keyBytes = typeof key === 'string' ? new TextEncoder().encode(key) : key;
-  const msgBytes = typeof message === 'string' ? new TextEncoder().encode(message) : message;
-
-  const blockSize = 64;
-  const oKeyPad = new Uint8Array(blockSize);
-  const iKeyPad = new Uint8Array(blockSize);
-
-  if (keyBytes.length > blockSize) {
-    const keyHash = sha256(new TextDecoder().decode(keyBytes));
-    const paddedKey = new Uint8Array(blockSize);
-    for (let i = 0; i < blockSize; i++) {
-      paddedKey[i] = parseInt(keyHash.substr(i * 2, 2), 16);
-    }
-    keyBytes.forEach((b, i) => {
-      oKeyPad[i] = 0x5c ^ b;
-      iKeyPad[i] = 0x36 ^ b;
-    });
-  } else {
-    keyBytes.forEach((b, i) => {
-      oKeyPad[i] = 0x5c ^ b;
-      iKeyPad[i] = 0x36 ^ b;
-    });
-  }
-
-  const innerData = new Uint8Array(blockSize + msgBytes.length);
-  innerData.set(iKeyPad);
-  innerData.set(msgBytes, blockSize);
-  const innerHash = sha256(new TextDecoder().decode(innerData));
-  const innerPadded = new Uint8Array(blockSize + 32);
-  innerPadded.set(oKeyPad);
-  for (let i = 0; i < 32; i++) {
-    innerPadded[blockSize + i] = parseInt(innerHash.substr(i * 2, 2), 16);
-  }
-  return sha256(new TextDecoder().decode(innerPadded));
+  const keyBytes = typeof key === 'string' ? utf8(key) : key;
+  const msgBytes = typeof message === 'string' ? utf8(message) : message;
+  return bytesToHex(nobleHmac(nobleSha256, keyBytes, msgBytes));
 }
 
-const AES = (() => {
-  const SBOX = new Uint8Array(256);
-  const INV_SBOX = new Uint8Array(256);
-  const RCON = new Uint8Array(11);
+/**
+ * AES-256-GCM.
+ *
+ * What was here before was a hand-written AES-CTR with a GHASH routine that was
+ * never actually applied: aesGcmEncrypt returned an all-zero "tag" and
+ * aesGcmDecrypt never checked one, so ciphertext was malleable and any
+ * corruption decrypted silently to garbage. @noble/ciphers computes and
+ * verifies the tag properly, so decrypt now throws on tampering.
+ *
+ * Wire format matches the web app's CryptoEngine: a 12-byte IV, and a
+ * ciphertext that carries the 16-byte auth tag appended — the same layout
+ * crypto.subtle.encrypt produces — both hex encoded.
+ */
+const GCM_IV_BYTES = 12;
 
-  function initSbox() {
-    let p = 1, q = 1;
-    for (let i = 0; i < 256; i++) {
-      SBOX[p] = i;
-      INV_SBOX[i] = p;
-      p ^= (p << 1) ^ ((p & 0x80) ? 0x1b : 0);
-      q ^= (q << 1) ^ ((q & 0x80) ? 0x09 : 0);
-    }
-    SBOX[0] = 0x63;
-    INV_SBOX[0x63] = 0;
+/**
+ * Key material for the AES functions below.
+ *
+ * A 64-character hex string is taken as the 32 raw key bytes it encodes. That
+ * is what deriveKeyFromSeed returns, and it uses the full 256 bits of the
+ * derived key. Anything else is treated the way the web app treats it — padded
+ * or truncated to 32 characters and used as UTF-8 — so a passphrase-style key
+ * behaves identically on both platforms.
+ */
+function resolveAesKey(key) {
+  if (key instanceof Uint8Array) {
+    if (key.length !== 32) throw new Error('AES key must be 32 bytes');
+    return key;
   }
+  if (typeof key !== 'string') throw new Error('AES key must be a string or Uint8Array');
+  if (/^[0-9a-fA-F]{64}$/.test(key)) return hexToBytes(key);
+  return utf8(key.padEnd(32, '0').slice(0, 32));
+}
 
-  function initRCON() {
-    RCON[0] = 0x01;
-    for (let i = 1; i < 11; i++) {
-      RCON[i] = (RCON[i - 1] << 1) ^ ((RCON[i - 1] & 0x80) ? 0x1b : 0);
-    }
-  }
-
-  function xtime(a) {
-    return ((a << 1) ^ ((a & 0x80) ? 0x1b : 0)) & 0xff;
-  }
-
-  function multiply(a, b) {
-    let p = 0;
-    for (let i = 0; i < 8; i++) {
-      if (b & 1) p ^= a;
-      const hiBit = a & 0x80;
-      a = (a << 1) & 0xff;
-      if (hiBit) a ^= 0x1b;
-      b >>= 1;
-    }
-    return p;
-  }
-
-  initSbox();
-  initRCON();
-
-  function subWord(w) {
-    return SBOX[(w >> 24) & 0xff] << 24 |
-           SBOX[(w >> 16) & 0xff] << 16 |
-           SBOX[(w >> 8) & 0xff] << 8 |
-           SBOX[w & 0xff];
-  }
-
-  function rotWord(w) {
-    return ((w << 8) | (w >>> 24)) & 0xffffffff;
-  }
-
-  function keyExpansion(key) {
-    const nk = 4, nb = 4, nr = 10;
-    const w = new Uint32Array(nb * (nr + 1));
-    for (let i = 0; i < nk; i++) {
-      w[i] = (key[4*i] << 24) | (key[4*i+1] << 16) | (key[4*i+2] << 8) | key[4*i+3];
-    }
-    for (let i = nk; i < nb * (nr + 1); i++) {
-      let temp = w[i - 1];
-      if (i % nk === 0) {
-        temp = subWord(rotWord(temp)) ^ (RCON[i / nk] << 24);
-      } else if (nk > 6 && i % nk === 4) {
-        temp = subWord(temp);
-      }
-      w[i] = w[i - nk] ^ temp;
-    }
-    return { w, nr };
-  }
-
-  function subBytes(state) {
-    for (let i = 0; i < 16; i++) state[i] = SBOX[state[i]];
-  }
-
-  function invSubBytes(state) {
-    for (let i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
-  }
-
-  function shiftRows(state) {
-    const tmp = new Uint8Array(16);
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        tmp[r * 4 + c] = state[(r * 4 + (c + r) % 4)];
-      }
-    }
-    state.set(tmp);
-  }
-
-  function invShiftRows(state) {
-    const tmp = new Uint8Array(16);
-    for (let r = 0; r < 4; r++) {
-      for (let c = 0; c < 4; c++) {
-        tmp[r * 4 + (c + r) % 4] = state[r * 4 + c];
-      }
-    }
-    state.set(tmp);
-  }
-
-  function mixColumns(state) {
-    for (let c = 0; c < 4; c++) {
-      const i = c * 4;
-      const s0 = state[i], s1 = state[i+1], s2 = state[i+2], s3 = state[i+3];
-      state[i]   = multiply(s0, 2) ^ multiply(s1, 3) ^ s2 ^ s3;
-      state[i+1] = s0 ^ multiply(s1, 2) ^ multiply(s2, 3) ^ s3;
-      state[i+2] = s0 ^ s1 ^ multiply(s2, 2) ^ multiply(s3, 3);
-      state[i+3] = multiply(s0, 3) ^ s1 ^ s2 ^ multiply(s3, 2);
-    }
-  }
-
-  function invMixColumns(state) {
-    for (let c = 0; c < 4; c++) {
-      const i = c * 4;
-      const s0 = state[i], s1 = state[i+1], s2 = state[i+2], s3 = state[i+3];
-      state[i]   = multiply(s0, 0x0e) ^ multiply(s1, 0x0b) ^ multiply(s2, 0x0d) ^ multiply(s3, 0x09);
-      state[i+1] = multiply(s0, 0x09) ^ multiply(s1, 0x0e) ^ multiply(s2, 0x0b) ^ multiply(s3, 0x0d);
-      state[i+2] = multiply(s0, 0x0d) ^ multiply(s1, 0x09) ^ multiply(s2, 0x0e) ^ multiply(s3, 0x0b);
-      state[i+3] = multiply(s0, 0x0b) ^ multiply(s1, 0x0d) ^ multiply(s2, 0x09) ^ multiply(s3, 0x0e);
-    }
-  }
-
-  function addRoundKey(state, w, round) {
-    for (let c = 0; c < 4; c++) {
-      const key = w[round * 4 + c];
-      state[c*4] ^= (key >> 24) & 0xff;
-      state[c*4+1] ^= (key >> 16) & 0xff;
-      state[c*4+2] ^= (key >> 8) & 0xff;
-      state[c*4+3] ^= key & 0xff;
-    }
-  }
-
-  function blockEncrypt(block, keyBytes) {
-    const { w, nr } = keyExpansion(keyBytes);
-    const state = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) state[i] = block[i] ^ w[i];
-
-    for (let round = 1; round < nr; round++) {
-      subBytes(state);
-      shiftRows(state);
-      mixColumns(state);
-      addRoundKey(state, w, round);
-    }
-
-    subBytes(state);
-    shiftRows(state);
-    addRoundKey(state, w, nr);
-
-    return state;
-  }
-
-  function blockDecrypt(block, keyBytes) {
-    const { w, nr } = keyExpansion(keyBytes);
-    const state = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) state[i] = block[i] ^ w[nr * 4 + i];
-
-    for (let round = nr - 1; round >= 1; round--) {
-      invShiftRows(state);
-      invSubBytes(state);
-      addRoundKey(state, w, round);
-      invMixColumns(state);
-    }
-
-    invShiftRows(state);
-    invSubBytes(state);
-    for (let i = 0; i < 16; i++) state[i] ^= w[i];
-
-    return state;
-  }
-
-  function pkcs7Pad(data) {
-    const blockSize = 16;
-    const padLen = blockSize - (data.length % blockSize);
-    const padded = new Uint8Array(data.length + padLen);
-    padded.set(data);
-    for (let i = data.length; i < padded.length; i++) padded[i] = padLen;
-    return padded;
-  }
-
-  function pkcs7Unpad(data) {
-    const padLen = data[data.length - 1];
-    if (padLen < 1 || padLen > 16) throw new Error('Invalid padding');
-    for (let i = data.length - padLen; i < data.length; i++) {
-      if (data[i] !== padLen) throw new Error('Invalid padding');
-    }
-    return data.slice(0, data.length - padLen);
-  }
-
-  function ghash(hashKey, data) {
-    const blockSize = 16;
-    let y = new Uint8Array(16);
-    for (let i = 0; i < data.length; i += blockSize) {
-      const block = data.slice(i, i + blockSize);
-      const padded = new Uint8Array(16);
-      padded.set(block);
-      for (let j = 0; j < 16; j++) y[j] ^= padded[j];
-      let carry = 0;
-      for (let j = 15; j >= 0; j--) {
-        const val = (y[j] << 1) | carry;
-        y[j] = val & 0xff;
-        carry = (y[j] & 0x80) ? 0x80 : 0;
-        if (carry) y[j] ^= 0xe1;
-      }
-      if (hashKey[0] & 0x80) {
-        for (let j = 0; j < 15; j++) {
-          const next = (hashKey[j] << 1) | ((hashKey[j+1] & 0x80) ? 1 : 0);
-          y[j] ^= next;
-        }
-        y[15] ^= (hashKey[15] << 1) ^ 0x80;
-      } else {
-        for (let j = 0; j < 16; j++) y[j] ^= (hashKey[j] << 1);
-      }
-    }
-    return y;
-  }
-
-  return {
-    encryptCtr(plaintext, keyBytes, iv) {
-      const blockSize = 16;
-      const padded = pkcs7Pad(plaintext);
-      const ciphertext = new Uint8Array(padded.length);
-
-      for (let i = 0; i < padded.length; i += blockSize) {
-        const counterBlock = new Uint8Array(16);
-        for (let j = 0; j < 12; j++) counterBlock[j] = iv[j];
-        const counter = Math.floor(iv[15] / 16) + Math.floor(i / blockSize);
-        counterBlock[12] = (counter >> 24) & 0xff;
-        counterBlock[13] = (counter >> 16) & 0xff;
-        counterBlock[14] = (counter >> 8) & 0xff;
-        counterBlock[15] = (counter >> 0) & 0xff;
-
-        const keystream = blockEncrypt(counterBlock, keyBytes);
-        for (let j = 0; j < 16 && i + j < padded.length; j++) {
-          ciphertext[i + j] = padded[i + j] ^ keystream[j];
-        }
-      }
-
-      return ciphertext;
-    },
-
-    decryptCtr(ciphertext, keyBytes, iv) {
-      const blockSize = 16;
-      const plaintext = new Uint8Array(ciphertext.length);
-
-      for (let i = 0; i < ciphertext.length; i += blockSize) {
-        const counterBlock = new Uint8Array(16);
-        for (let j = 0; j < 12; j++) counterBlock[j] = iv[j];
-        const counter = Math.floor(iv[15] / 16) + Math.floor(i / blockSize);
-        counterBlock[12] = (counter >> 24) & 0xff;
-        counterBlock[13] = (counter >> 16) & 0xff;
-        counterBlock[14] = (counter >> 8) & 0xff;
-        counterBlock[15] = (counter >> 0) & 0xff;
-
-        const keystream = blockEncrypt(counterBlock, keyBytes);
-        for (let j = 0; j < 16 && i + j < ciphertext.length; j++) {
-          plaintext[i + j] = ciphertext[i + j] ^ keystream[j];
-        }
-      }
-
-      return pkcs7Unpad(plaintext);
-    },
-
-    ghash,
-  };
-})();
-
-function aesEncrypt(plaintext, keyHex) {
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 32));
-  const iv = getRandomBytes(12);
-  const plaintextBytes = new TextEncoder().encode(plaintext);
-
-  const ciphertext = AES.encryptCtr(plaintextBytes, keyBytes, iv);
-
-  const authData = new Uint8Array(0);
-  const al = (authData.length * 8) & 0xff;
-  const authInput = new Uint8Array(16 + ciphertext.length + 1);
-  authInput.set(authData);
-  authInput.set(ciphertext, authData.length);
-  authInput[authInput.length - 1] = al;
-
-  const tag = new Uint8Array(16);
-
+function aesGcmEncrypt(plaintext, key) {
+  const iv = getRandomBytes(GCM_IV_BYTES);
+  const sealed = gcm(resolveAesKey(key), iv).encrypt(utf8(plaintext));
   return {
     iv: bytesToHex(iv),
-    ciphertext: bytesToHex(ciphertext),
-    tag: bytesToHex(tag),
+    ciphertext: bytesToHex(sealed),
   };
 }
 
-function aesDecrypt(ciphertextHex, ivHex, keyHex) {
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 32));
+function aesGcmDecrypt(ciphertextHex, ivHex, key) {
   const iv = hexToBytes(ivHex);
-  const ciphertext = hexToBytes(ciphertextHex);
-
-  const plaintext = AES.decryptCtr(ciphertext, keyBytes, iv);
-  return new TextDecoder().decode(plaintext);
+  if (iv.length !== GCM_IV_BYTES) throw new Error('AES-GCM IV must be 12 bytes');
+  // Throws if the tag does not verify. Callers must let that propagate:
+  // swallowing it is what turns a detected forgery back into silent acceptance.
+  const opened = gcm(resolveAesKey(key), iv).decrypt(hexToBytes(ciphertextHex));
+  return new TextDecoder().decode(opened);
 }
 
-function aesGcmEncrypt(plaintext, keyHex) {
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 32));
-  const iv = getRandomBytes(12);
-  const plaintextBytes = new TextEncoder().encode(plaintext);
-
-  const ciphertext = AES.encryptCtr(plaintextBytes, keyBytes, iv);
-
-  return {
-    iv: bytesToHex(iv),
-    ciphertext: bytesToHex(ciphertext),
-  };
-}
-
-function aesGcmDecrypt(ciphertextHex, ivHex, keyHex) {
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 32));
-  const iv = hexToBytes(ivHex);
-  const ciphertext = hexToBytes(ciphertextHex);
-
-  const plaintext = AES.decryptCtr(ciphertext, keyBytes, iv);
-  return new TextDecoder().decode(plaintext);
-}
-
+/**
+ * An ECDH P-256 keypair, matching the web app's
+ * crypto.subtle.generateKey({name:'ECDH', namedCurve:'P-256'}).
+ *
+ * The previous implementation returned 32 random bytes as the "private key" and
+ * a *separate, unrelated* 65 random bytes as the "public key". They were not a
+ * pair, so no shared secret could ever be agreed — key exchange could not have
+ * worked at all. The public key here is the real uncompressed point (0x04 ‖ X ‖ Y),
+ * the same "raw" encoding the web app exports, so the two sides interoperate.
+ */
 function generateKeyPairSync() {
-  const privateKeyRaw = getRandomBytes(32);
-  const publicKeyRaw = getRandomBytes(65);
-  publicKeyRaw[0] = 0x04;
-  const publicKeyHex = bytesToHex(publicKeyRaw);
+  const privateKeyRaw = p256.utils.randomPrivateKey();
+  const publicKeyRaw = p256.getPublicKey(privateKeyRaw, false); // uncompressed
   return {
-    publicKeyHex,
+    publicKeyHex: bytesToHex(publicKeyRaw),
     privateKeyRaw: bytesToHex(privateKeyRaw),
   };
 }
 
-function aesEncrypt(plaintext, keyHex) {
-  const iv = getRandomBytes(12);
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 64));
-  const textBytes = new TextEncoder().encode(plaintext);
-  const cipherBytes = new Uint8Array(textBytes.length);
-  for (let i = 0; i < textBytes.length; i++) {
-    cipherBytes[i] = textBytes[i] ^ keyBytes[i % keyBytes.length] ^ iv[i % iv.length];
-  }
-  const tag = getRandomBytes(16);
-  const combined = new Uint8Array(cipherBytes.length + tag.length);
-  combined.set(cipherBytes);
-  combined.set(tag, cipherBytes.length);
-  return {
-    iv: bytesToHex(iv),
-    ciphertext: bytesToHex(combined),
-  };
+/**
+ * The uncompressed P-256 public key for a private key, hex encoded.
+ *
+ * Recovery uses this to prove an unwrapped private key really belongs to the
+ * identity being restored, instead of trusting a public key that travelled
+ * alongside it in the same blob.
+ */
+function publicKeyFromPrivate(privateKeyHex) {
+  return bytesToHex(p256.getPublicKey(hexToBytes(privateKeyHex), false));
 }
 
-function aesDecrypt(ciphertextHex, ivHex, keyHex) {
-  const iv = hexToBytes(ivHex);
-  const keyBytes = hexToBytes(keyHex.padEnd(64, '0').slice(0, 64));
-  const allBytes = hexToBytes(ciphertextHex);
-  const cipherBytes = allBytes.slice(0, allBytes.length - 16);
-  const plainBytes = new Uint8Array(cipherBytes.length);
-  for (let i = 0; i < cipherBytes.length; i++) {
-    plainBytes[i] = cipherBytes[i] ^ keyBytes[i % keyBytes.length] ^ iv[i % iv.length];
+/**
+ * ECDH shared secret with a peer's uncompressed P-256 public key, hashed to a
+ * 32-byte AES key. Returns hex, ready to hand to the AES functions above.
+ */
+function deriveSharedKey(privateKeyHex, peerPublicKeyHex) {
+  const shared = p256.getSharedSecret(hexToBytes(privateKeyHex), hexToBytes(peerPublicKeyHex), true);
+  // Drop the leading format byte and hash the X coordinate, which is what
+  // WebCrypto's ECDH deriveBits yields before its own KDF step.
+  return bytesToHex(nobleSha256(shared.slice(1)));
+}
+
+/**
+ * A recovery phrase drawn uniformly from the shared wordlist.
+ *
+ * Both screens previously built this with Math.random(). That is the single
+ * most sensitive value in the app — every other key derives from it — and
+ * Math.random is a fast non-cryptographic PRNG whose internal state can be
+ * recovered from a handful of outputs, so the phrase, the wrapping key, and the
+ * private key behind it were all predictable no matter how strong the KDF was.
+ *
+ * Rejection sampling keeps the draw uniform: taking a random byte pair modulo
+ * the list length would bias toward the first (65536 % 575) words.
+ */
+function generateSeedPhrase(wordCount = SEED_PHRASE_WORDS, wordlist = WORDLIST) {
+  const n = wordlist.length;
+  if (!n) throw new Error('Wordlist is empty');
+  const limit = Math.floor(65536 / n) * n; // largest unbiased multiple
+  const words = [];
+  while (words.length < wordCount) {
+    const b = getRandomBytes(2);
+    const value = (b[0] << 8) | b[1];
+    if (value >= limit) continue; // discard, do not fold
+    words.push(wordlist[value % n]);
   }
-  return new TextDecoder().decode(plainBytes);
+  return words;
 }
 
 function genInvite() {
@@ -487,22 +234,66 @@ async function hasBiometrics() {
   }
 }
 
+/**
+ * The 256-bit key wrapping the private key at rest, derived from the recovery
+ * phrase.
+ *
+ * PBKDF2-HMAC-SHA256, salt "ghostlink-v2-salt", 100,000 iterations — the exact
+ * parameters the web app passes to crypto.subtle.deriveKey, so the same phrase
+ * yields the same bytes on both platforms.
+ *
+ * This replaces a single unsalted pass of a non-SHA-256 hash, which offered no
+ * work factor at all: a phrase guess cost one cheap hash to test.
+ *
+ * pbkdf2Async yields between blocks so 100k iterations of pure-JS PBKDF2 do not
+ * freeze the UI thread. It is deliberately slow — that is the entire point of
+ * a KDF — so call it once at setup or unlock and keep the result in memory.
+ */
 async function deriveKeyFromSeed(words) {
-  const combined = words.join(' ');
-  const hash = await sha256(combined + 'ghostlink-v2-salt');
-  return hash;
+  const phrase = Array.isArray(words) ? words.join(' ') : String(words);
+  const bits = await pbkdf2Async(nobleSha256, utf8(phrase), utf8('ghostlink-v2-salt'), {
+    c: 100000,
+    dkLen: 32,
+  });
+  return bytesToHex(bits);
+}
+
+/**
+ * The key for message history at rest. A separate derivation from
+ * deriveKeyFromSeed — different salt, higher work factor — so the key that
+ * wraps the private key and the key that encrypts stored messages are never the
+ * same bytes. Mirrors the web app's deriveStorageKey.
+ */
+async function deriveStorageKey(words) {
+  const phrase = Array.isArray(words) ? words.join(' ') : String(words);
+  const bits = await pbkdf2Async(nobleSha256, utf8(phrase), utf8('ghostlink-storage-v1'), {
+    c: 200000,
+    dkLen: 32,
+  });
+  return bytesToHex(bits);
 }
 
 const ShamirSSS = (() => {
-  const PRIME = 0x11b;
+  // GF(2^8) with AES's reduction polynomial 0x11b.
+  //
+  // The log/exp tables were previously built by repeatedly doubling from 1,
+  // i.e. treating 0x02 as a generator. It is not one in this field — it has
+  // order 51, so the tables covered only a fifth of the elements and the rest
+  // of LOG stayed zero. Multiplication was wrong for most inputs (mul(1,3)
+  // returned 1), which meant shares did not reconstruct: every recovery
+  // fragment this produced was unusable. 0x03 is a primitive element, so
+  // stepping by 3 walks all 255 non-zero values.
+  const xtime = a => ((a << 1) ^ (a & 0x80 ? 0x11b : 0)) & 0xff;
+
   const LOG = new Uint8Array(256);
   const EXP = new Uint8Array(512);
   let x = 1;
   for (let i = 0; i < 255; i++) {
     EXP[i] = EXP[i + 255] = x;
     LOG[x] = i;
-    x = (x << 1) ^ (x & 128 ? PRIME : 0);
+    x = (xtime(x) ^ x) & 0xff; // x *= 3
   }
+
   const mul = (a, b) => (!a || !b ? 0 : EXP[LOG[a] + LOG[b]]);
   const div = (a, b) => (!a ? 0 : EXP[(LOG[a] - LOG[b] + 255) % 255]);
   const eval_ = (c, xv) => {
@@ -592,23 +383,28 @@ function combineFragments(fragmentHexArray) {
 
 export const CryptoEngine = {
   generateKeyPair: generateKeyPairSync,
+  deriveSharedKey,
+  publicKeyFromPrivate,
   sha256,
   hmacSha256,
   encrypt: aesGcmEncrypt,
   decrypt: aesGcmDecrypt,
-  encryptLegacy: aesEncrypt,
-  decryptLegacy: aesDecrypt,
+  // encryptLegacy/decryptLegacy are gone. They were a XOR of plaintext against
+  // the key and IV with a random, never-verified 16-byte "tag" appended —
+  // trivially breakable and not encryption in any useful sense. Nothing called
+  // them. Anything that needs symmetric encryption uses encrypt/decrypt above.
+  generateSeedPhrase,
   genInvite,
   storeKeyPair,
   loadKeyPair,
   clearKeys,
   hasBiometrics,
   deriveKeyFromSeed,
+  deriveStorageKey,
   bytesToHex,
   hexToBytes,
   getRandomBytes,
-  AES,
 };
 
-export {ShamirSSS, generateBackupFragments, combineFragments, hmacSha256};
+export {ShamirSSS, generateBackupFragments, combineFragments, hmacSha256, sha256, generateSeedPhrase};
 export default CryptoEngine;

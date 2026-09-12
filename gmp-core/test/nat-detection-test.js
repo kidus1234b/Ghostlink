@@ -1,4 +1,4 @@
-import { classifyNAT, detectNATType } from '../nat-detector.js';
+import { classifyNAT, detectNATType } from '../dist/nat-detector.js';
 import { EventEmitter } from 'events';
 
 let testsRun = 0;

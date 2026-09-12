@@ -4,25 +4,23 @@
   "description": "GhostLink — Zero Trust · Zero Trace · Zero Servers — Encrypted P2P Communication Platform",
   "private": true,
   "workspaces": [
-    "server",
     "mobile",
     "electron"
   ],
   "scripts": {
-    "start": "python3 server/server.py",
-    "server": "python3 server/server.py",
+    "start": "node gmp-core/dist/gmp-bridge.js",
     "desktop": "cd electron && npm start",
     "mobile:android": "cd mobile && npx react-native run-android",
     "mobile:ios": "cd mobile && npx react-native run-ios",
     "build:desktop:win": "cd electron && npm run build:win",
     "build:desktop:mac": "cd electron && npm run build:mac",
     "build:desktop:linux": "cd electron && npm run build:linux",
-    "install:server": "cd server && npm install",
     "install:mobile": "cd mobile && npm install",
     "install:desktop": "cd electron && npm install",
-    "install:all": "npm run install:server && npm run install:mobile && npm run install:desktop",
+    "install:all": "npm run install:mobile && npm run install:desktop",
     "build": "esbuild index-entry.js --bundle --minify --format=esm --external:crypto --external:fs --external:path --external:os --external:stream --outfile=app.bundle.js",
-    "test": "node test/debug-console.test.js && node test/message-vault.test.js && node test/peer-lifecycle.test.js"
+    "build:vendor": "node build-vendor.js",
+    "test": "node test/debug-console.test.js && node test/message-vault.test.js && node test/message-chain.test.js && node test/peer-lifecycle.test.js && node test/mesh-connector.test.js && node gmp-core/test/ghost-address-test.js && node gmp-core/test/ghost-address-parity-test.js && node gmp-core/test/bridge-ghost-address-test.js && node gmp-core/test/lan-discovery-test.js"
   },
   "repository": {
     "type": "git",
@@ -36,8 +34,10 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@babel/preset-react": "^7.26.0",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "htm": "^3.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tweetnacl": "^1.0.3"
   }
 }
-

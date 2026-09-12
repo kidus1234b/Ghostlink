@@ -32,7 +32,18 @@ global.window = {
   },
 };
 global.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
-global.WebSocket = function () {};
+// close() only flips the state: a real socket fires onclose on a later tick,
+// which is exactly the window the reconnect guard has to survive. Tests invoke
+// onclose() themselves to model that deferred event.
+const openedSockets = [];
+global.WebSocket = function (url) {
+  this.url = url;
+  this.readyState = 1;
+  this.send = () => {};
+  this.close = () => { this.readyState = 3; };
+  openedSockets.push(this);
+};
+global.WebSocket.OPEN = 1;
 global.RTCPeerConnection = function () {};
 
 const { P2PConnector } = require(path.join(__dirname, '..', 'src', 'p2p', 'p2p-connector.js'));
@@ -188,6 +199,45 @@ test('destroy() closes every transport and drops listeners', () => {
   c.emit('peer-connected', 'p1', {});
   c.emit('peer-disconnected', 'p1');
   assert.deepStrictEqual(events, [], 'destroyed connector still emits into old listeners');
+});
+
+test('a live socket closing still schedules a reconnect', () => {
+  const { c } = makeConnector();
+  openedSockets.length = 0;
+  c.wsUrl = 'ws://localhost:3001';
+  c._connectWs();
+  const ws = openedSockets[0];
+  ws.onopen();
+
+  ws.readyState = 3;
+  ws.onclose();
+  assert.ok(c.reconnectTimer, 'no reconnect scheduled after an unexpected close');
+  clearTimeout(c.reconnectTimer);
+  c.reconnectTimer = null;
+});
+
+test('destroy() stops the signaling reconnect loop', () => {
+  const { c } = makeConnector();
+  openedSockets.length = 0;
+  c.wsUrl = 'ws://localhost:3001';
+  c._connectWs();
+  const ws = openedSockets[0];
+  ws.onopen();
+  assert.ok(c.wsPingInterval, 'ping interval was never started');
+
+  c.destroy();
+  // The socket's onclose lands after close() returned, i.e. after disconnect()
+  // already cleared the timers.
+  ws.onclose();
+
+  assert.strictEqual(c.reconnectTimer, null, 'destroyed connector re-armed the reconnect timer');
+  assert.strictEqual(c.wsPingInterval, null, 'ping interval left running');
+  assert.strictEqual(openedSockets.length, 1, 'destroyed connector opened a new socket');
+
+  // connect() must not resurrect it either.
+  return c.connect().then(() => {
+    assert.strictEqual(openedSockets.length, 1, 'connect() revived a destroyed connector');
+  });
 });
 
 (async () => {

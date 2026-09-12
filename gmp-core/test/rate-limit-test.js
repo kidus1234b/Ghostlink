@@ -10,8 +10,8 @@
  * Run: node test/rate-limit-test.js
  */
 
-import { RateLimiter } from '../rate-limiter.js';
-import { GMPNode } from '../link.js';
+import { RateLimiter } from '../dist/rate-limiter.js';
+import { GMPNode } from '../dist/link.js';
 import net from 'net';
 
 let testsRun = 0;

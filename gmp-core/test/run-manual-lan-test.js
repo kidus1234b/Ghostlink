@@ -11,7 +11,7 @@
  * Run: node test/run-manual-lan-test.js
  */
 
-import { GMPNodeManager } from '../gmp-node-manager.js';
+import { GMPNodeManager } from '../dist/gmp-node-manager.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';

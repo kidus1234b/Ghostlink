@@ -1,0 +1,23 @@
+rootProject.name = 'GhostLink'
+
+// This app is an npm workspace of the repo root, so npm hoists node_modules up
+// one more level than a standalone React Native project. Resolve it instead of
+// assuming ../node_modules, which only exists in the unhoisted layout.
+def resolveNodeModules = {
+    def candidates = [
+        file("../node_modules"),
+        file("../../node_modules")
+    ]
+    def found = candidates.find { new File(it, "react-native/package.json").exists() }
+    if (found == null) {
+        throw new GradleException(
+            "node_modules not found. Run 'npm install' in the repo root, then build again.")
+    }
+    return found
+}
+gradle.ext.nodeModulesDir = resolveNodeModules()
+
+apply from: file("${gradle.ext.nodeModulesDir}/@react-native-community/cli-platform-android/native_modules.gradle")
+applyNativeModulesSettingsGradle(settings)
+include ':app'
+includeBuild("${gradle.ext.nodeModulesDir}/@react-native/gradle-plugin")

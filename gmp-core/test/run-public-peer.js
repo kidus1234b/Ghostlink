@@ -1,4 +1,4 @@
-import { GMPNode } from '../link.js';
+import { GMPNode } from '../dist/link.js';
 import readline from 'readline';
 
 const rl = readline.createInterface({

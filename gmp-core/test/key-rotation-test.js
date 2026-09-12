@@ -2,8 +2,8 @@
  * GMP Key Rotation Test Suite — Phase 5
  */
 
-import { GMPNode } from '../link.js';
-import { deriveIdentityFromSeedPhrase } from '../identity.js';
+import { GMPNode } from '../dist/link.js';
+import { deriveIdentityFromSeedPhrase } from '../dist/identity.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

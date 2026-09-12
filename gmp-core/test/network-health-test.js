@@ -2,7 +2,7 @@
  * GMP Network Health Test Suite — Phase 4
  */
 
-import { GMPNode } from '../link.js';
+import { GMPNode } from '../dist/link.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

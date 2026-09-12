@@ -243,11 +243,14 @@ export default function ChatListScreen({navigation}) {
 
   // Build chat list from peers + messages
   const chatList = useMemo(() => {
-    const peers = state.peers || [];
+    // state.peers and state.messages are Maps (see AppContext's reducer),
+    // not arrays. Calling .map() on a Map is what threw "undefined is not a
+    // function" and took the whole screen down on first render.
+    const peers = Array.from(state.peers?.values?.() ?? []);
     return peers
       .map(peer => {
         const roomId = peer.roomId || peer.id;
-        const msgs = state.messages[roomId] || [];
+        const msgs = state.messages?.get?.(roomId) ?? [];
         const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
         const unread = msgs.filter(
           m => !m.read && m.sender !== state.displayName,
@@ -305,7 +308,7 @@ export default function ChatListScreen({navigation}) {
   const handlePin = useCallback(
     peerId => {
       Vibration.vibrate(15);
-      const peer = (state.peers || []).find(p => p.id === peerId);
+      const peer = state.peers?.get?.(peerId);
       if (peer) {
         dispatch({
           type: 'UPDATE_PEER',
@@ -319,7 +322,7 @@ export default function ChatListScreen({navigation}) {
   const handleMute = useCallback(
     peerId => {
       Vibration.vibrate(15);
-      const peer = (state.peers || []).find(p => p.id === peerId);
+      const peer = state.peers?.get?.(peerId);
       if (peer) {
         dispatch({
           type: 'UPDATE_PEER',
@@ -372,7 +375,7 @@ export default function ChatListScreen({navigation}) {
       type: 'ADD_PEER',
       payload: {
         id: peerId,
-        name: `Peer ${(state.peers || []).length + 1}`,
+        name: `Peer ${(state.peers?.size ?? 0) + 1}`,
         inviteCode: code,
         fingerprint: fingerprint.slice(0, 16),
         online: false,

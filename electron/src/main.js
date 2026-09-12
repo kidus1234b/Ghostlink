@@ -31,8 +31,8 @@ let gmpBridge = null;
 
 async function startGMPNode(seedPhrase) {
   if (gmpManager) return;
-  const { GMPNodeManager } = await import('../../gmp-core/gmp-node-manager.js');
-  const { startBridge } = await import('../../gmp-core/gmp-bridge.js');
+  const { GMPNodeManager } = await import('../../gmp-core/dist/gmp-node-manager.js');
+  const { startBridge } = await import('../../gmp-core/dist/gmp-bridge.js');
 
   gmpManager = new GMPNodeManager({ seedPhrase, port: 49500 });
   gmpBridge = startBridge(gmpManager, 3002);

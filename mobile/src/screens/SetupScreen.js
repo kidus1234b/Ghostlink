@@ -28,84 +28,11 @@ import Animated, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
-import {CryptoEngine, ShamirSSS, generateBackupFragments} from '../utils/crypto';
+import {CryptoEngine, ShamirSSS, generateBackupFragments, generateSeedPhrase} from '../utils/crypto';
+import {wrapIdentity, saveRecoveryBundle, FRAGMENTS_STORAGE_KEY} from '../utils/recovery';
 
 // ==================== BIP39 512-WORD LIST ====================
 // Same word list used by the GhostLink web app (index.html)
-const BIP39_WORDS = [
-  "abandon","ability","able","above","absent","absorb","abuse","access",
-  "account","achieve","acid","across","action","actor","adapt","address",
-  "admit","adult","advance","advice","afford","afraid","again","agent",
-  "agree","aim","airport","alarm","album","alert","alien","alley",
-  "allow","almost","alone","already","alter","amateur","amazing","anchor",
-  "ancient","anger","angle","animal","annual","antenna","anxiety","appear",
-  "approve","arch","arctic","area","argue","armor","army","arrest",
-  "arrive","artist","aspect","assault","assist","athlete","attach","attend",
-  "attract","audit","author","autumn","aware","awesome","axis","balance",
-  "bamboo","banner","barely","barrel","battle","beauty","become","benefit",
-  "betray","bicycle","biology","birth","bitter","blade","blame","blast",
-  "bless","blind","blossom","boost","border","bounce","bracket","brave",
-  "bridge","brief","bright","brisk","broken","brother","bubble","bullet",
-  "bundle","burden","burst","business","butter","cable","cactus","canvas",
-  "capable","captain","carbon","cargo","carry","castle","casual","catalog",
-  "cause","caution","cement","century","cereal","champion","chapter","charge",
-  "chase","cheap","chest","chief","child","choice","circuit","citizen",
-  "civil","claim","clever","client","climb","clinic","clog","cloth",
-  "cloud","cluster","clutch","coast","coconut","combine","comfort","company",
-  "confirm","congress","connect","consider","control","convince","copper","coral",
-  "correct","cotton","country","couple","cousin","cover","crack","cradle",
-  "craft","crane","crash","cream","cricket","crime","crisp","cross",
-  "crucial","crystal","culture","curious","current","custom","cycle","damage",
-  "danger","daring","daughter","decade","decline","define","delay","deliver",
-  "demand","dental","derive","describe","design","detect","develop","device",
-  "diagram","diamond","digital","dilemma","discover","display","domain","donate",
-  "double","dragon","drama","draw","dream","dress","drift","drive",
-  "dynamic","eagle","economy","effort","eight","electric","element","elite",
-  "emerge","emotion","employ","enable","endorse","energy","enforce","engage",
-  "engine","enjoy","enough","enrich","enter","equal","equip","escape",
-  "estate","ethics","evidence","evolve","exact","excess","excite","exercise",
-  "exhaust","exist","expand","explain","expose","extend","fabric","faculty",
-  "faith","famous","fantasy","fashion","feature","festival","fiction","figure",
-  "filter","fiscal","fitness","flame","flavor","flight","float","flower",
-  "fluid","focus","forest","fortune","fossil","frame","frequent","fresh",
-  "future","galaxy","gallery","garlic","gather","genius","genuine","ghost",
-  "giant","ginger","giraffe","global","gospel","govern","grace","grain",
-  "grape","gravity","great","guard","guide","guitar","habit","harvest",
-  "hazard","health","heavy","height","hidden","history","hobby","hockey",
-  "holiday","honey","hospital","hover","humble","humor","hybrid","icon",
-  "ignore","illegal","image","immune","impact","improve","impulse","income",
-  "indoor","industry","infant","innocent","inquiry","inspire","install","intact",
-  "invest","invite","island","isolate","jacket","jaguar","jealous","journey",
-  "jungle","kangaroo","kingdom","kitchen","knowledge","language","laptop","laundry",
-  "lawsuit","leader","lecture","legend","liberty","license","liquid","lottery",
-  "luggage","luxury","magic","magnet","marble","margin","marine","master",
-  "matrix","meadow","melody","memory","mentor","mercy","middle","midnight",
-  "miracle","mitten","monitor","monkey","moral","morning","mountain","museum",
-  "mystery","nature","network","neutral","noble","nominee","nuclear","object",
-  "obtain","ocean","olympic","onion","orbit","orchard","order","organ",
-  "orphan","ostrich","output","oxygen","paddle","palace","panic","patrol",
-  "payment","peasant","pelican","penalty","perfect","permit","phrase","physical",
-  "pioneer","pistol","planet","plastic","pledge","polar","popular","portrait",
-  "pottery","poverty","predict","preserve","primary","priority","prison","produce",
-  "profit","program","promote","property","protect","provide","pudding","quantum",
-  "question","rabbit","raccoon","radar","rainbow","rally","random","rebel",
-  "rebuild","recall","recipe","reduce","reform","region","regular","release",
-  "remain","remind","rescue","resist","resource","result","retire","reunion",
-  "reveal","reward","rhythm","ribbon","ritual","robust","romance","rookie",
-  "rotate","satellite","satisfy","scatter","science","scorpion","screen","second",
-  "section","security","segment","seminar","separate","shadow","sheriff","shield",
-  "signal","silent","similar","simple","siren","social","solar","soldier",
-  "solution","someone","source","space","spatial","spawn","special","sphere",
-  "spirit","sponsor","stable","stadium","stairs","strategy","street","struggle",
-  "student","style","submit","subway","surface","surprise","sustain","symbol",
-  "symptom","tackle","talent","target","texture","theory","thunder","timber",
-  "tissue","token","tornado","tourist","traffic","tragic","transfer","trigger",
-  "trophy","trumpet","tunnel","unique","universe","unlock","unusual","upgrade",
-  "uphold","urban","utility","vacant","valley","vendor","venture","verify",
-  "vibrant","victory","vintage","virtual","vital","vivid","volcano","voyage",
-  "walnut","warfare","warrior","wealth","weapon","wedding","whisper","wildlife",
-  "wisdom","witness","wonder","wrist","yellow","zebra","zero",
-];
 
 // ==================== STEP DEFINITIONS ====================
 const STEPS = {
@@ -117,18 +44,9 @@ const STEPS = {
 // Verification word positions (0-indexed): words 3, 7, 11
 const VERIFY_INDICES = [2, 6, 10];
 
-function generateSeedPhrase() {
-  const words = [];
-  for (let i = 0; i < 12; i++) {
-    const idx = Math.floor(Math.random() * BIP39_WORDS.length);
-    words.push(BIP39_WORDS[idx]);
-  }
-  return words;
-}
-
 export default function SetupScreen({navigation}) {
   const {theme} = useTheme();
-  const {dispatch} = useApp();
+  const {setIdentity} = useApp();
   const [step, setStep] = useState(STEPS.NAME);
   const [displayName, setDisplayName] = useState('');
   const [seedPhrase, setSeedPhrase] = useState([]);
@@ -206,58 +124,74 @@ export default function SetupScreen({navigation}) {
       const keyPair = CryptoEngine.generateKeyPair();
       const fingerprint = await CryptoEngine.sha256(keyPair.publicKeyHex);
 
-      // 2. PBKDF2 key derivation from seed phrase
-      const derivedKeyHex = await CryptoEngine.deriveKeyFromSeed(seedPhrase);
+      // 2. Wrap the private key under the phrase (AES-256-GCM envelope). The
+      //    same bundle is stored on device and split into fragments, so both
+      //    restore paths read the identical shape.
+      const bundle = await wrapIdentity(
+        {
+          privateKeyRaw: keyPair.privateKeyRaw,
+          publicKeyHex: keyPair.publicKeyHex,
+          name: displayName.trim(),
+        },
+        seedPhrase,
+      );
 
-      // 3. Wrap private key using derived key (AES-GCM envelope)
-      const wrappedPrivKey = CryptoEngine.encrypt(keyPair.privateKeyRaw, derivedKeyHex);
-
-      // 4. Store keypair securely in Keychain
+      // 3. Store keypair securely in Keychain
       await CryptoEngine.storeKeyPair(keyPair.publicKeyHex, keyPair.privateKeyRaw);
 
-      // 5. Generate Shamir fragments (7 shares, threshold 3) for the wrapped key
-      const wrappedBlob = JSON.stringify({
-        wrappedKey: wrappedPrivKey,
-        publicKeyHex: keyPair.publicKeyHex,
-        displayName: displayName.trim(),
-      });
-      const fragments = generateBackupFragments(wrappedBlob);
+      // 4. Generate Shamir fragments (7 shares, threshold 3) of that bundle
+      const fragments = generateBackupFragments(JSON.stringify(bundle));
 
-      // 6. Store fragments and identity data in AsyncStorage
-      await AsyncStorage.setItem('gl_shamir_fragments', JSON.stringify(fragments));
-      await AsyncStorage.setItem('gl_wrapped_privkey', JSON.stringify(wrappedPrivKey));
-      await AsyncStorage.setItem('gl_seed_check', await CryptoEngine.sha256(seedPhrase.join(' ')));
+      // 5. Store fragments and the bundle
+      await AsyncStorage.setItem(FRAGMENTS_STORAGE_KEY, JSON.stringify(fragments));
+      await saveRecoveryBundle(bundle);
+      // No separate seed hash is written. A bare SHA-256 of the phrase beside
+      // the wrapped key would let anyone holding the device test guesses at one
+      // cheap hash apiece, which is exactly what the 100,000 PBKDF2 iterations
+      // exist to prevent. The GCM tag on the wrapped key is the phrase check.
 
-      // 7. Generate invite code
+      // 6. Generate invite code
       const inviteCode = CryptoEngine.genInvite();
 
-      // 8. Update app context
+      // 7. Update app context
       const identity = {
         publicKeyHex: keyPair.publicKeyHex,
         fingerprint: fingerprint.slice(0, 16),
         name: displayName.trim(),
       };
 
-      dispatch({type: 'SET_IDENTITY', payload: identity});
-      dispatch({type: 'SET_SEED_PHRASE', payload: seedPhrase});
-      dispatch({type: 'SET_DISPLAY_NAME', payload: displayName.trim()});
-      dispatch({type: 'SET_INVITE_CODE', payload: inviteCode});
-      dispatch({type: 'COMPLETE_SETUP'});
+      // AppContext exposes intent-named helpers, not the raw dispatcher — this
+      // used to call dispatch(), which the context never provided, so setup
+      // always failed here with "undefined is not a function" after every
+      // expensive crypto step had already succeeded. Four of the five actions
+      // it dispatched (SET_SEED_PHRASE, SET_DISPLAY_NAME, SET_INVITE_CODE,
+      // COMPLETE_SETUP) are not in the reducer either, so they would have been
+      // silent no-ops even with a working dispatcher.
+      //
+      // The recovery phrase deliberately does not go into app state: identity
+      // is persisted to AsyncStorage, and a plaintext copy of the phrase there
+      // would undo the point of wrapping the key under it. The user was told to
+      // write it down, and the wrapped bundle is what recovery actually needs.
+      setIdentity(identity);
+      await AsyncStorage.setItem('gl_invite_code', inviteCode);
 
       Vibration.vibrate(40);
 
-      // Navigate to main screen
-      navigation.reset({
-        index: 0,
-        routes: [{name: 'Main'}],
-      });
+      // No navigation.reset here. MainNavigator renders the auth stack or the
+      // main stack purely on whether an identity exists, so setting it is what
+      // moves the user on — and 'Main' does not exist in the auth stack this
+      // screen belongs to, so resetting to it would throw.
     } catch (e) {
+      // The message alone ("undefined is not a function") says nothing about
+      // where it came from, and this path runs entirely on-device — so log the
+      // stack too, or the next failure here is another guessing game.
+      console.error('[GhostLink:Setup] identity generation failed:', e && e.stack ? e.stack : e);
       Alert.alert('Setup Error', 'Failed to generate identity. Please try again.\n\n' + (e.message || ''));
     } finally {
       setLoading(false);
       setGeneratingFragments(false);
     }
-  }, [confirmWords, seedPhrase, displayName, dispatch, navigation]);
+  }, [confirmWords, seedPhrase, displayName, setIdentity]);
 
   // ==================== RENDER ====================
   return (

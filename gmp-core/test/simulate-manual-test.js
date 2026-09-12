@@ -1,5 +1,5 @@
-import { GMPNode } from '../link.js';
-import { holePunchConnect } from '../hole-punch.js';
+import { GMPNode } from '../dist/link.js';
+import { holePunchConnect } from '../dist/hole-punch.js';
 
 async function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));

@@ -2,8 +2,8 @@
  * GMP Encryption-At-Rest Test Suite — Phase 5
  */
 
-import { PeerCache } from '../peer-cache.js';
-import { NonceStore } from '../nonce-store.js';
+import { PeerCache } from '../dist/peer-cache.js';
+import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';

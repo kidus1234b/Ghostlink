@@ -474,9 +474,6 @@
     }
 
     sendMessage(peerId, data) { return this.send(peerId, data, 'messages'); }
-    send {[10].map(i=>[10]) ... } 
-// The above is a stray paste. Correct below.
-
     sendFile(peerId, frame) { return this.send(peerId, frame, 'files'); }
 
     sendPresence(peerId, data) { return this.send(peerId, data, 'presence'); }

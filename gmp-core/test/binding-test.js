@@ -1,6 +1,6 @@
-import { GMPNode, SessionKeyLRUSet } from '../link.js';
-import { RateLimiter } from '../rate-limiter.js';
-import { queryPublicAddress } from '../public-peer-list.js';
+import { GMPNode, SessionKeyLRUSet } from '../dist/link.js';
+import { RateLimiter } from '../dist/rate-limiter.js';
+import { queryPublicAddress } from '../dist/public-peer-list.js';
 import net from 'net';
 import crypto from 'crypto';
 

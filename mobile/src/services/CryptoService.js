@@ -28,17 +28,25 @@
 // If you are on Expo managed workflow without native modules, swap the
 // implementations below for expo-crypto equivalents (noted in comments).
 
-let QuickCrypto;
-try {
-  QuickCrypto = require('react-native-quick-crypto');
-} catch (_) {
-  console.warn(
-    '[GhostLink:Crypto] react-native-quick-crypto not found. ' +
-      'Falling back to JS shims — install it for production use.',
-  );
-  // Fallback: use Node-style crypto if bundled via metro polyfill
-  QuickCrypto = require('crypto');
-}
+// react-native-quick-crypto is not a dependency of this build. It is a JSI/C++
+// module and the only consumer of this file is the Ghost Mesh setup modal, which
+// is disabled here (see MOBILE_BUILD.md — embedded GMP is a follow-up). A bare
+// `require` of an uninstalled package is a hard Metro resolution error, not a
+// catchable one, so there is nothing to try/catch: resolve it lazily and let any
+// call fail loudly rather than quietly returning wrong bytes.
+const QUICK_CRYPTO_MISSING =
+  '[GhostLink:Crypto] react-native-quick-crypto is not installed in this build. ' +
+  'Ghost Mesh identity derivation is unavailable. Install it and rebuild to enable ' +
+  'the mesh, or use the desktop/web build.';
+
+const QuickCrypto = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      throw new Error(`${QUICK_CRYPTO_MISSING} (tried to use crypto.${String(prop)})`);
+    },
+  },
+);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

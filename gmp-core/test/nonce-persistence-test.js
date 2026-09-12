@@ -11,7 +11,7 @@
  * Run: node test/nonce-persistence-test.js
  */
 
-import { NonceStore } from '../nonce-store.js';
+import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
 import path from 'path';
 

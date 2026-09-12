@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ghost mark centred on obsidian.
+
+  The source here must be ic_launcher_foreground, not ic_launcher. On API 26+
+  @mipmap/ic_launcher resolves to mipmap-anydpi-v26/ic_launcher.xml, which is an
+  <adaptive-icon> — and <bitmap> can only wrap a real bitmap, so inflating it
+  threw Resources$NotFoundException and killed the activity before it started.
+  ic_launcher_foreground has no anydpi-v26 variant, so it is always a PNG.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/obsidian" />
+    <item
+        android:width="160dp"
+        android:height="160dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@mipmap/ic_launcher_foreground"
+            android:gravity="center" />
+    </item>
+</layer-list>

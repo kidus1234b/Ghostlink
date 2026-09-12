@@ -147,39 +147,78 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 
 ## P2P Connectivity
 
-### Hybrid Signaling (Zero Server by Default)
+### Ghost Addresses (connect by identity, not by location)
 
-GhostLink uses a hybrid approach to solve the WebRTC signaling problem without requiring a permanent server:
+Every GhostLink identity has a short, stable identifier derived from its NodeID:
 
 ```
-FIRST CONNECTION (true zero server):
-  User A generates QR code / invite string
-      │
-      ▼
-  Contains: SDP offer + ICE candidates + public key
-      │
-      ▼
-  User B scans QR / pastes string
-      │
-      ▼
-  User B generates SDP answer → sends back via QR/paste
-      │
-      ▼
-  WebRTC direct connection established
-      │
-      ▼
-  Peers cache each other's network info locally
-
-RECONNECTION (automatic):
-  App starts → checks cached peer info
-      │
-      ├── Direct reconnect using cached ICE candidates
-      │
-      └── Fallback: embedded relay (Electron port 3001)
-           or VPS relay if available
+GHOST-7K2-M4Q-8ZB
 ```
 
-No permanent server needed. The signaling relay is only used as a fallback for NAT changes.
+You give it to someone once. It never changes, it is the same on every device
+restored from your recovery phrase, and there is nothing to register or renew.
+
+It is a **shorthand, not the identity itself**. Those nine characters carry 45
+bits of the NodeID — short enough to read down a phone line, but not unique in
+principle: two identities can in theory produce the same Ghost Address. The
+resolver detects that case, refuses to guess between the candidates, and asks
+you for the peer's full NodeID instead. That full NodeID is shown (and copyable)
+under your address in Settings, and `Connect` accepts it wherever it accepts a
+Ghost Address. The NodeID is the identity; the Ghost Address is how you say it
+out loud.
+
+Critically, neither contains an IP address or a port. That is what makes them
+work from anywhere:
+
+```
+CONNECTING:
+  A shows their Ghost Address (Peer Connection → My Address)
+      │
+      ▼
+  B pastes it (Peer Connection → Connect), or scans the QR
+      │
+      ▼
+  B's node resolves the address to a full NodeID, using the node IDs it
+  already knows about:
+      ├── topology announcements flooded through the mesh   (internet)
+      ├── UDP discovery beacons from this subnet            (LAN, no internet)
+      └── its own peer cache                                (seen before)
+      │
+      ▼
+  B connects by NodeID:
+      ├── direct TCP if the peer has a reachable address
+      └── otherwise a routed GMP virtual circuit through the mesh,
+          which is what works behind NAT and CGNAT
+      │
+      ▼
+  Encrypted session established. Both sides remember each other.
+
+STAYING CONNECTED (no user action, ever):
+  Bridge socket drops   → reconnected automatically, backing off to 15s
+  Peer goes offline     → redialled automatically, backing off to 30s
+  App restarts          → every previous peer session is re-established
+```
+
+There is no manual SDP paste and no second code format. Earlier builds fell back
+to a wall of base64 whenever the mesh was slow to start, which is how most people
+ended up seeing it; the mesh now waits and reconnects instead of degrading.
+
+**Reaching peers outside your own network** requires at least one reachable
+bootstrap peer, since that is what floods the announcements addresses resolve
+against. Peers on your own LAN are always found without one. To run your own:
+
+```bash
+node gmp-core/test/run-public-peer.js     # prints its NodeID on startup
+```
+
+Then add it to `gmp-core/data/public-peers.json`, or point
+`GMP_PUBLIC_PEERS_PATH` at your own list.
+
+No permanent server needed, and there is no signaling relay to deploy — the
+`server/` tree that held one was removed along with the hybrid-signaling
+fallback it served. Peers that cannot open a direct path are forwarded
+through the mesh itself by other peers; nothing degrades to a
+relay you have to run.
 
 ### WebRTC Data Channels (3 multiplexed)
 

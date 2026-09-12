@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { startBridge } from '../gmp-bridge.js';
+import { startBridge } from '../dist/gmp-bridge.js';
 
 let testsRun = 0;
 let testsPassed = 0;

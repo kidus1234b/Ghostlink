@@ -16,9 +16,9 @@
  * Run: node test/two-node-test.js
  */
 
-import { GMPNode, SessionKeyLRUSet } from '../link.js';
-import { deriveIdentityFromSeedPhrase, signMessage } from '../identity.js';
-import { RateLimiter } from '../rate-limiter.js';
+import { GMPNode, SessionKeyLRUSet } from '../dist/link.js';
+import { deriveIdentityFromSeedPhrase, signMessage } from '../dist/identity.js';
+import { RateLimiter } from '../dist/rate-limiter.js';
 import net from 'net';
 import crypto from 'crypto';
 

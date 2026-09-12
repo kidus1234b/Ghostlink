@@ -378,8 +378,7 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = InAppAlertManager;
-  } else {
-    root.InAppAlertManager = InAppAlertManager;
   }
+  root.InAppAlertManager = InAppAlertManager;
 
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -14,7 +14,7 @@
  * Run:  node test/run-manual-multihop-test.js
  */
 
-import { GMPNode } from '../link.js';
+import { GMPNode } from '../dist/link.js';
 import crypto from 'crypto';
 import readline from 'readline';
 

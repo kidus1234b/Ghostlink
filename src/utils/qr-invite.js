@@ -605,7 +605,7 @@ class QRInvite {
       code,
       publicKey: this._identity.publicKeyHex,
       name: this._identity.name,
-      signaling: this._identity.signalingUrl || 'wss://signal.ghostlink.io',
+
       timestamp,
       signature,
     };
@@ -667,7 +667,6 @@ class QRInvite {
       c: invite.code,
       p: invite.publicKey,
       n: invite.name,
-      s: invite.signaling,
       t: invite.timestamp,
       sig: invite.signature,
     });
@@ -745,7 +744,6 @@ class QRInvite {
       code: parsed.code || parsed.c,
       publicKey: parsed.publicKey || parsed.p,
       name: parsed.name || parsed.n,
-      signaling: parsed.signaling || parsed.s,
       timestamp: parsed.timestamp || parsed.t,
       signature: parsed.signature || parsed.sig,
     };
@@ -858,7 +856,6 @@ class QRInvite {
       name: invite.name || '',
       sig: invite.signature || '',
       t: String(invite.timestamp),
-      s: invite.signaling || 'wss://signal.ghostlink.io',
     });
     return `ghostlink://invite/${invite.code}?${params.toString()}`;
   }
@@ -881,7 +878,7 @@ class QRInvite {
       code,
       publicKey: params.get('key') || '',
       name: params.get('name') || '',
-      signaling: params.get('s') || 'wss://signal.ghostlink.io',
+
       timestamp: parseInt(params.get('t') || '0', 10),
       signature: params.get('sig') || '',
     };

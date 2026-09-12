@@ -1,5 +1,5 @@
-import { GMPNode } from '../link.js';
-import { holePunchConnect } from '../hole-punch.js';
+import { GMPNode } from '../dist/link.js';
+import { holePunchConnect } from '../dist/hole-punch.js';
 import net from 'net';
 
 let testsRun = 0;

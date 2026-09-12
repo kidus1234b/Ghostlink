@@ -2,8 +2,8 @@
  * GMP Topology Maintenance Test Suite — Phase 3
  */
 
-import { GMPNode } from '../link.js';
-import { RoutingTable } from '../routing-table.js';
+import { GMPNode } from '../dist/link.js';
+import { RoutingTable } from '../dist/routing-table.js';
 
 let testsRun = 0;
 let testsPassed = 0;

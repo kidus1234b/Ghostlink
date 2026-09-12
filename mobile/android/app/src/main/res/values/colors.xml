@@ -1,0 +1,5 @@
+<resources>
+    <!-- PALETTE.obsidian — the same app background the web build uses. -->
+    <color name="obsidian">#0B0F17</color>
+    <color name="spectral">#4FE3B0</color>
+</resources>

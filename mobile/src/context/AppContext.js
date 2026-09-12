@@ -323,6 +323,15 @@ function AppProvider({children}) {
   }, []);
 
   const value = {
+    // Screens were written against two different shapes of this context: some
+    // read the flattened fields below, others destructure `{state, dispatch}`.
+    // Only the flattened half was ever provided, so ChatListScreen's
+    // `state.peers` threw on render and SetupScreen's `dispatch(...)` was
+    // "undefined is not a function". Exposing both keeps every existing caller
+    // working rather than rewriting screens to match.
+    state,
+    dispatch,
+
     // State
     identity: state.identity,
     peers: state.peers,

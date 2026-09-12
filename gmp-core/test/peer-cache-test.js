@@ -2,7 +2,7 @@
  * GMP Peer Cache Test Suite — Phase 4
  */
 
-import { PeerCache } from '../peer-cache.js';
+import { PeerCache } from '../dist/peer-cache.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

@@ -12,16 +12,25 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import {
   CryptoEngine,
   generateBackupFragments,
-  combineFragments,
+  generateSeedPhrase,
 } from '../utils/crypto';
+import {
+  wrapIdentity,
+  deriveRecoveryTag,
+  restoreFromPhrase,
+  restoreFromFragments,
+  unlockBundle,
+  saveRecoveryBundle,
+  RecoveryError,
+  FRAGMENTS_STORAGE_KEY,
+} from '../utils/recovery';
 import {distributor} from '../services/MobileDistributor';
-
-const RECOVERY_TAG_PREFIX = 'ghostlink:recovery:';
 
 // ─── Constants ──────────────────────────────────────────────────
 const TABS = ['Backup', 'Verify', 'Restore'];
@@ -33,39 +42,6 @@ const LAYER_BADGES = [
 ];
 
 // Lightweight BIP39-style word list (same as AppContext uses)
-const BIP39_WORDS = [
-  'abandon','ability','able','above','absent','absorb','abuse','access',
-  'account','achieve','acid','across','action','actor','adapt','address',
-  'admit','adult','advance','advice','afford','afraid','again','agent',
-  'agree','aim','airport','alarm','album','alert','alien','alley',
-  'allow','almost','alone','already','alter','amateur','amazing','anchor',
-  'ancient','anger','angle','animal','annual','antenna','anxiety','appear',
-  'approve','arch','arctic','area','argue','armor','army','arrest',
-  'arrive','artist','aspect','assault','assist','athlete','attach','attend',
-  'attract','audit','author','autumn','aware','awesome','axis','balance',
-  'bamboo','banner','barely','barrel','battle','beauty','become','benefit',
-  'betray','bicycle','biology','birth','bitter','blade','blame','blast',
-  'bless','blind','blossom','boost','border','bounce','bracket','brave',
-  'bridge','brief','bright','brisk','broken','brother','bubble','bullet',
-  'bundle','burden','burst','business','butter','cable','cactus','canvas',
-  'capable','captain','carbon','cargo','carry','castle','casual','catalog',
-  'cause','caution','cement','century','cereal','champion','chapter','charge',
-  'chase','cheap','chest','chief','child','choice','circuit','citizen',
-  'civil','claim','clever','client','climb','clinic','clog','cloth',
-  'cloud','cluster','clutch','coast','coconut','combine','comfort','company',
-  'confirm','congress','connect','consider','control','convince','copper',
-  'coral','correct','cotton','country','couple','cousin','cover','crack',
-  'cradle','craft','crane','crash','cream','cricket','crime','crisp',
-  'cross','crucial','crystal','culture','curious','current','custom','cycle',
-];
-
-function generateSeedPhrase() {
-  const words = [];
-  for (let i = 0; i < 12; i++) {
-    words.push(BIP39_WORDS[Math.floor(Math.random() * BIP39_WORDS.length)]);
-  }
-  return words;
-}
 
 // ─── Component ──────────────────────────────────────────────────
 export default function RecoveryScreen({navigation}) {
@@ -127,22 +103,46 @@ export default function RecoveryScreen({navigation}) {
 
   // ── Backup Handlers ──
 
-  const handleGenerateFragments = useCallback(() => {
+  const handleGenerateFragments = useCallback(async () => {
     Vibration.vibrate(20);
     try {
-      const blob = JSON.stringify({
-        version: 2,
-        timestamp: Date.now(),
-        name: identity?.name,
-        fingerprint: identity?.fingerprint,
-        pubKeyHex: identity?.publicKeyHex,
+      // Fragments carry the private key *wrapped* under the phrase, never the
+      // phrase itself. The previous version put the 12 words in as plaintext,
+      // which meant any three fragment-holders could collude to read the phrase
+      // outright — collapsing "something you know" and "shares you distributed"
+      // into a single factor, and handing them everything the phrase unlocks.
+      const stored = await CryptoEngine.loadKeyPair();
+      if (!stored || !stored.privateKeyRaw) {
+        Alert.alert(
+          'No key available',
+          'Your private key could not be read from the keychain, so there is nothing to back up yet.',
+        );
+        return;
+      }
+
+      setDistributing(true);
+      const bundle = await wrapIdentity(
+        {
+          privateKeyRaw: stored.privateKeyRaw,
+          publicKeyHex: stored.publicKeyHex,
+          name: identity?.name || '',
+        },
         seedPhrase,
-      });
-      const frags = generateBackupFragments(blob);
+      );
+
+      const frags = generateBackupFragments(JSON.stringify(bundle));
       setFragments(frags);
       setFragmentDist({});
+
+      // The phrase shown on this screen is the one these fragments are wrapped
+      // under, so it has to become the phrase that unlocks this device too —
+      // otherwise the new fragments and the stored bundle disagree.
+      await saveRecoveryBundle(bundle);
+      await AsyncStorage.setItem(FRAGMENTS_STORAGE_KEY, JSON.stringify(frags));
     } catch (e) {
-      Alert.alert('Error', 'Failed to generate backup fragments.');
+      Alert.alert('Error', e.message || 'Failed to generate backup fragments.');
+    } finally {
+      setDistributing(false);
     }
   }, [identity, seedPhrase]);
 
@@ -192,19 +192,31 @@ export default function RecoveryScreen({navigation}) {
 
       try {
         if (webrtcRef.current && distributor) {
-          const tag = RECOVERY_TAG_PREFIX + (identity?.publicKeyHex?.slice(0, 16) || 'default');
+          // Same derivation the restoring device uses, so the lookup can
+          // actually match. It was previously keyed on the public key here and
+          // on the phrase at the recover end, which could never agree.
+          const tag = await deriveRecoveryTag(seedPhrase);
 
-          const blob = JSON.stringify({
-            version: 2,
-            timestamp: Date.now(),
-            name: identity?.name,
-            fingerprint: identity?.fingerprint,
-            pubKeyHex: identity?.publicKeyHex,
+          const stored = await CryptoEngine.loadKeyPair();
+          if (!stored || !stored.privateKeyRaw) {
+            Alert.alert('No key available', 'There is no private key on this device to back up.');
+            return;
+          }
+
+          // What a peer holds is the wrapped bundle, never the phrase. Handing
+          // peers the 12 words would let a single one of them read everything
+          // the phrase unlocks, which defeats distributing shares at all.
+          const bundle = await wrapIdentity(
+            {
+              privateKeyRaw: stored.privateKeyRaw,
+              publicKeyHex: stored.publicKeyHex,
+              name: identity?.name || '',
+            },
             seedPhrase,
-          });
+          );
 
           const result = await distributor.distribute(
-            {tag, ...JSON.parse(blob)},
+            {tag, ...bundle},
             [peer],
             {n: 1, k: 1},
           );
@@ -292,6 +304,7 @@ export default function RecoveryScreen({navigation}) {
     Vibration.vibrate(20);
     const words = restoreSeedInput
       .trim()
+      .toLowerCase()
       .split(/\s+/)
       .filter((w) => w.length > 0);
 
@@ -303,49 +316,59 @@ export default function RecoveryScreen({navigation}) {
     setRestoreDerivStatus('deriving');
 
     try {
-      const derivedKey = await CryptoEngine.deriveKeyFromSeed(words);
-      // Simulate PBKDF2 derivation delay
-      await new Promise((r) => setTimeout(r, 800));
+      // Unwraps the private key stored at setup. Previously this derived a key,
+      // discarded it, and generated a brand-new random keypair — so "recovery"
+      // silently produced a different identity with a different public key that
+      // none of the user's peers would recognise.
+      const identity = await restoreFromPhrase(words);
 
-      if (derivedKey) {
-        setRestoreDerivStatus('success');
-        Vibration.vibrate([0, 50, 50, 100]);
+      setRestoreDerivStatus('success');
+      Vibration.vibrate([0, 50, 50, 100]);
+      setIdentity(identity);
 
-        // Restore identity from seed
-        const keyPair = CryptoEngine.generateKeyPair();
-        const fingerprint = await CryptoEngine.sha256(keyPair.publicKeyHex);
-
-        setIdentity({
-          name: 'Restored',
-          publicKeyHex: keyPair.publicKeyHex,
-          fingerprint: fingerprint.slice(0, 16),
-        });
-
-        setTimeout(() => {
-          navigation.reset({
-            index: 0,
-            routes: [{name: 'ChatList'}],
-          });
-        }, 1500);
-      } else {
-        setRestoreDerivStatus('fail');
-        setRestoreStep(2);
-      }
-    } catch (_e) {
+      setTimeout(() => {
+        navigation.reset({index: 0, routes: [{name: 'ChatList'}]});
+      }, 1200);
+    } catch (e) {
       setRestoreDerivStatus('fail');
-      setRestoreStep(2);
+      if (e.code === RecoveryError.NO_LOCAL_BUNDLE) {
+        // Nothing to unwrap here, so send them to the fragment path rather than
+        // implying the phrase was wrong.
+        Alert.alert('No identity on this device', e.message);
+        setRestoreStep(2);
+      } else {
+        Alert.alert('Recovery failed', e.message || 'Could not restore this identity.');
+      }
     }
   }, [restoreSeedInput, setIdentity, navigation]);
 
   const handleShamirRestore = useCallback(async () => {
     Vibration.vibrate(20);
 
-    const validFrags = shamirInputs.filter((f) => f.trim().length > 0);
+    const validFrags = shamirInputs.map((f) => f.trim()).filter((f) => f.length > 0);
+    const words = restoreSeedInput
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 0);
+
     if (validFrags.length < 3 && connectedPeers.length === 0) {
       Alert.alert(
         'Need Fragments',
-        'Please paste at least 3 Shamir fragments or connect to peers for P2P recovery.',
+        'Please paste at least 3 recovery fragments or connect to peers for P2P recovery.',
       );
+      return;
+    }
+
+    // Fragments carry only the wrapped private key. Without the phrase there is
+    // nothing to unwrap it with, so ask for it before doing any work rather
+    // than after reconstructing.
+    if (words.length !== 12) {
+      Alert.alert(
+        'Recovery phrase needed',
+        'Enter your 12-word phrase in step 1 as well. The fragments hold your key in encrypted form; the phrase is what unlocks it.',
+      );
+      setRestoreStep(1);
       return;
     }
 
@@ -353,60 +376,49 @@ export default function RecoveryScreen({navigation}) {
 
     if (validFrags.length >= 3) {
       try {
-        await new Promise((r) => setTimeout(r, 600));
-        const result = combineFragments(validFrags);
-
-        if (result.success) {
-          setShamirStatus('success');
-          Vibration.vibrate([0, 50, 50, 50, 50, 100]);
-
-          const blob = result.blob;
-          setIdentity({
-            name: blob.name || 'Restored',
-            publicKeyHex: blob.pubKeyHex || '',
-            fingerprint: blob.fingerprint || '',
-          });
-
-          setTimeout(() => {
-            navigation.reset({
-              index: 0,
-              routes: [{name: 'ChatList'}],
-            });
-          }, 1500);
-          return;
-        }
-      } catch (_e) {}
+        const identity = await restoreFromFragments(validFrags, words);
+        setShamirStatus('success');
+        Vibration.vibrate([0, 50, 50, 50, 50, 100]);
+        setIdentity(identity);
+        setTimeout(() => {
+          navigation.reset({index: 0, routes: [{name: 'ChatList'}]});
+        }, 1200);
+        return;
+      } catch (e) {
+        setShamirStatus('fail');
+        Alert.alert(
+          e.code === RecoveryError.WRONG_PHRASE ? 'Phrase does not match' : 'Recovery failed',
+          e.message || 'Those fragments could not be combined.',
+        );
+        return;
+      }
     }
 
     if (connectedPeers.length > 0 && distributor) {
       try {
-        const tag = RECOVERY_TAG_PREFIX + (restoreSeedInput || 'default');
+        const tag = await deriveRecoveryTag(words);
         const blob = await distributor.recover(tag, connectedPeers, {k: 1});
+        // Peers hold the same wrapped bundle, so it unlocks the same way.
+        const identity = await unlockBundle(blob, words);
+        await saveRecoveryBundle(blob);
 
         setShamirStatus('success');
         Vibration.vibrate([0, 50, 50, 50, 50, 100]);
-
-        setIdentity({
-          name: blob.name || 'Restored',
-          publicKeyHex: blob.pubKeyHex || '',
-          fingerprint: blob.fingerprint || '',
-          seedPhrase: blob.seedPhrase || [],
-        });
-
+        setIdentity(identity);
         setTimeout(() => {
-          navigation.reset({
-            index: 0,
-            routes: [{name: 'ChatList'}],
-          });
-        }, 1500);
+          navigation.reset({index: 0, routes: [{name: 'ChatList'}]});
+        }, 1200);
         return;
       } catch (e) {
         console.warn('[RecoveryScreen] P2P recovery failed:', e);
+        setShamirStatus('fail');
+        Alert.alert('Recovery failed', e.message || 'No peer could return your backup.');
+        return;
       }
     }
 
     setShamirStatus('fail');
-  }, [shamirInputs, connectedPeers, setIdentity, navigation, restoreSeedInput]);
+  }, [shamirInputs, connectedPeers, setIdentity, navigation, restoreSeedInput, distributor]);
 
   const handleRecoverFromPeers = useCallback(async () => {
     if (connectedPeers.length === 0) {
@@ -416,19 +428,34 @@ export default function RecoveryScreen({navigation}) {
 
     setShamirStatus('combining');
 
+    const words = restoreSeedInput
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 0);
+
+    if (words.length !== 12) {
+      Alert.alert(
+        'Recovery phrase needed',
+        'Enter your 12-word phrase first. Peers hold your key in encrypted form; the phrase is what unlocks it.',
+      );
+      setShamirStatus(null);
+      setRestoreStep(1);
+      return;
+    }
+
     try {
-      const tag = RECOVERY_TAG_PREFIX + (restoreSeedInput || 'default');
+      const tag = await deriveRecoveryTag(words);
       const blob = await distributor.recover(tag, connectedPeers, {k: 1});
+
+      // The peer returns the wrapped bundle, so it unlocks exactly like the
+      // local and fragment paths do.
+      const identity = await unlockBundle(blob, words);
+      await saveRecoveryBundle(blob);
 
       setShamirStatus('success');
       Vibration.vibrate([0, 50, 50, 50, 50, 100]);
-
-      setIdentity({
-        name: blob.name || 'Restored',
-        publicKeyHex: blob.pubKeyHex || '',
-        fingerprint: blob.fingerprint || '',
-        seedPhrase: blob.seedPhrase || [],
-      });
+      setIdentity(identity);
 
       setTimeout(() => {
         navigation.reset({

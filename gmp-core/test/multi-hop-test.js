@@ -2,7 +2,7 @@
  * GMP Multi-hop Routing Test Suite — Phase 3
  */
 
-import { GMPNode } from '../link.js';
+import { GMPNode } from '../dist/link.js';
 import crypto from 'crypto';
 
 let testsRun = 0;

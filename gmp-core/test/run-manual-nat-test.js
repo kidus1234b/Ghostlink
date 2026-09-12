@@ -1,7 +1,7 @@
-import { GMPNode } from '../link.js';
-import { loadPublicPeers, queryPublicAddress, querySinglePeer } from '../public-peer-list.js';
-import { detectNATType } from '../nat-detector.js';
-import { holePunchConnect } from '../hole-punch.js';
+import { GMPNode } from '../dist/link.js';
+import { loadPublicPeers, queryPublicAddress, querySinglePeer } from '../dist/public-peer-list.js';
+import { detectNATType } from '../dist/nat-detector.js';
+import { holePunchConnect } from '../dist/hole-punch.js';
 import readline from 'readline';
 import fs from 'fs';
 import path from 'path';

@@ -42,6 +42,7 @@ import { Forwarder } from './forwarder.js';
 import { PeerCache } from './peer-cache.js';
 import { PeerExchangeManager } from './peer-exchange.js';
 import { BootstrapManager } from './bootstrap.js';
+import { LanDiscovery } from './lan-discovery.js';
 import { NetworkHealthMonitor } from './network-health.js';
 import { KeyRotationManager } from './key-rotation.js';
 import { ReputationManager } from './peer-reputation.js';
@@ -80,6 +81,12 @@ const SESSION_KEY_LRU_SIZE = 50;
 
 const HELLO_PAYLOAD_LEN = 265;
 const HELLO_ACK_PAYLOAD_LEN = 280;
+
+// A test suite should not reach out to the public bootstrap list, and should
+// not put discovery beacons on the developer's LAN. Both defaults derive from
+// this, but they are separate options: a test that wants one of them can ask
+// for it without getting the other.
+const IS_TEST_PROCESS = !!(process.argv[1] && process.argv[1].includes('test'));
 
 function writeUint32BE(buffer, value, offset) {
   buffer[offset] = (value >> 24) & 0xff;
@@ -1230,7 +1237,12 @@ class GMPNode extends EventEmitter {
     publicPeersPath = null,
     minPeers = 3,
     bootstrapParallelCount = 5,
-    disableBootstrap = !!(process.argv[1] && process.argv[1].includes('test')),
+    disableBootstrap = IS_TEST_PROCESS,
+    lanDiscovery = config.GMP_LAN_DISCOVERY !== undefined
+      ? config.GMP_LAN_DISCOVERY !== false
+      : !IS_TEST_PROCESS,
+    lanDiscoveryPort = config.GMP_LAN_DISCOVERY_PORT,
+    lanDiscoveryGroup = config.GMP_LAN_DISCOVERY_GROUP,
     seedPhrase = null,
     timestampWindowMs = 120000,
     reputationBanDurationMs = 24 * 60 * 60 * 1000,
@@ -1284,6 +1296,12 @@ class GMPNode extends EventEmitter {
 
     this.peerExchange = new PeerExchangeManager(this);
     this.bootstrap = new BootstrapManager(this, { minPeers, parallelCount: bootstrapParallelCount, disableBootstrap, publicPeersPath });
+    // A directory of peers on this subnet, so a Ghost Address still resolves
+    // when there is no public peer to flood announcements through. Built in
+    // listen(); see lan-discovery.js for why it never dials anything itself.
+    this.lanDiscoveryEnabled = !!lanDiscovery;
+    this.lanDiscoveryOptions = { port: lanDiscoveryPort, group: lanDiscoveryGroup };
+    this.lanDiscovery = null;
     this.healthMonitor = new NetworkHealthMonitor(this);
     this.keyRotationManager = new KeyRotationManager(this);
     this.reputation = new ReputationManager(this, {
@@ -1555,6 +1573,12 @@ class GMPNode extends EventEmitter {
       const bindHost = this.isPublicPeer ? '0.0.0.0' : '::';
       this.server.listen({ host: bindHost, port: this.port }, () => {
         this.bootstrap.start();
+        if (this.lanDiscoveryEnabled && !this.lanDiscovery) {
+          this.lanDiscovery = new LanDiscovery(this, this.lanDiscoveryOptions);
+          // Fire and forget: discovery failing (no multicast, port in use) must
+          // never hold up or fail listen().
+          this.lanDiscovery.start().catch(() => {});
+        }
         resolve({ port: this.port });
       });
     });
@@ -1926,6 +1950,10 @@ class GMPNode extends EventEmitter {
     }
     if (this.peerExchange) {
       this.peerExchange.close();
+    }
+    if (this.lanDiscovery) {
+      this.lanDiscovery.close();
+      this.lanDiscovery = null;
     }
     if (this.bootstrap) {
       this.bootstrap.close();

@@ -38,6 +38,11 @@
       if (!this._events[event]) return;
       this._events[event].forEach(fn => { try { fn(...args); } catch (e) { console.error(e); } });
     }
+    removeAllListeners(event) {
+      if (event === undefined) this._events = {};
+      else delete this._events[event];
+      return this;
+    }
   }
 
   // ─── P2PConnector ────────────────────────────────────────────────────────
@@ -54,6 +59,9 @@
       this.wsUrl = null;
       this.reconnectTimer = null;
       this.wsPingInterval = null;
+      // Set by destroy(). The socket's onclose fires after close() returns, so
+      // without this flag a torn-down connector reconnects ~3s later.
+      this._destroyed = false;
 
       // WebRTC: peerId -> RTCPeerConnection
       this.pcs = {};
@@ -125,7 +133,7 @@
     }
 
     async connect() {
-      if (this.ws) return;
+      if (this._destroyed || this.ws) return;
       this.wsUrl = await this.discoverSignalingUrl();
       return this._connectWs();
     }
@@ -149,8 +157,9 @@
             this.emit('signaling-disconnected');
             if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
             if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+            if (this._destroyed) return;
             this.reconnectTimer = setTimeout(() => {
-              if (!this.wsOpen) this._connectWs().catch(()=>{});
+              if (!this._destroyed && !this.wsOpen) this._connectWs().catch(()=>{});
             }, 3000);
           };
           this.ws.onerror = (err) => { this.emit('signaling-error', err); reject(err); };
@@ -570,12 +579,14 @@
 
     /**
      * Full teardown for when this connector is being replaced. disconnect()
-     * already closes every peer transport; this additionally drops listeners so
-     * nothing can emit into stale handlers afterwards.
+     * already closes every peer transport; this additionally blocks signaling
+     * reconnects and drops listeners so nothing can emit into stale handlers
+     * afterwards. A destroyed connector cannot be reconnected.
      */
     destroy() {
+      this._destroyed = true;
       this.disconnect();
-      this._events = {};
+      this.removeAllListeners();
     }
 
     joinRoom(roomId, publicKey) {
@@ -589,8 +600,8 @@
     }
 
     disconnect() {
-      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-      if (this.wsPingInterval) clearInterval(this.wsPingInterval);
+      if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+      if (this.wsPingInterval) { clearInterval(this.wsPingInterval); this.wsPingInterval = null; }
       if (this.ws) { this.ws.close(); this.ws = null; }
       this.wsOpen = false;
 
