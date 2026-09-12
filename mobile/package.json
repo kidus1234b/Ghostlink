@@ -6,7 +6,7 @@
     "start": "react-native start",
     "android": "react-native run-android",
     "ios": "react-native run-ios",
-    "test": "node test/text-encoding.test.mjs && node test/ghost-address.test.mjs && node test/crypto.test.mjs && node test/recovery.test.mjs"
+    "test": "node test/text-encoding.test.mjs && node test/ghost-address.test.mjs && node test/qr-scan.test.mjs && node test/crypto.test.mjs && node test/recovery.test.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "^1.2.1",
@@ -26,7 +26,6 @@
     "react-native-get-random-values": "^1.11.0",
     "react-native-keychain": "^8.2.0",
     "react-native-push-notification": "^8.1.1",
-    "react-native-qrcode-scanner": "^1.5.5",
     "react-native-qrcode-svg": "^6.3.1",
     "react-native-reanimated": "3.6.2",
     "react-native-safe-area-context": "4.8.2",

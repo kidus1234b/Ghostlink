@@ -1,4 +1,17 @@
-import React, {useState, useCallback, useRef} from 'react';
+/**
+ * GhostLink Mobile — QR scanner.
+ *
+ * Two jobs: read someone's Ghost Address off their screen, and show yours so
+ * they can read it off this one.
+ *
+ * This screen previously used react-native-qrcode-scanner, which statically
+ * imports react-native-camera — a package that is not installed. Wiring the
+ * screen into the navigator in that state would not have produced a broken
+ * screen, it would have broken the whole JS bundle, which is why it sat
+ * orphaned. It now uses react-native-vision-camera, which is already a
+ * dependency and does QR decoding natively via useCodeScanner.
+ */
+import React, {useState, useCallback, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -7,577 +20,388 @@ import {
   Vibration,
   Alert,
   Dimensions,
-  Clipboard,
+  Linking,
+  ActivityIndicator,
 } from 'react-native';
 import Animated, {
   FadeIn,
-  FadeOut,
-  SlideInUp,
   useSharedValue,
   useAnimatedStyle,
   withRepeat,
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import QRCodeScanner from 'react-native-qrcode-scanner';
+import {
+  Camera,
+  useCameraDevice,
+  useCameraPermission,
+  useCodeScanner,
+} from 'react-native-vision-camera';
 import QRCode from 'react-native-qrcode-svg';
+import Clipboard from '@react-native-clipboard/clipboard';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
-import {sha256} from '../utils/crypto';
+import {CryptoEngine} from '../utils/crypto';
+import {normalizeGhostAddress} from '../utils/ghost-address';
 
 const INVITE_CODE_REGEX = /^GL-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}$/;
-
-function parseInviteJSON(qrData) {
-  let parsed;
-  try {
-    parsed = JSON.parse(qrData);
-  } catch (_) {
-    return null;
-  }
-
-  const invite = {
-    code: parsed.code || parsed.c,
-    publicKey: parsed.publicKey || parsed.p,
-    name: parsed.name || parsed.n,
-    signaling: parsed.signaling || parsed.s,
-    timestamp: parsed.timestamp || parsed.t,
-    signature: parsed.signature || parsed.sig,
-  };
-
-  if (!invite.code || !INVITE_CODE_REGEX.test(invite.code)) {
-    return null;
-  }
-  if (!invite.publicKey || typeof invite.publicKey !== 'string') {
-    return null;
-  }
-  if (!invite.timestamp || typeof invite.timestamp !== 'number') {
-    return null;
-  }
-
-  return invite;
-}
-
-async function verifyInvite(invite) {
-  const age = Date.now() - invite.timestamp;
-  if (age > 86400000) {
-    return {valid: false, reason: 'Invite expired (older than 24 hours)'};
-  }
-  if (age < -300000) {
-    return {valid: false, reason: 'Invite timestamp is in the future'};
-  }
-
-  if (!invite.signature) {
-    return {valid: false, reason: 'Missing signature'};
-  }
-
-  const payload = `${invite.code}|${invite.publicKey}|${invite.name || ''}|${invite.timestamp}`;
-  const sigBytes = invite.signature.toLowerCase();
-
-  try {
-    const keyMaterial = invite.publicKey.slice(0, 64).toLowerCase();
-    const expectedSig = await sha256(payload + ':' + keyMaterial);
-
-    if (sigBytes === expectedSig) {
-      return {valid: true};
-    }
-  } catch (_) {}
-
-  return {valid: false, reason: 'Signature verification failed'};
-}
-
 const {width: SCREEN_WIDTH} = Dimensions.get('window');
+const QR_SIZE = Math.min(SCREEN_WIDTH - 96, 260);
+
+/**
+ * A scanned payload, classified.
+ *
+ * Ghost Address first: it is what people actually exchange now. The older GL-
+ * invite code and the JSON invite blob are still read so existing codes keep
+ * working.
+ */
+export function classifyScan(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return {kind: 'empty'};
+
+  const ghost = normalizeGhostAddress(text);
+  if (ghost) return {kind: 'ghost', address: ghost};
+
+  // A JSON invite may carry the address inside it.
+  if (text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const inner = normalizeGhostAddress(parsed.ghostAddress || parsed.address || parsed.a || '');
+      if (inner) return {kind: 'ghost', address: inner, name: parsed.name || parsed.n};
+      const code = parsed.code || parsed.c;
+      if (code && INVITE_CODE_REGEX.test(String(code).toUpperCase())) {
+        return {kind: 'invite', code: String(code).toUpperCase(), name: parsed.name || parsed.n};
+      }
+    } catch (_) {
+      // fall through to the unknown case
+    }
+    return {kind: 'unknown', text};
+  }
+
+  const upper = text.toUpperCase();
+  if (INVITE_CODE_REGEX.test(upper)) return {kind: 'invite', code: upper};
+
+  return {kind: 'unknown', text};
+}
 
 export default function QRScannerScreen({navigation}) {
   const {theme} = useTheme();
-  const {state, dispatch} = useApp();
+  const {state, dispatch, identity} = useApp();
   const [mode, setMode] = useState('scan');
-  const [scannedCode, setScannedCode] = useState(null);
-  const [scanSuccess, setScanSuccess] = useState(false);
-  const scannerRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+
+  // One scan at a time. onCodeScanned fires per frame while a code is in view,
+  // so without this the same address is added dozens of times in a second.
+  const handling = useRef(false);
+
+  const {hasPermission, requestPermission} = useCameraPermission();
+  const device = useCameraDevice('back');
 
   const scanLineY = useSharedValue(0);
-
-  React.useEffect(() => {
+  useEffect(() => {
     scanLineY.value = withRepeat(
-      withSequence(
-        withTiming(1, {duration: 2000}),
-        withTiming(0, {duration: 2000}),
-      ),
+      withSequence(withTiming(1, {duration: 2000}), withTiming(0, {duration: 2000})),
       -1,
     );
   }, [scanLineY]);
+  const scanLineStyle = useAnimatedStyle(() => ({top: `${scanLineY.value * 100}%`}));
 
-  const scanLineStyle = useAnimatedStyle(() => ({
-    top: `${scanLineY.value * 100}%`,
-  }));
+  useEffect(() => {
+    if (mode === 'scan' && !hasPermission) {
+      requestPermission();
+    }
+  }, [mode, hasPermission, requestPermission]);
 
-  const handleScan = useCallback(
-    async (e) => {
-      const code = e.data;
+  const resume = useCallback(() => {
+    handling.current = false;
+    setBusy(false);
+  }, []);
+
+  const addPeer = useCallback(
+    async ({address, code, name}) => {
+      const peerId = `peer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const fingerprint = await CryptoEngine.sha256(address || code);
+      dispatch({
+        type: 'ADD_PEER',
+        payload: {
+          id: peerId,
+          name: name || address || `Peer ${(state.peers?.size ?? 0) + 1}`,
+          ghostAddress: address || '',
+          inviteCode: address ? '' : code,
+          fingerprint: fingerprint.slice(0, 16),
+          online: false,
+          pinned: false,
+          muted: false,
+          roomId: `room-${peerId}`,
+          addedAt: Date.now(),
+        },
+      });
+      Vibration.vibrate(40);
+      navigation.navigate('ChatList');
+    },
+    [dispatch, navigation, state.peers],
+  );
+
+  const onScanned = useCallback(
+    (codes) => {
+      if (handling.current) return;
+      const value = codes?.find(c => c?.value)?.value;
+      if (!value) return;
+
+      handling.current = true;
+      setBusy(true);
       Vibration.vibrate([0, 50, 50, 50]);
-      setScanSuccess(true);
-      setScannedCode(code);
 
-      const jsonInvite = parseInviteJSON(code);
+      const result = classifyScan(value);
 
-      if (jsonInvite) {
-        const verification = await verifyInvite(jsonInvite);
-
-        if (!verification.valid) {
-          Alert.alert('Invalid Invite', verification.reason, [
-            {text: 'Cancel', style: 'cancel', onPress: () => {
-              setScanSuccess(false);
-              setScannedCode(null);
-              scannerRef.current?.reactivate();
-            }},
+      if (result.kind === 'ghost') {
+        if (identity?.ghostAddress && result.address === identity.ghostAddress) {
+          Alert.alert('That is your own address', 'Point the camera at someone else\'s code.', [
+            {text: 'OK', onPress: resume},
           ]);
           return;
         }
-
-        Alert.alert(
-          'Invite from ' + (jsonInvite.name || 'Unknown'),
-          `Verified invite for room:\n${jsonInvite.code}\n\nPublic key fingerprint:\n${jsonInvite.publicKey.slice(0, 32)}...`,
-          [
-            {text: 'Cancel', style: 'cancel', onPress: () => {
-              setScanSuccess(false);
-              setScannedCode(null);
-              scannerRef.current?.reactivate();
-            }},
-            {
-              text: 'Join',
-              onPress: () => {
-                const roomId = `room-${jsonInvite.code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-                dispatch({
-                  type: 'ADD_ROOM',
-                  payload: {
-                    id: roomId,
-                    name: jsonInvite.name || `Room ${jsonInvite.code.slice(3, 11)}`,
-                    inviteCode: jsonInvite.code,
-                    publicKey: jsonInvite.publicKey,
-                    signaling: jsonInvite.signaling,
-                    createdAt: Date.now(),
-                  },
-                });
-                dispatch({type: 'SET_ACTIVE_ROOM', payload: roomId});
-                Vibration.vibrate(40);
-                navigation.navigate('Chat');
-              },
-            },
-          ],
+        const existing = Array.from(state.peers?.values?.() ?? []).find(
+          p => p.ghostAddress === result.address,
         );
-      } else if (code.startsWith('GL-') && INVITE_CODE_REGEX.test(code)) {
-        Alert.alert(
-          'Legacy Invite Code',
-          'This is a legacy invite code format without signature verification.\n\nProceed with caution.',
-          [
-            {text: 'Cancel', style: 'cancel', onPress: () => {
-              setScanSuccess(false);
-              setScannedCode(null);
-              scannerRef.current?.reactivate();
-            }},
-            {
-              text: 'Join Anyway',
-              onPress: () => {
-                const roomId = `room-${code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-                dispatch({
-                  type: 'ADD_ROOM',
-                  payload: {
-                    id: roomId,
-                    name: `Room ${code.slice(3, 11)}`,
-                    inviteCode: code,
-                    legacy: true,
-                    createdAt: Date.now(),
-                  },
-                });
-                dispatch({type: 'SET_ACTIVE_ROOM', payload: roomId});
-                Vibration.vibrate(40);
-                navigation.navigate('Chat');
-              },
-            },
-          ],
-        );
-      } else {
-        Alert.alert(
-          'QR Code Scanned',
-          code.length > 100 ? code.slice(0, 100) + '...' : code,
-          [
-            {text: 'OK', onPress: () => {
-              setScanSuccess(false);
-              setScannedCode(null);
-              scannerRef.current?.reactivate();
-            }},
-            {
-              text: 'Copy',
-              onPress: () => {
-                Clipboard.setString(code);
-                setScanSuccess(false);
-                setScannedCode(null);
-                scannerRef.current?.reactivate();
-              },
-            },
-          ],
-        );
+        if (existing) {
+          Alert.alert('Already added', `${result.address} is already in your peers.`, [
+            {text: 'OK', onPress: resume},
+          ]);
+          return;
+        }
+        Alert.alert('Add this peer?', result.address, [
+          {text: 'Cancel', style: 'cancel', onPress: resume},
+          {text: 'Add', onPress: () => addPeer(result)},
+        ]);
+        return;
       }
+
+      if (result.kind === 'invite') {
+        // No signature is verified here. The old code hashed the invite's own
+        // public key and called the result a signature, which anyone holding
+        // the QR could recompute — it authenticated nothing. Rather than keep
+        // implying a check that does not happen, say plainly what this is.
+        Alert.alert(
+          'Legacy invite code',
+          `${result.code}\n\nThis older format carries no signature, so there is nothing to verify it against. Add it only if you trust where you scanned it.`,
+          [
+            {text: 'Cancel', style: 'cancel', onPress: resume},
+            {text: 'Add anyway', onPress: () => addPeer(result)},
+          ],
+        );
+        return;
+      }
+
+      const preview = result.text && result.text.length > 120
+        ? result.text.slice(0, 120) + '…'
+        : result.text || '';
+      Alert.alert('Not a GhostLink code', preview, [
+        {text: 'OK', onPress: resume},
+        {
+          text: 'Copy',
+          onPress: () => {
+            Clipboard.setString(result.text || '');
+            resume();
+          },
+        },
+      ]);
     },
-    [dispatch, navigation],
+    [addPeer, identity, resume, state.peers],
   );
 
-  const myInviteCode = state.inviteCode || 'GL-00000000-00000000-00000000-00000000';
+  const codeScanner = useCodeScanner({codeTypes: ['qr'], onCodeScanned: onScanned});
+
+  const copyMine = useCallback(() => {
+    if (!identity?.ghostAddress) return;
+    Clipboard.setString(identity.ghostAddress);
+    Vibration.vibrate(15);
+    Alert.alert('Copied', identity.ghostAddress);
+  }, [identity]);
+
+  const renderScanner = () => {
+    if (!hasPermission) {
+      return (
+        <View style={styles.stateBox}>
+          <Text style={[styles.stateTitle, {color: theme.text}]}>Camera access needed</Text>
+          <Text style={[styles.stateDesc, {color: theme.textSecondary}]}>
+            The camera is used only to read a QR code on this device. Nothing is recorded or sent
+            anywhere.
+          </Text>
+          <TouchableOpacity
+            style={[styles.stateBtn, {backgroundColor: theme.accent}]}
+            onPress={async () => {
+              const granted = await requestPermission();
+              // A second refusal means the OS will no longer prompt, so the
+              // only way back is Settings.
+              if (!granted) Linking.openSettings();
+            }}
+            activeOpacity={0.8}>
+            <Text style={[styles.stateBtnText, {color: theme.bg}]}>Allow camera</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    if (!device) {
+      return (
+        <View style={styles.stateBox}>
+          <Text style={[styles.stateTitle, {color: theme.text}]}>No camera found</Text>
+          <Text style={[styles.stateDesc, {color: theme.textSecondary}]}>
+            This device has no back camera available. Paste a Ghost Address on the peers screen
+            instead.
+          </Text>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.scannerWrap}>
+        <Camera
+          style={StyleSheet.absoluteFill}
+          device={device}
+          isActive={mode === 'scan'}
+          codeScanner={codeScanner}
+        />
+        <View style={styles.overlay} pointerEvents="none">
+          <View style={[styles.reticle, {borderColor: theme.accent}]}>
+            {!busy && (
+              <Animated.View
+                style={[styles.scanLine, {backgroundColor: theme.accent}, scanLineStyle]}
+              />
+            )}
+          </View>
+          <Text style={[styles.hint, {color: theme.textSecondary}]}>
+            {busy ? 'Reading…' : 'Point at a GhostLink QR code'}
+          </Text>
+        </View>
+        {busy && (
+          <View style={styles.busyOverlay}>
+            <ActivityIndicator color={theme.accent} />
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderMine = () => (
+    <Animated.View entering={FadeIn.duration(200)} style={styles.mineWrap}>
+      {identity?.ghostAddress ? (
+        <>
+          <View style={[styles.qrFrame, {backgroundColor: '#FFFFFF', borderColor: theme.border}]}>
+            <QRCode value={identity.ghostAddress} size={QR_SIZE} backgroundColor="#FFFFFF" color="#000000" />
+          </View>
+          <Text style={[styles.mineLabel, {color: theme.textMuted}]}>YOUR GHOST ADDRESS</Text>
+          <TouchableOpacity onPress={copyMine} activeOpacity={0.7}>
+            <Text style={[styles.mineValue, {color: theme.accent}]} selectable>
+              {identity.ghostAddress}
+            </Text>
+          </TouchableOpacity>
+          <Text style={[styles.mineHint, {color: theme.textMuted}]}>
+            Let a peer scan this, or tap the address to copy it.
+          </Text>
+        </>
+      ) : (
+        <View style={styles.stateBox}>
+          <Text style={[styles.stateTitle, {color: theme.text}]}>No address yet</Text>
+          <Text style={[styles.stateDesc, {color: theme.textSecondary}]}>
+            Your Ghost Address is derived from your recovery phrase when you set up an identity.
+          </Text>
+        </View>
+      )}
+    </Animated.View>
+  );
 
   return (
     <View style={[styles.container, {backgroundColor: theme.bg}]}>
       <View style={[styles.header, {backgroundColor: theme.bgSecondary, borderBottomColor: theme.border}]}>
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backBtn}>
-          <Text style={[styles.backText, {color: theme.accent}]}>{'\u2190'} Back</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
+          <Text style={[styles.backText, {color: theme.accent}]}>{'←'} Back</Text>
         </TouchableOpacity>
         <Text style={[styles.headerTitle, {color: theme.text}]}>
-          {mode === 'scan' ? 'Scan QR Code' : 'My QR Code'}
+          {mode === 'scan' ? 'Scan a code' : 'My code'}
         </Text>
         <View style={styles.backBtn} />
       </View>
 
       <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[
-            styles.tab,
-            {
-              backgroundColor: mode === 'scan' ? theme.accentDim : 'transparent',
-              borderColor: mode === 'scan' ? theme.accent : theme.border,
-            },
-          ]}
-          onPress={() => {
-            setMode('scan');
-            Vibration.vibrate(10);
-          }}>
-          <Text style={{color: mode === 'scan' ? theme.accent : theme.textSecondary, fontWeight: '700', fontSize: 14}}>
-            Scan
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[
-            styles.tab,
-            {
-              backgroundColor: mode === 'show' ? theme.accentDim : 'transparent',
-              borderColor: mode === 'show' ? theme.accent : theme.border,
-            },
-          ]}
-          onPress={() => {
-            setMode('show');
-            Vibration.vibrate(10);
-          }}>
-          <Text style={{color: mode === 'show' ? theme.accent : theme.textSecondary, fontWeight: '700', fontSize: 14}}>
-            My Code
-          </Text>
-        </TouchableOpacity>
+        {[
+          ['scan', 'Scan'],
+          ['show', 'My code'],
+        ].map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            style={[
+              styles.tab,
+              {
+                backgroundColor: mode === key ? theme.accentDim : 'transparent',
+                borderColor: mode === key ? theme.accent : theme.border,
+              },
+            ]}
+            onPress={() => {
+              setMode(key);
+              resume();
+            }}
+            activeOpacity={0.7}>
+            <Text
+              style={{
+                color: mode === key ? theme.accent : theme.textSecondary,
+                fontWeight: '700',
+                fontSize: 14,
+              }}>
+              {label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {mode === 'scan' ? (
-        <View style={styles.scannerContainer}>
-          <QRCodeScanner
-            ref={scannerRef}
-            onRead={handleScan}
-            reactivate={false}
-            reactivateTimeout={3000}
-            showMarker
-            markerStyle={{
-              borderColor: scanSuccess ? theme.success : theme.accent,
-              borderWidth: 2,
-              borderRadius: 16,
-            }}
-            cameraStyle={styles.camera}
-            containerStyle={styles.cameraContainer}
-            topContent={null}
-            bottomContent={null}
-          />
-          <View style={styles.scanOverlay}>
-            <View style={[styles.scanFrame, {borderColor: theme.accent + '60'}]}>
-              <Animated.View
-                style={[
-                  styles.scanLine,
-                  {backgroundColor: theme.accent + '80'},
-                  scanLineStyle,
-                ]}
-              />
-              <View style={[styles.corner, styles.cornerTL, {borderColor: theme.accent}]} />
-              <View style={[styles.corner, styles.cornerTR, {borderColor: theme.accent}]} />
-              <View style={[styles.corner, styles.cornerBL, {borderColor: theme.accent}]} />
-              <View style={[styles.corner, styles.cornerBR, {borderColor: theme.accent}]} />
-            </View>
-          </View>
-          <Animated.View
-            entering={FadeIn.delay(500)}
-            style={styles.scanHint}>
-            <Text style={[styles.scanHintText, {color: theme.textSecondary}]}>
-              Point camera at a GhostLink QR code
-            </Text>
-          </Animated.View>
-
-          {scanSuccess && (
-            <Animated.View
-              entering={FadeIn.duration(200)}
-              style={[styles.successOverlay, {backgroundColor: theme.success + '20'}]}>
-              <Text style={[styles.successText, {color: theme.success}]}>
-                Code Detected
-              </Text>
-            </Animated.View>
-          )}
-        </View>
-      ) : (
-        <Animated.View entering={SlideInUp.duration(300)} style={styles.showContainer}>
-          <View
-            style={[
-              styles.qrCard,
-              {backgroundColor: theme.bgSecondary, borderColor: theme.border},
-            ]}>
-            <Text style={[styles.qrLabel, {color: theme.textSecondary}]}>
-              Your GhostLink Invite
-            </Text>
-            <View style={[styles.qrWrapper, {backgroundColor: '#ffffff'}]}>
-              <QRCode
-                value={myInviteCode}
-                size={SCREEN_WIDTH * 0.55}
-                color="#000000"
-                backgroundColor="#ffffff"
-                ecl="H"
-              />
-            </View>
-            <Text style={[styles.inviteCode, {color: theme.accent}]}>
-              {myInviteCode}
-            </Text>
-            <Text style={[styles.qrDesc, {color: theme.textMuted}]}>
-              Others can scan this to join your encrypted room
-            </Text>
-
-            <View style={styles.qrActions}>
-              <TouchableOpacity
-                style={[styles.qrActionBtn, {backgroundColor: theme.accentDim, borderColor: theme.accent + '30'}]}
-                onPress={() => {
-                  Clipboard.setString(myInviteCode);
-                  Vibration.vibrate(20);
-                  Alert.alert('Copied', 'Invite code copied to clipboard');
-                }}>
-                <Text style={[styles.qrActionText, {color: theme.accent}]}>Copy Code</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.qrActionBtn, {backgroundColor: theme.bgTertiary, borderColor: theme.border}]}
-                onPress={() => {
-                  Vibration.vibrate(20);
-                  Alert.alert('Share', 'Share functionality would open native share sheet');
-                }}>
-                <Text style={[styles.qrActionText, {color: theme.text}]}>Share</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {state.identity && (
-            <View
-              style={[
-                styles.identityCard,
-                {backgroundColor: theme.bgSecondary, borderColor: theme.border},
-              ]}>
-              <Text style={[styles.identityLabel, {color: theme.textSecondary}]}>
-                Identity Fingerprint
-              </Text>
-              <Text style={[styles.fingerprint, {color: theme.accent}]}>
-                {state.identity.fingerprint}
-              </Text>
-            </View>
-          )}
-        </Animated.View>
-      )}
+      <View style={styles.body}>{mode === 'scan' ? renderScanner() : renderMine()}</View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: {flex: 1},
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    paddingTop: 48,
   },
-  backBtn: {
-    width: 70,
-  },
-  backText: {
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  headerTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 10,
-  },
+  backBtn: {minWidth: 72},
+  backText: {fontSize: 15, fontWeight: '600'},
+  headerTitle: {fontSize: 16, fontWeight: '700'},
+  tabBar: {flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingVertical: 12},
   tab: {
     flex: 1,
+    alignItems: 'center',
     paddingVertical: 10,
     borderRadius: 10,
     borderWidth: 1,
-    alignItems: 'center',
   },
-  scannerContainer: {
-    flex: 1,
-    position: 'relative',
-  },
-  camera: {
-    flex: 1,
-  },
-  cameraContainer: {
-    flex: 1,
-  },
-  scanOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scanFrame: {
-    width: SCREEN_WIDTH * 0.7,
-    height: SCREEN_WIDTH * 0.7,
-    borderWidth: 1,
+  body: {flex: 1},
+  scannerWrap: {flex: 1, overflow: 'hidden'},
+  overlay: {flex: 1, alignItems: 'center', justifyContent: 'center'},
+  reticle: {
+    width: QR_SIZE,
+    height: QR_SIZE,
+    borderWidth: 2,
     borderRadius: 16,
-    position: 'relative',
     overflow: 'hidden',
   },
-  scanLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 2,
-  },
-  corner: {
-    position: 'absolute',
-    width: 24,
-    height: 24,
-    borderWidth: 3,
-  },
-  cornerTL: {
-    top: -1,
-    left: -1,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 16,
-  },
-  cornerTR: {
-    top: -1,
-    right: -1,
-    borderLeftWidth: 0,
-    borderBottomWidth: 0,
-    borderTopRightRadius: 16,
-  },
-  cornerBL: {
-    bottom: -1,
-    left: -1,
-    borderRightWidth: 0,
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 16,
-  },
-  cornerBR: {
-    bottom: -1,
-    right: -1,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    borderBottomRightRadius: 16,
-  },
-  scanHint: {
-    position: 'absolute',
-    bottom: 40,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-  },
-  scanHintText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  successOverlay: {
-    position: 'absolute',
-    top: '40%',
-    alignSelf: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  successText: {
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  showContainer: {
-    flex: 1,
-    padding: 20,
-  },
-  qrCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    padding: 24,
-    alignItems: 'center',
-  },
-  qrLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 16,
-  },
-  qrWrapper: {
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
-  inviteCode: {
-    fontSize: 14,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  qrDesc: {
-    fontSize: 12,
-    textAlign: 'center',
-    marginBottom: 16,
-  },
-  qrActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  qrActionBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-    borderWidth: 1,
-  },
-  qrActionText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  identityCard: {
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 16,
-    marginTop: 16,
-    alignItems: 'center',
-  },
-  identityLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  fingerprint: {
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 1.5,
-  },
+  scanLine: {position: 'absolute', left: 0, right: 0, height: 2, opacity: 0.9},
+  hint: {marginTop: 20, fontSize: 13},
+  busyOverlay: {...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center'},
+  mineWrap: {flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24},
+  qrFrame: {padding: 16, borderRadius: 16, borderWidth: 1},
+  mineLabel: {marginTop: 24, fontSize: 11, letterSpacing: 1.5, fontWeight: '700'},
+  mineValue: {marginTop: 8, fontSize: 20, fontWeight: '800', letterSpacing: 1},
+  mineHint: {marginTop: 14, fontSize: 12, textAlign: 'center', lineHeight: 18},
+  stateBox: {flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32},
+  stateTitle: {fontSize: 18, fontWeight: '700', marginBottom: 10},
+  stateDesc: {fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 22},
+  stateBtn: {paddingHorizontal: 26, paddingVertical: 13, borderRadius: 12},
+  stateBtnText: {fontSize: 14, fontWeight: '700'},
 });

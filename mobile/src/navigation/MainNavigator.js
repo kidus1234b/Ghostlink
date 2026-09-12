@@ -18,6 +18,7 @@ import ChatListScreen from '../screens/ChatListScreen';
 import ChatScreen from '../screens/ChatScreen';
 import CallScreen from '../screens/CallScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import QRScannerScreen from '../screens/QRScannerScreen';
 import RecoveryScreen from '../screens/RecoveryScreen';
 
 const AuthStack = createNativeStackNavigator();
@@ -58,6 +59,11 @@ function MainNavigator() {
           presentation: 'fullScreenModal',
           gestureDirection: 'vertical',
         }}
+      />
+      <MainStack.Screen
+        name="QRScanner"
+        component={QRScannerScreen}
+        options={{presentation: 'modal'}}
       />
       <MainStack.Screen name="Settings" component={SettingsScreen} />
       <MainStack.Screen name="Recovery" component={RecoveryScreen} />
