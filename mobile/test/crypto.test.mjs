@@ -35,7 +35,8 @@ const src = (await import('fs')).readFileSync(new URL('../src/utils/crypto.js', 
   .replace("import * as Keychain from 'react-native-keychain';", 'const Keychain = {};')
   // The copy lives in test/, so its relative import of the wordlist has to be
   // repointed at src/utils/. Node also needs the explicit .js that Metro infers.
-  .replace("from './wordlist'", "from '../src/utils/wordlist.js'");
+  .replace("from './wordlist'", "from '../src/utils/wordlist.js'")
+  .replace("from './ghost-address'", "from '../src/utils/ghost-address.js'");
 // Written next to the test so the relative @noble imports resolve the same way
 // they do from src/, then removed on exit.
 const modPath = new URL('./.crypto-under-test.mjs', import.meta.url);

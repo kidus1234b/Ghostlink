@@ -1,0 +1,2376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GhostLink — Zero Trust P2P Encrypted Chat</title>
+  <meta name="description" content="P2P encrypted communication. No servers. No metadata. No trace. Blockchain-chained messages with BIP39 seed recovery.">
+  <meta property="og:title" content="GhostLink">
+  <meta property="og:description" content="Zero Trust. Zero Trace. Zero Servers.">
+  <meta name="theme-color" content="var(--spectral)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20200%20200'%3E%3Crect%20width='200'%20height='200'%20rx='44'%20fill='%230B0F17'/%3E%3Cg%20transform='translate%2832.5%2012%29%20scale%280.6743%29'%3E%3Cg%20fill='none'%20stroke='%234FE3B0'%20stroke-linecap='round'%3E%3Cpath%20d=%22M41.3%2046.9A70%2070%200%200%201%20158.7%2046.9%22%20stroke-width=%2220%22/%3E%3Cpath%20d=%22M64.9%2067.9A39%2039%200%200%201%20135.1%2067.9%22%20stroke-width=%2218%22/%3E%3C/g%3E%3Cpath%20fill='%234FE3B0'%20fill-rule='evenodd'%20d='M20%20159A80%2080%200%200%201%20180%20159V243Q160%20269%20140%20243Q120%20269%20100%20243Q80%20269%2060%20243Q40%20269%2020%20243ZM58%20156a16%2016%200%201%200%2032%200a16%2016%200%201%200-32%200ZM110%20156a16%2016%200%201%200%2032%200a16%2016%200%201%200-32%200Z'/%3E%3C/g%3E%3C/svg%3E">
+
+  <!-- Google Fonts - JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/site-shell.css">
+  <script src="src/utils/qr-invite.js"></script>
+  <script>
+    /* The palette now lives in assets/site-shell.css, shared with landing.html.
+       Script that needs a colour reads it back from the custom property rather
+       than keeping a second copy that could drift. */
+    const cssVar = (name) =>
+      getComputedStyle(document.documentElement).getPropertyValue('--' + name).trim();
+  </script>
+  <style>
+
+    /* ── SECTION 2: HERO ───────────────────────────────────────────────────── */
+    .hero {
+      position: relative;
+      min-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      padding: 60px 20px;
+      text-align: center;
+      background-image: 
+        linear-gradient(var(--hairline) 1px, transparent 1px),
+        linear-gradient(90deg, var(--hairline) 1px, transparent 1px);
+      background-size: 40px 40px;
+      background-position: center center;
+    }
+
+    /* Terminal Status Line */
+    .terminal-ticker {
+      width: 100%;
+      max-width: 600px;
+      background: var(--obsidian);
+      border: 1px solid var(--divider);
+      padding: 10px 16px;
+      margin-bottom: 30px;
+      font-size: 12px;
+      color: var(--spectral);
+      text-align: left;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .ticker-cursor {
+      animation: blink 0.8s step-end infinite;
+      font-weight: 800;
+    }
+
+    /* The GhostLink primary mark (assets/ghostlink-mark.svg), inlined so it
+       needs no request and inherits its colour from the surrounding text. */
+    .hero-ghost {
+      line-height: 1;
+      margin-bottom: 20px;
+      user-select: none;
+      animation: float 4s ease-in-out infinite;
+      color: var(--spectral);
+    }
+    .hero-ghost .brand-mark {
+      height: 96px;
+    }
+
+    .hero h1 {
+      font-size: 42px;
+      line-height: 1.2;
+      max-width: 800px;
+      margin-bottom: 20px;
+      color: var(--frost);
+      font-weight: 800;
+    }
+    .hero h1 span {
+      color: var(--spectral);
+    }
+
+    .hero-sub {
+      font-size: 16px;
+      color: var(--mist);
+      max-width: 600px;
+      margin-bottom: 40px;
+    }
+    .hero-sub span {
+      display: block;
+      font-weight: 700;
+      color: var(--frost);
+      margin-bottom: 8px;
+    }
+
+    .hero-actions {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 50px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* ── SECTION 3: HOW IT WORKS ───────────────────────────────────────────── */
+    .how-it-works {
+      padding: 80px 20px;
+      background: var(--obsidian);
+      text-align: center;
+    }
+
+    .sec-header {
+      margin-bottom: 60px;
+    }
+    .sec-title {
+      font-size: 28px;
+      margin-bottom: 12px;
+    }
+    .sec-subtitle {
+      font-size: 14px;
+      color: var(--mist);
+    }
+
+    .steps-grid {
+      grid-template-columns: repeat(3, 1fr);
+      text-align: left;
+    }
+
+    .step-card {
+      background: var(--obsidian);
+      padding: 40px 30px;
+      position: relative;
+    }
+    .step-card:hover {
+      background: var(--slate);
+    }
+    
+    .step-num {
+      font-size: 12px;
+      color: var(--spectral);
+      margin-bottom: 24px;
+      font-weight: 700;
+    }
+
+    .step-icon {
+      font-size: 32px;
+      margin-bottom: 20px;
+    }
+
+    .step-card h3 {
+      font-size: 18px;
+      margin-bottom: 16px;
+    }
+
+    .step-card p {
+      color: var(--mist);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .step-arrow {
+      position: absolute;
+      right: -15px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 20px;
+      color: var(--divider);
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* ── SECTION 4: FEATURES ───────────────────────────────────────────────── */
+    .features {
+      padding: 80px 20px;
+      background: var(--obsidian);
+    }
+
+    .features-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .feature-card {
+      background: var(--obsidian);
+      padding: 30px;
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.1s linear;
+    }
+    .feature-card:hover {
+      background: var(--spectral);
+    }
+    .feature-card:hover h3, 
+    .feature-card:hover p,
+    .feature-card:hover .feature-icon {
+      color: var(--obsidian);
+    }
+
+    .feature-icon {
+      font-size: 28px;
+      margin-bottom: 20px;
+      color: var(--spectral);
+    }
+
+    .feature-card h3 {
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+
+    .feature-card p {
+      color: var(--mist);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* ── SECTION 5: SECURITY DEEP DIVE ─────────────────────────────────────── */
+    .security {
+      padding: 80px 20px;
+      background: var(--obsidian);
+    }
+
+    .security-layout {
+      display: flex;
+      gap: 40px;
+      margin-top: 40px;
+    }
+
+    .security-left {
+      flex: 1.2;
+    }
+
+    .security-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--divider);
+      text-align: left;
+    }
+    .security-table th, .security-table td {
+      border: 1px solid var(--divider);
+      padding: 12px 16px;
+      font-size: 13px;
+    }
+    .security-table th {
+      background-color: var(--slate);
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--mist);
+    }
+    .security-table tr:nth-child(even) {
+      background-color: var(--obsidian);
+    }
+
+    .security-right {
+      flex: 0.8;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .sec-callout {
+      border: 2px solid var(--divider);
+      background: var(--obsidian);
+      padding: 24px;
+    }
+    .sec-callout-green {
+      border-color: var(--spectral);
+    }
+    .sec-callout-green h4 {
+      color: var(--spectral);
+    }
+    .sec-callout-red {
+      border-color: var(--divider);
+    }
+    .sec-callout-red h4 {
+      color: var(--mist);
+    }
+
+    .sec-callout h4 {
+      font-size: 14px;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+    }
+
+    .sec-callout p {
+      color: var(--mist);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .sec-oss-note {
+      margin-top: 30px;
+      border-top: 1px solid var(--divider);
+      padding-top: 20px;
+      font-size: 13px;
+      color: var(--mist);
+    }
+    .sec-oss-note p {
+      margin-bottom: 12px;
+    }
+
+    /* ── SECTION 6: DOWNLOAD ───────────────────────────────────────────────── */
+    .download {
+      padding: 80px 20px;
+      background: var(--obsidian);
+      text-align: center;
+    }
+
+    .download-grid {
+      grid-template-columns: repeat(3, 1fr);
+      text-align: left;
+    }
+
+    .download-card {
+      background: var(--obsidian);
+      padding: 30px 24px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 250px;
+    }
+    .download-card:hover {
+      background: var(--slate);
+    }
+
+    .dl-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 24px;
+    }
+
+    /* Drawn glyphs rather than emoji: they take the palette colour, keep the
+       same stroke weight as the brand mark, and look the same on every OS. */
+    .step-icon svg, .feature-icon svg {
+      display: block;
+      color: var(--spectral);
+    }
+
+    .dl-icon {
+      color: var(--spectral);
+      display: block;
+      flex-shrink: 0;
+    }
+    .dl-file {
+      font-size: 10px;
+      color: var(--fade);
+      margin-top: 10px;
+      letter-spacing: 0.5px;
+    }
+
+    .dl-tag {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 3px 6px;
+      border: 1px solid var(--divider);
+      background-color: var(--obsidian);
+      color: var(--mist);
+    }
+    .dl-tag-active {
+      border-color: var(--spectral);
+      color: var(--spectral);
+    }
+
+    .download-card h3 {
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+
+    .download-card p {
+      color: var(--mist);
+      font-size: 12px;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    .dl-btn {
+      width: 100%;
+    }
+
+    .dl-requirements {
+      margin-top: 30px;
+      font-size: 11px;
+      color: var(--mist);
+    }
+
+    /* ── SECTION 7: PRICING ────────────────────────────────────────────────── */
+    .pricing {
+      padding: 80px 20px;
+      background: var(--obsidian);
+      text-align: center;
+    }
+
+    /* Pricing Toggle */
+    .pricing-toggle {
+      display: inline-flex;
+      background-color: var(--obsidian);
+      border: 1px solid var(--divider);
+      padding: 4px;
+      margin-bottom: 40px;
+    }
+    .pricing-toggle button {
+      background: transparent;
+      border: none;
+      color: var(--mist);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    .pricing-toggle button.active {
+      background: var(--divider);
+      color: var(--frost);
+    }
+
+    .pricing-grid {
+      grid-template-columns: repeat(4, 1fr);
+      text-align: left;
+    }
+
+    .price-card {
+      background: var(--obsidian);
+      padding: 40px 30px;
+      border: 2px solid var(--divider);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    
+    .price-card-free {
+      border-color: var(--divider);
+    }
+    .price-card-pro {
+      border-color: var(--spectral);
+      position: relative;
+    }
+    .price-card-team {
+      border-color: var(--signal);
+    }
+    .price-card-enterprise {
+      border-color: var(--signal);
+    }
+    .price-card-enterprise .price-tier { color: var(--signal); }
+
+    .popular-tag {
+      position: absolute;
+      top: -12px;
+      right: 20px;
+      background: var(--spectral);
+      color: var(--obsidian);
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      padding: 3px 8px;
+    }
+
+    .price-tier {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--mist);
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+    .price-card-pro .price-tier { color: var(--spectral); }
+    .price-card-team .price-tier { color: var(--signal); }
+
+    .price-amt {
+      font-size: 32px;
+      font-weight: 800;
+      margin-bottom: 8px;
+      color: var(--frost);
+    }
+    .price-sub {
+      font-size: 11px;
+      color: var(--mist);
+      margin-bottom: 24px;
+      min-height: 16px;
+    }
+
+    .price-features {
+      list-style: none;
+      margin-bottom: 40px;
+    }
+    .price-features li {
+      font-size: 13px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--slate);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .price-features li.disabled {
+      color: var(--fade);
+    }
+    .feature-check {
+      font-weight: 800;
+    }
+    .feature-check-yes { color: var(--spectral); }
+    .feature-check-no { color: var(--fade); }
+
+    .pricing-note {
+      margin-top: 30px;
+      font-size: 12px;
+      color: var(--mist);
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.6;
+    }
+
+    /* ── SECTION 8: FAQ ────────────────────────────────────────────────────── */
+    .faq {
+      padding: 80px 20px;
+      background: var(--obsidian);
+    }
+
+    .faq-layout {
+      max-width: 800px;
+      margin: 40px auto 0;
+      border: 1px solid var(--divider);
+    }
+
+    .faq-item {
+      border-bottom: 1px solid var(--divider);
+      background-color: var(--obsidian);
+    }
+    .faq-item:last-child {
+      border-bottom: none;
+    }
+
+    .faq-question {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--frost);
+      text-align: left;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 20px 24px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .faq-question:hover {
+      background-color: var(--slate);
+      color: var(--spectral);
+    }
+
+    .faq-answer {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.15s cubic-bezier(0, 1, 0, 1);
+      background-color: var(--obsidian);
+    }
+    .faq-answer-content {
+      padding: 20px 24px;
+      font-size: 13px;
+      color: var(--mist);
+      line-height: 1.7;
+      border-top: 1px solid var(--slate);
+    }
+
+    .faq-indicator {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--mist);
+    }
+
+    /* ── SECTION 9: OPEN SOURCE CALLOUT ────────────────────────────────────── */
+    .oss-banner {
+      background-color: var(--graphite);
+      border-top: 3px solid var(--spectral);
+      border-bottom: 3px solid var(--spectral);
+      padding: 60px 20px;
+      text-align: center;
+    }
+    .oss-banner h2 {
+      font-size: 28px;
+      color: var(--spectral);
+      margin-bottom: 16px;
+    }
+    .oss-banner p {
+      max-width: 600px;
+      margin: 0 auto 30px;
+      font-size: 14px;
+      line-height: 1.7;
+      color: var(--spectral);
+    }
+    .oss-banner .license-info {
+      font-size: 11px;
+      color: var(--spectral-dim);
+      margin-top: 24px;
+    }
+
+    /* ── SECTIONS 11 & 12: PRIVACY & TERMS ─────────────────────────────────── */
+    .legal-doc {
+      padding: 80px 20px;
+      background: var(--obsidian);
+      border-top: 3px solid var(--divider);
+    }
+    .legal-doc h2 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+    .legal-doc-date {
+      font-size: 11px;
+      color: var(--mist);
+      margin-bottom: 40px;
+      text-transform: uppercase;
+    }
+    .legal-content {
+      max-width: 800px;
+      margin: 0 auto;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--mist);
+      line-height: 1.8;
+      font-size: 15px;
+    }
+    .legal-content h3 {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 16px;
+      margin-top: 36px;
+      margin-bottom: 12px;
+      color: var(--frost);
+      border-left: 2px solid var(--spectral);
+      padding-left: 12px;
+    }
+    .legal-content p {
+      margin-bottom: 16px;
+    }
+    .legal-content ul {
+      margin-bottom: 16px;
+      padding-left: 20px;
+    }
+    .legal-content li {
+      margin-bottom: 8px;
+    }
+
+    /* ── ANIMATIONS ────────────────────────────────────────────────────────── */
+    @keyframes float {
+      0% { transform: translateY(0px); }
+      50% { transform: translateY(-10px); }
+      100% { transform: translateY(0px); }
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* Scroll animations - snap in */
+    .snap-reveal {
+      opacity: 0;
+      transition: opacity 0.15s step-end;
+    }
+    .snap-reveal.revealed {
+      opacity: 1;
+    }
+
+    /* ── RESPONSIVE SYSTEM ────────────────────────────────────────────────── */
+    @media (max-width: 1024px) {
+      .download-grid, .pricing-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+
+    @media (max-width: 768px) {
+      .hero h1 {
+        font-size: 28px;
+      }
+
+      .steps-grid, .features-grid, .pricing-grid, .download-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .step-arrow {
+        display: none;
+      }
+
+      .security-layout {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Reading position, ambient pointer light, and the copy confirmation.
+       All three are inert decoration: the page reads identically without them. -->
+  <div id="progress" aria-hidden="true"></div>
+  <div id="glow" aria-hidden="true"></div>
+
+  <!-- ── NAVBAR ── -->
+  <header>
+    <div class="navbar">
+      <a href="landing.html" class="nav-logo">
+        <svg class="brand-mark" viewBox="0 0 200 261" fill="none" role="img" aria-label="GhostLink" style="color:var(--spectral)"><g fill="none" stroke="currentColor" stroke-linecap="round"><path d="M41.3 46.9A70 70 0 0 1 158.7 46.9" stroke-width="20"/><path d="M64.9 67.9A39 39 0 0 1 135.1 67.9" stroke-width="18"/></g><path fill="currentColor" fill-rule="evenodd" d="M20 159A80 80 0 0 1 180 159V243Q160 269 140 243Q120 269 100 243Q80 269 60 243Q40 269 20 243ZM58 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0ZM110 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0Z"/></svg> GHOST<span>LINK</span>
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#security">Security</a></li>
+        <li><a href="#download">Download</a></li>
+        <li><a href="#pricing">Pricing</a></li>
+        <li><a href="https://github.com/kidus1234b/Ghostlink" target="_blank">GitHub</a></li>
+      </ul>
+      <button class="hamburger" id="hamburger-btn" aria-label="Toggle Menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Mobile Menu -->
+  <div class="mobile-menu" id="mobile-menu-overlay">
+    <ul>
+      <li><a href="#features" class="mobile-link">Features</a></li>
+      <li><a href="#security" class="mobile-link">Security</a></li>
+      <li><a href="#download" class="mobile-link">Download</a></li>
+      <li><a href="#pricing" class="mobile-link">Pricing</a></li>
+      <li><a href="https://github.com/kidus1234b/Ghostlink" target="_blank" class="mobile-link">GitHub</a></li>
+    </ul>
+  </div>
+
+  <!-- ── HERO ── -->
+  <section class="hero">
+    <canvas id="particles" aria-hidden="true"></canvas>
+    <div class="terminal-ticker">
+      <div id="ticker-text">> initializing...</div>
+      <div class="ticker-cursor">_</div>
+    </div>
+
+    <div class="hero-ghost"><svg class="brand-mark" viewBox="0 0 200 261" fill="none" role="img" aria-label="GhostLink"><g fill="none" stroke="currentColor" stroke-linecap="round"><path d="M41.3 46.9A70 70 0 0 1 158.7 46.9" stroke-width="20"/><path d="M64.9 67.9A39 39 0 0 1 135.1 67.9" stroke-width="18"/></g><path fill="currentColor" fill-rule="evenodd" d="M20 159A80 80 0 0 1 180 159V243Q160 269 140 243Q120 269 100 243Q80 269 60 243Q40 269 20 243ZM58 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0ZM110 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0Z"/></svg></div>
+    <h1>Communication That Leaves No Trace</h1>
+    <div class="hero-sub">
+      <span>End-to-end encrypted. Peer-to-peer direct.</span>
+      No servers. No metadata. No compromise.
+    </div>
+
+    <div class="hero-actions">
+      <a href="#download" class="btn btn-primary">[Download App]</a>
+      <a href="https://github.com/kidus1234b/Ghostlink" target="_blank" class="btn btn-ghost">[View on GitHub]</a>
+    </div>
+
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>═════════════════════════════════════════</span>
+    <span>[ INFRASTRUCTURE CORE ]</span>
+    <span>═════════════════════════════════════════</span>
+  </div>
+
+  <!-- ── HOW IT WORKS ── -->
+  <section class="how-it-works">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">How GhostLink Works</h2>
+        <div class="sec-subtitle">No server ever sees your data. Here's why.</div>
+      </div>
+
+      <div class="grid-container steps-grid snap-reveal">
+        <!-- Step 1 -->
+        <div class="step-card">
+          <div class="step-num">[01]</div>
+          <div class="step-icon"><svg width="34" height="34" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="16" cy="24" r="8"/><path d="M24 24h18M36 24v7M30 24v5"/></svg></div>
+          <h3>Generate Your Identity</h3>
+          <p>A 12-word seed phrase creates your cryptographic identity. Your private key never leaves your device.</p>
+          <div class="step-arrow">→</div>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="step-card">
+          <div class="step-num">[02]</div>
+          <div class="step-icon"><svg width="34" height="34" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 26l8-8 6 6 6-6 8 8"/><path d="M24 24v14"/><path d="M14 32l10 6 10-6"/></svg></div>
+          <h3>Connect Directly</h3>
+          <p>Scan a QR code or share an invite link. GhostLink connects you peer-to-peer with no middleman.</p>
+          <div class="step-arrow">→</div>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="step-card">
+          <div class="step-num">[03]</div>
+          <div class="step-icon"><svg width="34" height="34" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M24 5 41 12v13c0 10-7 16-17 19C14 41 7 35 7 25V12Z"/><path d="M17 24l5 5 9-10"/></svg></div>
+          <h3>Communicate Freely</h3>
+          <p>Every message is AES-256 encrypted and SHA-256 blockchain-chained. Tamper with one message and both peers know instantly.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>───────────</span>
+    <span>[ STABILIZED PROTOCOL FUNCTIONALITIES ]</span>
+    <span>───────────</span>
+  </div>
+
+  <!-- ── FEATURES ── -->
+  <section class="features" id="features">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">Everything You Need. Nothing You Don't.</h2>
+      </div>
+
+      <div class="grid-container features-grid snap-reveal">
+        <!-- 1 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10h32v22H20l-8 8v-8H8Z"/><path d="M16 18h16M16 25h10"/></svg></div>
+          <h3>Encrypted Chat</h3>
+          <p>Messages encrypted before they leave your device. Blockchain-chained for tamper detection.</p>
+        </div>
+
+        <!-- 2 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 5h14l10 10v28H14Z"/><path d="M28 5v10h10"/><path d="M20 26h12M20 33h12"/></svg></div>
+          <h3>Secure File Transfer</h3>
+          <p>Files split into encrypted 64KB chunks sent P2P. SHA-256 verified on arrival. Up to 2GB with Pro.</p>
+        </div>
+
+        <!-- 3 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 6h8l4 10-5 3a20 20 0 0 0 9 9l3-5 10 4v8c0 2-2 3-4 3C21 38 10 27 10 10c0-2 1-4 3-4Z"/></svg></div>
+          <h3>Voice & Video Calls</h3>
+          <p>End-to-end encrypted calls via WebRTC. No call logs. No recording. No trace.</p>
+        </div>
+
+        <!-- 4 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="9" width="38" height="24"/><path d="M16 41h16M24 33v8"/></svg></div>
+          <h3>Screen Sharing</h3>
+          <p>Share your screen securely with connected peers. Encrypted stream, no third-party relay.</p>
+        </div>
+
+        <!-- 5 -->
+        <div class="feature-card">
+          <div class="feature-icon">⏱</div>
+          <h3>Self-Destruct Messages</h3>
+          <p>Set messages to vanish in 30s, 60s, or 5 minutes. Cryptographically deleted — not just hidden.</p>
+        </div>
+
+        <!-- 6 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="16" cy="24" r="8"/><path d="M24 24h18M36 24v7M30 24v5"/></svg></div>
+          <h3>Seed Phrase Recovery</h3>
+          <p>Your 12-word phrase recovers everything on any device. Backed up across peers, not servers.</p>
+        </div>
+
+        <!-- 7 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 28a7 7 0 0 1 0-10l5-5a7 7 0 0 1 10 10l-2 2"/><path d="M28 20a7 7 0 0 1 0 10l-5 5a7 7 0 0 1-10-10l2-2"/></svg></div>
+          <h3>Blockchain Integrity</h3>
+          <p>Every conversation is a SHA-256 linked chain. Open the explorer and verify any message yourself.</p>
+        </div>
+
+        <!-- 8 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="17" r="7"/><path d="M6 40c0-7 5-11 12-11s12 4 12 11"/><path d="M32 12a7 7 0 0 1 0 12M34 40c0-6-2-9-5-11"/></svg></div>
+          <h3>Team Workspaces (Pro)</h3>
+          <p>Shared encrypted vault for your team. One key, all members, zero server.</p>
+        </div>
+
+        <!-- 9 -->
+        <div class="feature-card">
+          <div class="feature-icon"><svg width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M38 28A16 16 0 0 1 20 10a16 16 0 1 0 18 18Z"/></svg></div>
+          <h3>Self-Destruct Identity</h3>
+          <p>Duress PIN wipes everything silently. Nothing left. Not even a trace.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>═════════════════════════════════════════</span>
+    <span>[ CRYPTOGRAPHIC VERIFICATION LAYOUT ]</span>
+    <span>═════════════════════════════════════════</span>
+  </div>
+
+  <!-- ── SECURITY DEEP DIVE ── -->
+  <section class="security" id="security">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">Security Without Compromise</h2>
+        <div class="sec-subtitle">We don't ask you to trust us. The math does it.</div>
+      </div>
+
+      <div class="security-layout">
+        <div class="security-left">
+          <table class="security-table">
+            <thead>
+              <tr>
+                <th>What</th>
+                <th>How</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Encryption</td>
+                <td>AES-256-GCM</td>
+              </tr>
+              <tr>
+                <td>Key Exchange</td>
+                <td>ECDH P-256</td>
+              </tr>
+              <tr>
+                <td>Identity</td>
+                <td>BIP39 12-word seed phrase</td>
+              </tr>
+              <tr>
+                <td>Integrity</td>
+                <td>SHA-256 blockchain chain</td>
+              </tr>
+              <tr>
+                <td>Key Backup</td>
+                <td>Shamir's Secret Sharing</td>
+              </tr>
+              <tr>
+                <td>Key Recovery</td>
+                <td>PBKDF2 100,000 iterations</td>
+              </tr>
+              <tr>
+                <td>Calls</td>
+                <td>WebRTC SRTP</td>
+              </tr>
+              <tr>
+                <td>Storage</td>
+                <td>Encrypted localStorage</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="security-right">
+          <div class="sec-callout sec-callout-green">
+            <h4>✓ What we can see</h4>
+            <p>Nothing. There is no server. There is no us in the middle. Zero.</p>
+          </div>
+
+          <div class="sec-callout sec-callout-red">
+            <h4>✗ What governments can demand from us</h4>
+            <p>Nothing. We hold no keys, no messages, no metadata, no user records. There is nothing to hand over.</p>
+          </div>
+
+          <div class="sec-oss-note">
+            <p>GhostLink is open source under GPL-3.0. Read every line of code yourself.</p>
+            <a href="https://github.com/kidus1234b/Ghostlink" target="_blank">[View Source on GitHub →]</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>───────────</span>
+    <span>[ SOFTWARE DISTRIBUTION BINARIES ]</span>
+    <span>───────────</span>
+  </div>
+
+  <!-- ── DOWNLOAD ── -->
+  <section class="download" id="download">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">Get GhostLink</h2>
+      </div>
+
+      <div class="grid-container download-grid snap-reveal">
+        <!-- Web App -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="24" cy="24" r="18"/><path d="M6 24h36M24 6c5 6 5 30 0 36M24 6c-5 6-5 30 0 36"/></svg>
+              <span class="dl-tag dl-tag-active">Available Now</span>
+            </div>
+            <h3>Web App</h3>
+            <p>Runs in the browser. Nothing to install.</p>
+            <div class="dl-file">no download</div>
+          </div>
+          <a href="https://kidus1234b.github.io/Ghostlink/" target="_blank" rel="noopener" class="btn btn-primary dl-btn">[Open Web App]</a>
+        </div>
+
+        <!-- Android -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M12 20a12 12 0 0 1 24 0v14H12Z"/><path d="M15 20 11 13M33 20l4-7"/><circle cx="19" cy="26" r="1.6" fill="currentColor" stroke="none"/><circle cx="29" cy="26" r="1.6" fill="currentColor" stroke="none"/><path d="M7 23v10M41 23v10"/></svg>
+              <span class="dl-tag">Beta</span>
+            </div>
+            <h3>Android</h3>
+            <p>Android 7.0 (API 24) and above. Sideload the APK.</p>
+            <div class="dl-file">ghostlink-android.apk</div>
+          </div>
+          <a href="https://github.com/kidus1234b/Ghostlink/releases" target="_blank" rel="noopener" class="btn btn-ghost dl-btn">[Download APK]</a>
+        </div>
+
+        <!-- Windows -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M7 12l15-2v14H7ZM26 9.5 41 7v17H26ZM7 26h15v12l-15-2ZM26 26h15v15l-15-2.5Z"/></svg>
+              <span class="dl-tag">Coming Soon</span>
+            </div>
+            <h3>Windows</h3>
+            <p>Windows 10 and 11, 64-bit.</p>
+            <div class="dl-file">ghostlink-setup.exe</div>
+          </div>
+          <a href="https://github.com/kidus1234b/Ghostlink/releases" target="_blank" rel="noopener" class="btn btn-ghost dl-btn">[Download .exe]</a>
+        </div>
+
+        <!-- macOS -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M32 25c0-5 4-7 4-7s-2-4-7-4c-3 0-4 1.5-6 1.5S19 14 16 14c-5 0-8 4-8 10s5 15 8 15c2 0 3-1.5 5-1.5s3 1.5 5 1.5c3 0 6-5 6-5s-4-2-4-9Z"/><path d="M24 10c2-3 1.5-6 1.5-6S22 5 20.5 8"/></svg>
+              <span class="dl-tag">Coming Soon</span>
+            </div>
+            <h3>macOS</h3>
+            <p>macOS 11 Big Sur and later. Apple silicon and Intel.</p>
+            <div class="dl-file">ghostlink.dmg</div>
+          </div>
+          <a href="https://github.com/kidus1234b/Ghostlink/releases" target="_blank" rel="noopener" class="btn btn-ghost dl-btn">[Download .dmg]</a>
+        </div>
+
+        <!-- Linux -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M17 15a7 7 0 0 1 14 0v5c0 4 6 9 6 15 0 3-3 5-6 5H17c-3 0-6-2-6-5 0-6 6-11 6-15Z"/><circle cx="21" cy="15" r="1.6" fill="currentColor" stroke="none"/><circle cx="27" cy="15" r="1.6" fill="currentColor" stroke="none"/><path d="M22 19.5h4l-2 2.5Z" fill="currentColor"/><path d="M18 40l-3 3M30 40l3 3"/></svg>
+              <span class="dl-tag">Coming Soon</span>
+            </div>
+            <h3>Linux</h3>
+            <p>Debian and Ubuntu derivatives, 64-bit.</p>
+            <div class="dl-file">ghostlink.deb</div>
+          </div>
+          <a href="https://github.com/kidus1234b/Ghostlink/releases" target="_blank" rel="noopener" class="btn btn-ghost dl-btn">[Download .deb]</a>
+        </div>
+
+        <!-- iOS -->
+        <div class="download-card">
+          <div>
+            <div class="dl-header">
+              <svg class="dl-icon" width="30" height="30" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><rect x="14" y="5" width="20" height="38"/><path d="M21 9h6"/><path d="M22 38h4"/></svg>
+              <span class="dl-tag">Coming Soon</span>
+            </div>
+            <h3>iOS</h3>
+            <p>iPhone and iPad, iOS 15 and later.</p>
+            <div class="dl-file">App Store</div>
+          </div>
+          <a href="https://github.com/kidus1234b/Ghostlink/releases" target="_blank" rel="noopener" class="btn btn-ghost dl-btn">[App Store]</a>
+        </div>
+      </div>
+
+      <div class="dl-requirements">
+        Web: Chrome 89+, Firefox 90+, Safari 15+, Edge 89+ | Requires: WebRTC support, Web Crypto API, localStorage
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>═════════════════════════════════════════</span>
+    <span>[ LICENSING & PRICING PLANS ]</span>
+    <span>═════════════════════════════════════════</span>
+  </div>
+
+  <!-- ── PRICING ── -->
+  <section class="pricing" id="pricing">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">Simple Pricing</h2>
+        <div class="sec-subtitle">Privacy shouldn't cost a fortune.</div>
+      </div>
+
+      <div class="pricing-toggle">
+        <button id="toggle-monthly" class="active">Monthly</button>
+        <button id="toggle-yearly">Yearly — Save 37%</button>
+        <button id="toggle-lifetime">Lifetime</button>
+      </div>
+
+      <div class="grid-container pricing-grid snap-reveal">
+        <!-- FREE Card -->
+        <div class="price-card price-card-free">
+          <div>
+            <div class="price-tier">Free</div>
+            <div class="price-amt" id="price-free-amt">$0</div>
+            <div class="price-sub">forever</div>
+            
+            <ul class="price-features">
+              <li><span class="feature-check feature-check-yes">✓</span> Encrypted P2P chat</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Up to 5 peers</li>
+              <li><span class="feature-check feature-check-yes">✓</span> File transfer up to 25MB</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Voice & video calls</li>
+              <li><span class="feature-check feature-check-yes">✓</span> 12-word seed recovery</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Blockchain explorer</li>
+              <li class="disabled"><span class="feature-check feature-check-no">✗</span> Team workspaces</li>
+              <li class="disabled"><span class="feature-check feature-check-no">✗</span> Files up to 2GB</li>
+              <li class="disabled"><span class="feature-check feature-check-no">✗</span> Pro themes</li>
+            </ul>
+          </div>
+          <a href="#download" class="btn btn-ghost" style="width: 100%;">[Get Started Free]</a>
+        </div>
+
+        <!-- PRO Card -->
+        <div class="price-card price-card-pro">
+          <div class="popular-tag">[ Most Popular ]</div>
+          <div>
+            <div class="price-tier">Pro</div>
+            <div class="price-amt" id="price-pro-amt">$8</div>
+            <div class="price-sub" id="price-pro-sub">/ month</div>
+
+            <ul class="price-features">
+              <li><span class="feature-check feature-check-yes">✓</span> Everything in Free</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Unlimited peers</li>
+              <li><span class="feature-check feature-check-yes">✓</span> File transfer up to 2GB</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Team workspaces (1 vault)</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Pro themes (Stealth + Carbon)</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Duress PIN wipe</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Priority new features</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Pro badge ✦</li>
+            </ul>
+          </div>
+          <button onclick="openPaymentPortal('Pro')" class="btn btn-primary" style="width: 100%;">[Get Pro License]</button>
+        </div>
+
+        <!-- TEAM Card -->
+        <div class="price-card price-card-team">
+          <div>
+            <div class="price-tier">Team</div>
+            <div class="price-amt" id="price-team-amt">$25</div>
+            <div class="price-sub" id="price-team-sub">up to 5 members</div>
+
+            <ul class="price-features">
+              <li><span class="feature-check feature-check-yes">✓</span> Everything in Pro</li>
+              <li><span class="feature-check feature-check-yes">✓</span> 5 Pro licenses</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Shared team workspace</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Shared encrypted vault</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Admin controls</li>
+            </ul>
+          </div>
+          <button onclick="openPaymentPortal('Team')" class="btn btn-secondary" style="width: 100%;">[Get Team License]</button>
+        </div>
+
+        <!-- ENTERPRISE Card -->
+        <div class="price-card price-card-enterprise">
+          <div>
+            <div class="price-tier">Enterprise</div>
+            <div class="price-amt" id="price-enterprise-amt">$80</div>
+            <div class="price-sub" id="price-enterprise-sub">unlimited members</div>
+
+            <ul class="price-features">
+              <li><span class="feature-check feature-check-yes">✓</span> Everything in Team</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Unlimited member seats</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Unlimited workspaces</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Dedicated signaling relay setup support</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Priority email response (24hr)</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Custom onboarding call</li>
+              <li><span class="feature-check feature-check-yes">✓</span> Source code audit support</li>
+            </ul>
+          </div>
+          <button onclick="openPaymentPortal('Enterprise')" class="btn btn-enterprise" style="width: 100%;">[Get Enterprise License]</button>
+        </div>
+      </div>
+
+      <div class="pricing-note">
+        All licenses delivered as activation keys via email. No subscription platform. No credit card stored anywhere. Payment accepted in BTC, ETH, USDT, and other major cryptocurrencies.
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SECTION BREAK ── -->
+  <div class="section-divider">
+    <span>───────────</span>
+    <span>[ INTERROGATIVE REFERENCE DOCUMENTATION ]</span>
+    <span>───────────</span>
+  </div>
+
+  <!-- ── FAQ ── -->
+  <section class="faq">
+    <div class="container">
+      <div class="sec-header">
+        <h2 class="sec-title">Frequently Asked Questions</h2>
+      </div>
+
+      <div class="faq-layout">
+        <!-- Q1 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>Is GhostLink really free?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              Yes. The core app is free forever. Pro adds power features for users who need them.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q2 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>What happens if I lose my seed phrase?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              Your data cannot be recovered without it. This is by design — no one can recover it for you, including us. Write it down, store it safely. Consider distributing Shamir fragments to trusted peers.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q3 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>Can GhostLink be shut down by governments?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              There is nothing to shut down. GhostLink has no central server. Every user runs their own node. Even if our website goes down, the app keeps working.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q4 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>Is GhostLink anonymous?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              GhostLink does not require a phone number, email, or any personal information. Your identity is your cryptographic key pair — nothing else.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q5 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>Can GhostLink read my messages?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              No. Messages are encrypted on your device before sending. We have no server, no keys, and no way to read anything.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q6 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>How does peer discovery work without a server?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              First connection uses QR codes or invite strings — share out of band (Signal, email, in person). Reconnection uses cached peer info automatically.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q7 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>What if a peer goes offline?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              Messages queue locally until the peer reconnects. Queue auto-clears after 24 hours.
+            </div>
+          </div>
+        </div>
+
+        <!-- Q8 -->
+        <div class="faq-item">
+          <button class="faq-question">
+            <span>Is this legal?</span>
+            <span class="faq-indicator">+</span>
+          </button>
+          <div class="faq-answer">
+            <div class="faq-answer-content">
+              Yes. End-to-end encryption is legal in most countries. GhostLink is a general purpose communication tool. Users are responsible for complying with local laws.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── OPEN SOURCE CALLOUT BANNER ── -->
+  <section class="oss-banner">
+    <h2>GhostLink is open source</h2>
+    <p>Read the code. Audit it. Fork it. Improve it. We believe privacy tools must be transparent.</p>
+    <a href="https://github.com/kidus1234b/Ghostlink" target="_blank" class="btn btn-primary">[View on GitHub]</a>
+    <div class="license-info">
+      License: GPL-3.0 — This means no one can ever take GhostLink private or remove your right to use it.
+    </div>
+  </section>
+
+  <!-- ── PRIVACY POLICY ── -->
+  <section class="legal-doc" id="privacy">
+    <div class="container">
+      <h2>Privacy Policy</h2>
+      <div class="legal-doc-date">Last updated: June 2026</div>
+
+      <div class="legal-content">
+        <h3>1. No Data Collection</h3>
+        <p>GhostLink collects no personal data whatsoever. We have no servers. We have no database. We cannot collect data even if we wanted to.</p>
+
+        <h3>2. What Stays on Your Device</h3>
+        <p>All core state and sensitive configuration parameters remain strictly on your physical hardware storage:</p>
+        <ul>
+          <li>Your cryptographic key pair</li>
+          <li>Your BIP39 seed phrase (only you know this)</li>
+          <li>Your message history</li>
+          <li>Your contact list</li>
+          <li>Your local settings</li>
+        </ul>
+        <p>None of this ever leaves your device except as encrypted fragments distributed to your own chosen peers.</p>
+
+        <h3>3. Peer-to-Peer Communication</h3>
+        <p>Messages travel directly between devices using WebRTC connections. The signaling server (used only for initial connection setup) sees only metadata associated with the handshake (timing and IP addresses). It never sees message content, identities, or keys.</p>
+
+        <h3>4. The Signaling Server</h3>
+        <p>A minimal WebSocket relay assists with the initial WebRTC handshake. It holds no logs or data between sessions. All messages routed through the signaling backend are connection setup signals only — never chat content.</p>
+
+        <h3>5. Seed Phrase & Recovery</h3>
+        <p>Your 12-word seed phrase is generated locally. We never see it. We cannot recover it. You are solely responsible for keeping it safe.</p>
+
+        <h3>6. Open Source</h3>
+        <p>GhostLink's source code is public under the GPL-3.0 license. Anyone can verify these claims by reading and compiling the code independently.</p>
+
+        <h3>7. Changes to This Policy</h3>
+        <p>We will post any policy modifications directly on the GitHub repository. Continued use of the service constitutes acceptance of the current policy terms.</p>
+
+        <h3>8. Contact</h3>
+        <p>ghostlinkweb@proton.me</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── TERMS OF SERVICE ── -->
+  <section class="legal-doc" id="terms">
+    <div class="container">
+      <h2>Terms of Service</h2>
+      <div class="legal-doc-date">Last updated: June 2026</div>
+
+      <div class="legal-content">
+        <h3>1. Acceptance</h3>
+        <p>By downloading, running, or accessing GhostLink, you agree to be bound by these terms.</p>
+
+        <h3>2. What GhostLink Is</h3>
+        <p>GhostLink is a peer-to-peer encrypted communication tool. It is provided as-is under the GNU General Public License v3 (GPL-3.0).</p>
+
+        <h3>3. Your Responsibilities</h3>
+        <p>You are solely responsible for:</p>
+        <ul>
+          <li>Keeping your 12-word seed phrase safe.</li>
+          <li>Complying with cryptography and transmission laws in your local jurisdiction.</li>
+          <li>How you choose to distribute and use GhostLink.</li>
+        </ul>
+        <p>We provide the tool; you decide how to use it.</p>
+
+        <h3>4. What We Cannot Do</h3>
+        <p>Because of our zero-knowledge P2P architecture, we cannot:</p>
+        <ul>
+          <li>Read or decrypt your messages.</li>
+          <li>Recover your account or keys if you lose them.</li>
+          <li>Delete your message data (we don't have it).</li>
+          <li>Provide your data to government agencies or third parties (we don't have it).</li>
+        </ul>
+
+        <h3>5. Prohibited Uses</h3>
+        <p>Do not use GhostLink for:</p>
+        <ul>
+          <li>Illegal activities in your jurisdiction.</li>
+          <li>Harassment, stalking, or abuse of others.</li>
+          <li>Distribution of illegal contents.</li>
+        </ul>
+        <p>Violation of these restrictions may result in the revocation of Pro licenses.</p>
+
+        <h3>6. Pro License Terms</h3>
+        <p>Pro licenses are non-transferable between people and are device-bound. If the application does not work as described, refunds can be requested within 7 days of purchase. We reserve the right to revoke licenses used for prohibited purposes.</p>
+
+        <h3>7. Disclaimer of Warranty</h3>
+        <p>GHOSTLINK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED. WE ARE NOT LIABLE FOR DATA LOSS, HARDWARE LOSS, OR CORRUPTION OF PRIVATE CONFIGURATION VALUES.</p>
+
+        <h3>8. Open Source</h3>
+        <p>GhostLink is GPL-3.0. Your rights under that license are separate from and supersede any limitations in these Terms of Service.</p>
+
+        <h3>9. Governing Law</h3>
+        <p>These terms are governed by applicable law. Any dispute shall be resolved through negotiation first.</p>
+
+        <h3>10. Contact</h3>
+        <p>ghostlinkweb@proton.me</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FOOTER ── -->
+  <footer>
+    <div class="footer-grid">
+      <div class="footer-col">
+        <h4 style="color:var(--spectral); display:flex; align-items:center; gap:8px;"><svg class="brand-mark" viewBox="0 0 200 261" fill="none" role="img" aria-label="GhostLink"><g fill="none" stroke="currentColor" stroke-linecap="round"><path d="M41.3 46.9A70 70 0 0 1 158.7 46.9" stroke-width="20"/><path d="M64.9 67.9A39 39 0 0 1 135.1 67.9" stroke-width="18"/></g><path fill="currentColor" fill-rule="evenodd" d="M20 159A80 80 0 0 1 180 159V243Q160 269 140 243Q120 269 100 243Q80 269 60 243Q40 269 20 243ZM58 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0ZM110 156a16 16 0 1 0 32 0a16 16 0 1 0-32 0Z"/></svg> GHOSTLINK</h4>
+        <div class="footer-desc">
+          Zero Trust. Zero Trace.
+        </div>
+      </div>
+
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="https://kidus1234b.github.io/Ghostlink/" target="_blank">Web App</a></li>
+          <li><a href="#download">Download</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="https://github.com/kidus1234b/Ghostlink" target="_blank">GitHub</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Legal</h4>
+        <ul>
+          <li><a href="#privacy">Privacy Policy</a></li>
+          <li><a href="#terms">Terms of Service</a></li>
+          <li><a href="https://github.com/kidus1234b/Ghostlink/blob/main/LICENSE" target="_blank">License (GPL-3.0)</a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Contact</h4>
+        <ul>
+          <li>
+            <button class="copy-mail" id="copy-email" data-mail="ghostlinkweb@proton.me">
+              ghostlinkweb@proton.me
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </li>
+          <li><a href="https://github.com/kidus1234b/Ghostlink/issues" target="_blank">GitHub Issues</a></li>
+          <li style="color:var(--fade);font-size:11px;line-height:1.4;">No support phone number — we don't know who you are.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <div>© 2026 GhostLink · GPL-3.0 · Built by Kidus</div>
+      <div>No cookies. No tracking. No ads.</div>
+    </div>
+  </footer>
+
+  <!-- ── PAYMENT MODAL (SECURITY BRUTALISM) ── -->
+  <div id="payment-modal" style="display: none; position: fixed; inset: 0; background: var(--scrim); align-items: center; justify-content: center; z-index: 2000; padding: 20px; backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);">
+    <div style="background: var(--obsidian); border: 2px solid var(--divider); width: 100%; max-width: 580px; padding: 30px; position: relative; font-family: 'JetBrains Mono', monospace; text-align: left;">
+      <!-- Close Button -->
+      <button onclick="closePaymentModal()" style="position: absolute; top: 16px; right: 16px; background: transparent; border: 1px solid var(--divider); color: var(--mist); font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; padding: 4px 8px; cursor: pointer;">[X]</button>
+      
+      <h3 style="font-size: 14px; margin-bottom: 20px; border-bottom: 1px solid var(--divider); padding-bottom: 10px; color: var(--spectral);">[ PAYMENT PORTAL ]</h3>
+      
+      <!-- STEP 1 — Confirm Order -->
+      <div id="payment-step-1" class="payment-step">
+        <div style="background: var(--obsidian); border: 1px solid var(--divider); padding: 20px; margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px;">
+            <span style="color: var(--mist);">PLAN SELECTED:</span>
+            <span id="order-plan-name" style="font-weight: 700; color: var(--spectral);">-</span>
+          </div>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 13px;">
+            <span style="color: var(--mist);">BILLING CYCLE:</span>
+            <span id="order-billing-cycle" style="font-weight: 700;">-</span>
+          </div>
+          <div id="order-duration-container" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px;">
+            <span style="color: var(--mist);" id="duration-label">DURATION:</span>
+            <select id="order-duration-select" onchange="updateTotalPrice()" style="background: var(--obsidian); border: 1px solid var(--divider); color: var(--frost); font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 4px; cursor: pointer;">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+            </select>
+          </div>
+          <div style="display: flex; justify-content: space-between; border-top: 1px solid var(--slate); padding-top: 10px; font-size: 15px; font-weight: 700;">
+            <span>TOTAL PRICE:</span>
+            <span id="order-total-price" style="color: var(--spectral);">-</span>
+          </div>
+        </div>
+        <button onclick="goToStep(2)" class="btn btn-primary" style="width: 100%;">[Continue to Payment]</button>
+      </div>
+
+      <!-- STEP 2 — Choose Cryptocurrency -->
+      <div id="payment-step-2" class="payment-step" style="display: none;">
+        <p style="font-size: 12px; color: var(--mist); margin-bottom: 15px;">SELECT A CRYPTOCURRENCY FOR PAYMENT:</p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px;">
+          <button onclick="selectCrypto('BTC')" class="btn btn-ghost" style="justify-content: flex-start; text-align: left; padding: 14px; font-size: 12px;">₿ Bitcoin (BTC)</button>
+          <button onclick="selectCrypto('ETH')" class="btn btn-ghost" style="justify-content: flex-start; text-align: left; padding: 14px; font-size: 12px;">Ξ Ethereum (ETH)</button>
+          <button onclick="selectCrypto('USDT')" class="btn btn-ghost" style="justify-content: flex-start; text-align: left; padding: 14px; font-size: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;">
+            <span>₮ USDT (Tether)</span>
+            <span style="font-size: 8px; color: var(--mist);">ERC-20 OR TRC-20</span>
+          </button>
+          <button onclick="selectCrypto('LTC')" class="btn btn-ghost" style="justify-content: flex-start; text-align: left; padding: 14px; font-size: 12px;">Ł Litecoin (LTC)</button>
+        </div>
+        
+        <!-- USDT Network Select -->
+        <div id="usdt-network-select" style="display: none; background: var(--obsidian); border: 1px solid var(--divider); padding: 16px; margin-bottom: 20px;">
+          <p style="font-size: 11px; color: var(--mist); margin-bottom: 10px;">CHOOSE TETHER (USDT) NETWORK:</p>
+          <div style="display: flex; gap: 20px;">
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--frost);">
+              <input type="radio" name="usdt-net" value="ERC20" checked onchange="updateUsdtNetwork()" style="accent-color: var(--spectral);"> ERC-20 (Ethereum)
+            </label>
+            <label style="font-size: 12px; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--frost);">
+              <input type="radio" name="usdt-net" value="TRC20" onchange="updateUsdtNetwork()" style="accent-color: var(--spectral);"> TRC-20 (Tron)
+            </label>
+          </div>
+        </div>
+        
+        <button id="step2-next-btn" onclick="goToStep(3)" class="btn btn-primary" style="width: 100%;" disabled>[Select Coin]</button>
+      </div>
+
+      <!-- STEP 3 — Payment Details -->
+      <div id="payment-step-3" class="payment-step" style="display: none;">
+        <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 20px; flex-wrap: wrap;">
+          <div id="qr-container" style="width: 180px; height: 180px; background: var(--frost); border: 1px solid var(--divider); display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 4px;">
+            <!-- QR code generated here -->
+          </div>
+          <div style="flex: 1; min-width: 200px;">
+            <div style="font-size: 10px; color: var(--mist); margin-bottom: 4px;">SEND EXACT AMOUNT:</div>
+            <div id="payment-crypto-amount" style="font-size: 18px; font-weight: 700; color: var(--spectral); margin-bottom: 16px;">0.000000 BTC</div>
+            
+            <div style="font-size: 10px; color: var(--mist); margin-bottom: 4px;">RATE LOCK COUNTDOWN:</div>
+            <div id="lock-timer" style="font-size: 14px; font-weight: 700; color: var(--crimson); margin-bottom: 12px;">15:00</div>
+          </div>
+        </div>
+        
+        <div style="background: var(--obsidian); border: 1px solid var(--divider); padding: 12px; margin-bottom: 15px;">
+          <div style="font-size: 9px; color: var(--mist); margin-bottom: 6px;">WALLET ADDRESS:</div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <input type="text" id="payment-wallet-address" readonly style="flex: 1; background: var(--obsidian); border: 1px solid var(--divider); color: var(--frost); font-family: 'JetBrains Mono', monospace; font-size: 10px; padding: 8px; text-overflow: ellipsis;" value="-">
+            <button onclick="copyWalletAddress()" class="btn btn-ghost" style="padding: 6px 12px; font-size: 10px; height: 32px;">[Copy]</button>
+          </div>
+        </div>
+
+        <p style="font-size: 11px; color: var(--mist); line-height: 1.5; margin-bottom: 20px; border-left: 2px solid var(--spectral); padding-left: 10px;">
+          Send the exact amount shown. Underpaid or overpaid transactions will be flagged for manual review.
+        </p>
+
+        <button onclick="goToStep(4)" class="btn btn-primary" style="width: 100%;">[I Have Sent the Payment]</button>
+      </div>
+
+      <!-- STEP 4 — Confirm Payment Sent -->
+      <div id="payment-step-4" class="payment-step" style="display: none;">
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 11px; color: var(--mist); margin-bottom: 6px;">TRANSACTION HASH (TXID) *</label>
+          <input type="text" id="payment-tx-hash" placeholder="Paste your transaction hash (TXID)" style="width: 100%; background: var(--obsidian); border: 1px solid var(--divider); color: var(--frost); font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 10px; margin-bottom: 4px;">
+          <span style="font-size: 9px; color: var(--mist);">Find this in your wallet app after sending</span>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+          <label style="display: block; font-size: 11px; color: var(--mist); margin-bottom: 6px;">SCREENSHOT UPLOAD *</label>
+          <input type="file" id="payment-screenshot" accept="image/*" style="width: 100%; background: var(--obsidian); border: 1px solid var(--divider); color: var(--frost); font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 10px; margin-bottom: 4px;">
+          <span style="font-size: 9px; color: var(--mist);">Screenshot of the completed transaction from your wallet app</span>
+        </div>
+
+        <button onclick="triggerVerification()" class="btn btn-primary" style="width: 100%;">[Verify Payment]</button>
+      </div>
+
+      <!-- STEP 5 — Automated Verification -->
+      <div id="payment-step-5" class="payment-step" style="display: none; text-align: center; padding: 10px 0;">
+        <div id="verification-loading">
+          <div style="font-size: 24px; margin-bottom: 16px; animation: blink 1s step-end infinite; color: var(--spectral);">⏳</div>
+          <p style="font-size: 13px; font-weight: 700; margin-bottom: 8px; text-transform: uppercase;">Verifying transaction on blockchain...</p>
+          <p style="font-size: 11px; color: var(--mist); max-width: 440px; margin: 0 auto;">Checking transaction receipt status details via blockchain explorer API.</p>
+        </div>
+        
+        <div id="verification-result" style="display: none;">
+          <div style="font-size: 24px; color: var(--crimson); margin-bottom: 16px;"><svg width="24" height="24" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M24 6 44 40H4Z"/><path d="M24 20v10"/><circle cx="24" cy="35" r="1.8" fill="currentColor" stroke="none"/></svg></div>
+          <p style="font-weight: 700; margin-bottom: 12px; text-transform: uppercase;">Could Not Auto-Verify</p>
+          <p style="font-size: 12px; color: var(--mist); line-height: 1.6; max-width: 440px; margin: 0 auto 24px;">
+            Could not auto-verify. Your screenshot and transaction hash have been submitted for manual review. You will receive your license key within 24 hours.
+          </p>
+          <button onclick="goToStep(6)" class="btn btn-primary" style="width: 100%;">[Proceed to Email Submission]</button>
+        </div>
+      </div>
+
+      <!-- STEP 6 — Submit & Confirmation -->
+      <div id="payment-step-6" class="payment-step" style="display: none;">
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 11px; color: var(--mist); margin-bottom: 6px;">YOUR EMAIL ADDRESS *</label>
+          <input type="email" id="payment-email" placeholder="email@example.com" style="width: 100%; background: var(--obsidian); border: 1px solid var(--divider); color: var(--frost); font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 10px; margin-bottom: 4px;">
+          <span style="font-size: 9px; color: var(--mist);">We will email your license key here</span>
+        </div>
+
+        <div style="background: var(--obsidian); border: 1px solid var(--crimson); padding: 12px; margin-bottom: 20px; font-size: 10px; line-height: 1.5; color: var(--crimson);">
+          <strong>IMPORTANT:</strong> Mail clients do not support automatic file attachments via links. 
+          Click <strong>[Download Screenshot]</strong> below to save your screenshot locally, then <strong>manually attach it</strong> to the email draft before sending.
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+          <button onclick="downloadScreenshot()" class="btn btn-ghost" style="flex: 1; min-width: 150px;">[Download Screenshot]</button>
+          <button onclick="openEmailDraft()" class="btn btn-primary" style="flex: 1; min-width: 150px;">[Open Email Draft]</button>
+        </div>
+      </div>
+
+      <!-- STEP 7 — Final Confirmation -->
+      <div id="payment-step-7" class="payment-step" style="display: none; text-align: center; padding: 10px 0;">
+        <div style="font-size: 32px; color: var(--spectral); margin-bottom: 16px;">✓</div>
+        <h4 style="font-size: 16px; margin-bottom: 12px; color: var(--frost);">REQUEST SUBMITTED</h4>
+        <p style="font-size: 12px; color: var(--mist); line-height: 1.6; max-width: 440px; margin: 0 auto 20px;">
+          We'll verify your payment and email your license key to <strong id="conf-email" style="color: var(--frost);"></strong> within 24 hours.
+        </p>
+        <div style="background: var(--obsidian); border: 1px solid var(--divider); padding: 12px; font-size: 12px; display: inline-block; margin-bottom: 24px;">
+          <span style="color: var(--mist);">Reference ID:</span> <strong id="conf-ref-id" style="color: var(--spectral);"></strong>
+        </div>
+        <button onclick="closePaymentModal()" class="btn btn-ghost" style="width: 100%;">[Close Portal]</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SYSTEMS JAVA-SCRIPT ── -->
+  <div id="toast" role="status"><span class="dot"></span><span id="toast-text">Copied</span></div>
+
+  <script>
+    // ═════════════════════════════════════════════════════════════════════════
+    // LICENSE KEY EMAIL FULFILLMENT FORMAT (FOR SELLER REFERENCE)
+    // ═════════════════════════════════════════════════════════════════════════
+    /*
+      When manually fulfilling order requests after blockchain transaction verification, 
+      the seller (you) generates key via existing Developer License Portal and sends the key 
+      using this format:
+
+      Subject: Your GhostLink License Key
+      Body:
+        "Thank you for your purchase!
+         
+         License Tier: {PRO / TEAM / ENTERPRISE}
+         Billing Cycle: {30-day / Yearly / Lifetime}
+         
+         Your License Key:
+         GHOST-XXXX-XXXX-XXXX-XXXX-XXXX
+         
+         Activate it in GhostLink under Settings → License.
+         
+         [Attach: payment screenshot for their records]
+         [Attach: receipt confirmation]"
+    */
+
+    // 1. Mobile Menu Toggle
+    const hamburgerBtn = document.getElementById('hamburger-btn');
+    const mobileMenuOverlay = document.getElementById('mobile-menu-overlay');
+    const mobileLinks = document.querySelectorAll('.mobile-link');
+
+    hamburgerBtn.addEventListener('click', () => {
+      mobileMenuOverlay.classList.toggle('open');
+    });
+
+    mobileLinks.forEach(link => {
+      link.addEventListener('click', () => {
+        mobileMenuOverlay.classList.remove('open');
+      });
+    });
+
+    // 2. Pricing Switch Logic (3-way Toggle)
+    const toggleMonthly = document.getElementById('toggle-monthly');
+    const toggleYearly = document.getElementById('toggle-yearly');
+    const toggleLifetime = document.getElementById('toggle-lifetime');
+
+    const priceProAmt = document.getElementById('price-pro-amt');
+    const priceProSub = document.getElementById('price-pro-sub');
+    
+    const priceTeamAmt = document.getElementById('price-team-amt');
+    const priceTeamSub = document.getElementById('price-team-sub');
+
+    const priceEnterpriseAmt = document.getElementById('price-enterprise-amt');
+    const priceEnterpriseSub = document.getElementById('price-enterprise-sub');
+
+    toggleMonthly.addEventListener('click', () => {
+      toggleMonthly.classList.add('active');
+      toggleYearly.classList.remove('active');
+      toggleLifetime.classList.remove('active');
+
+      priceProAmt.textContent = '$8';
+      priceProSub.textContent = '/ month';
+
+      priceTeamAmt.textContent = '$25';
+      priceTeamSub.textContent = '/ month';
+
+      priceEnterpriseAmt.textContent = '$80';
+      priceEnterpriseSub.textContent = '/ month';
+    });
+
+    toggleYearly.addEventListener('click', () => {
+      toggleYearly.classList.add('active');
+      toggleMonthly.classList.remove('active');
+      toggleLifetime.classList.remove('active');
+
+      priceProAmt.textContent = '$5';
+      priceProSub.textContent = '/ month (billed $60/yr)';
+
+      priceTeamAmt.textContent = '$15.83';
+      priceTeamSub.textContent = '/ month (billed $190/yr)';
+
+      priceEnterpriseAmt.textContent = '$50';
+      priceEnterpriseSub.textContent = '/ month (billed $600/yr)';
+    });
+
+    toggleLifetime.addEventListener('click', () => {
+      toggleLifetime.classList.add('active');
+      toggleMonthly.classList.remove('active');
+      toggleYearly.classList.remove('active');
+
+      priceProAmt.textContent = '$120';
+      priceProSub.textContent = 'one-time';
+
+      priceTeamAmt.textContent = '$400';
+      priceTeamSub.textContent = 'one-time';
+
+      priceEnterpriseAmt.textContent = '$1,500';
+      priceEnterpriseSub.textContent = 'one-time';
+    });
+
+    // 3. FAQ Accordion Action
+    const faqQuestions = document.querySelectorAll('.faq-question');
+
+    faqQuestions.forEach(question => {
+      question.addEventListener('click', () => {
+        const answer = question.nextElementSibling;
+        const indicator = question.querySelector('.faq-indicator');
+        
+        if (answer.style.maxHeight && answer.style.maxHeight !== '0px') {
+          answer.style.maxHeight = '0px';
+          indicator.textContent = '+';
+        } else {
+          document.querySelectorAll('.faq-answer').forEach(ans => ans.style.maxHeight = '0px');
+          document.querySelectorAll('.faq-indicator').forEach(ind => ind.textContent = '+');
+
+          answer.style.maxHeight = answer.scrollHeight + 'px';
+          indicator.textContent = '−';
+        }
+      });
+    });
+
+    // 4. Hero Live Terminal Ticker
+    const tickerLogs = [
+      "identity generated...",
+      "peer handshake complete...",
+      "chain block #0847 verified...",
+      "0 servers contacted...",
+      "channels initialized [messages, files, presence]...",
+      "checking license signature: VALID...",
+      "network routing: peer-to-peer direct...",
+      "crypto: AES-256-GCM initialized..."
+    ];
+
+    const tickerTextElement = document.getElementById('ticker-text');
+    let logIndex = 0;
+
+    function cycleTicker() {
+      const fullText = "> " + tickerLogs[logIndex];
+      let currentLength = 0;
+      tickerTextElement.textContent = ">";
+
+      const typeInterval = setInterval(() => {
+        if (currentLength < fullText.length) {
+          tickerTextElement.textContent = fullText.slice(0, currentLength + 1);
+          currentLength++;
+        } else {
+          clearInterval(typeInterval);
+          setTimeout(() => {
+            logIndex = (logIndex + 1) % tickerLogs.length;
+            cycleTicker();
+          }, 3000);
+        }
+      }, 50);
+    }
+
+    cycleTicker();
+
+    // 5. Scroll Reveal System (Instant Snappy Snap)
+    const observerOptions = {
+      root: null,
+      threshold: 0.1
+    };
+
+    const revealObserver = new IntersectionObserver((entries, observer) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('revealed');
+          observer.unobserve(entry.target);
+        }
+      });
+    }, observerOptions);
+
+    document.querySelectorAll('.snap-reveal').forEach(element => {
+      revealObserver.observe(element);
+    });
+
+    // 6. ═══════════════════════════════════════════════════════════════════════
+    // PAYMENT PORTAL SYSTEM & CRYPTO CONVERSION WIZARD
+    // ═══════════════════════════════════════════════════════════════════════
+    let selectedPlan = '';
+    let selectedBilling = 'yearly';
+    let selectedCoin = '';
+    let selectedUsdtNetwork = 'ERC20';
+    let countdownInterval = null;
+    let selectedPrice = 0;
+    let fileBlob = null;
+    let fileName = 'screenshot.png';
+    let selectedDuration = 1;
+    let basePrice = 0;
+    let totalPriceUSD = 0;
+
+    function openPaymentPortal(planName) {
+      selectedPlan = planName.toUpperCase();
+      
+      // Determine active billing cycle selection
+      if (document.getElementById('toggle-monthly').classList.contains('active')) {
+        selectedBilling = 'monthly';
+      } else if (document.getElementById('toggle-yearly').classList.contains('active')) {
+        selectedBilling = 'yearly';
+      } else if (document.getElementById('toggle-lifetime').classList.contains('active')) {
+        selectedBilling = 'lifetime';
+      }
+
+      // Configure plan pricing mapping in USD
+      const pricingData = {
+        'PRO': { 'monthly': 8, 'yearly': 60, 'lifetime': 120 },
+        'TEAM': { 'monthly': 25, 'yearly': 190, 'lifetime': 400 },
+        'ENTERPRISE': { 'monthly': 80, 'yearly': 600, 'lifetime': 1500 }
+      };
+      basePrice = pricingData[selectedPlan][selectedBilling];
+
+      // Populate Step 1 Confirmation details
+      document.getElementById('order-plan-name').textContent = selectedPlan;
+      document.getElementById('order-billing-cycle').textContent = selectedBilling.toUpperCase();
+
+      // Configure duration select options visibility and label
+      const durationContainer = document.getElementById('order-duration-container');
+      const durationLabel = document.getElementById('duration-label');
+      const durationSelect = document.getElementById('order-duration-select');
+      
+      durationSelect.value = '1';
+      
+      if (selectedBilling === 'monthly') {
+        durationContainer.style.display = 'flex';
+        durationLabel.textContent = 'DURATION (MONTHS):';
+      } else if (selectedBilling === 'yearly') {
+        durationContainer.style.display = 'flex';
+        durationLabel.textContent = 'DURATION (YEARS):';
+      } else {
+        durationContainer.style.display = 'none';
+      }
+
+      updateTotalPrice();
+
+      // Set visible step back to Step 1
+      for (let i = 1; i <= 7; i++) {
+        document.getElementById(`payment-step-${i}`).style.display = i === 1 ? 'block' : 'none';
+      }
+      
+      // Reset state variables
+      if (countdownInterval) clearInterval(countdownInterval);
+      selectedCoin = '';
+      
+      const step2Btn = document.getElementById('step2-next-btn');
+      step2Btn.disabled = true;
+      step2Btn.textContent = '[Select Coin]';
+      document.getElementById('usdt-network-select').style.display = 'none';
+      
+      // Clear inputs
+      document.getElementById('payment-tx-hash').value = '';
+      document.getElementById('payment-screenshot').value = '';
+      document.getElementById('payment-email').value = '';
+      fileBlob = null;
+
+      // Unselect coin button border styles
+      document.querySelectorAll('#payment-step-2 .btn-ghost').forEach(btn => {
+        btn.style.borderColor = 'var(--divider)';
+        btn.style.color = 'var(--frost)';
+      });
+
+      // Display payment modal
+      document.getElementById('payment-modal').style.display = 'flex';
+    }
+
+    function updateTotalPrice() {
+      if (selectedBilling === 'lifetime') {
+        selectedDuration = 1;
+        totalPriceUSD = basePrice;
+      } else {
+        selectedDuration = parseInt(document.getElementById('order-duration-select').value, 10);
+        totalPriceUSD = basePrice * selectedDuration;
+      }
+      document.getElementById('order-total-price').textContent = `$${totalPriceUSD}.00 USD`;
+    }
+
+    function closePaymentModal() {
+      document.getElementById('payment-modal').style.display = 'none';
+      if (countdownInterval) clearInterval(countdownInterval);
+    }
+
+    function goToStep(stepNum) {
+      for (let i = 1; i <= 7; i++) {
+        const el = document.getElementById(`payment-step-${i}`);
+        if (el) el.style.display = i === stepNum ? 'block' : 'none';
+      }
+
+      if (stepNum === 3) {
+        startCountdown();
+        generatePaymentDetails();
+      }
+    }
+
+    function selectCrypto(coin) {
+      selectedCoin = coin;
+      
+      // Highlight selected coin option and dim others
+      document.querySelectorAll('#payment-step-2 .btn-ghost').forEach(btn => {
+        if (btn.textContent.includes(coin)) {
+          btn.style.borderColor = 'var(--spectral)';
+          btn.style.color = 'var(--spectral)';
+        } else {
+          btn.style.borderColor = 'var(--divider)';
+          btn.style.color = 'var(--frost)';
+        }
+      });
+
+      // Render Tether USDT network radio group if USDT is selected
+      const netSelect = document.getElementById('usdt-network-select');
+      if (coin === 'USDT') {
+        netSelect.style.display = 'block';
+      } else {
+        netSelect.style.display = 'none';
+      }
+
+      // Enable next step button
+      const nextBtn = document.getElementById('step2-next-btn');
+      nextBtn.disabled = false;
+      nextBtn.textContent = `[Continue with ${coin}]`;
+    }
+
+    function updateUsdtNetwork() {
+      const radios = document.getElementsByName('usdt-net');
+      for (const r of radios) {
+        if (r.checked) {
+          selectedUsdtNetwork = r.value;
+          break;
+        }
+      }
+    }
+
+    // Live exchange rate quote placeholder mapping function (e.g. CoinGecko API)
+    function getCryptoPrice(coin) {
+      const mockPrices = {
+        'BTC': 65000.00,
+        'ETH': 3500.00,
+        'LTC': 80.00,
+        'USDT': 1.00
+      };
+      return mockPrices[coin] || 1.00;
+    }
+
+    function generatePaymentDetails() {
+      const addresses = {
+        'BTC': 'YOUR_BTC_WALLET_ADDRESS_HERE',
+        'ETH': 'YOUR_ETH_WALLET_ADDRESS_HERE',
+        'USDT-ERC20': 'YOUR_USDT_ERC20_WALLET_ADDRESS_HERE',
+        'USDT-TRC20': 'YOUR_USDT_TRC20_WALLET_ADDRESS_HERE',
+        'LTC': 'YOUR_LTC_WALLET_ADDRESS_HERE'
+      };
+
+      let key = selectedCoin;
+      if (selectedCoin === 'USDT') {
+        key = `USDT-${selectedUsdtNetwork}`;
+      }
+
+      const walletAddress = addresses[key] || 'YOUR_WALLET_ADDRESS_HERE';
+      document.getElementById('payment-wallet-address').value = walletAddress;
+
+      // Calculate conversion rate to crypto units
+      const rate = getCryptoPrice(selectedCoin);
+      const cryptoAmount = (totalPriceUSD / rate).toFixed(selectedCoin === 'BTC' || selectedCoin === 'ETH' ? 6 : 2);
+      document.getElementById('payment-crypto-amount').textContent = `${cryptoAmount} ${selectedCoin}`;
+
+      // Render payment address QR using app-native qrEncode and matrixToSVG (from qr-invite.js)
+      const qrContainer = document.getElementById('qr-container');
+      if (window.qrEncode && window.matrixToSVG) {
+        try {
+          const matrix = window.qrEncode(walletAddress);
+          // Render black modules on white background for scanner contrast
+          const svgStr = window.matrixToSVG(matrix, matrix.length, 172, cssVar('ink'));
+          qrContainer.innerHTML = svgStr;
+        } catch (e) {
+          console.error('[P2P PORTAL] QR generation error:', e);
+          qrContainer.innerHTML = '<span style="color:var(--crimson);font-size:10px;text-align:center;">QR Error</span>';
+        }
+      } else {
+        qrContainer.innerHTML = '<span style="color:var(--mist);font-size:9px;text-align:center;padding:10px;">QR Module Offline</span>';
+      }
+    }
+
+    function copyWalletAddress() {
+      const copyText = document.getElementById('payment-wallet-address');
+      copyText.select();
+      copyText.setSelectionRange(0, 99999);
+      navigator.clipboard.writeText(copyText.value).then(() => {
+        alert('Wallet address copied to clipboard');
+      });
+    }
+
+    function startCountdown() {
+      if (countdownInterval) clearInterval(countdownInterval);
+      let duration = 15 * 60; // 15:00 minutes
+      const display = document.getElementById('lock-timer');
+      
+      countdownInterval = setInterval(() => {
+        let minutes = Math.floor(duration / 60);
+        let seconds = duration % 60;
+        
+        minutes = minutes < 10 ? '0' + minutes : minutes;
+        seconds = seconds < 10 ? '0' + seconds : seconds;
+        
+        display.textContent = `${minutes}:${seconds}`;
+        
+        if (--duration < 0) {
+          clearInterval(countdownInterval);
+          display.textContent = 'EXPIRED';
+          alert('Rate quote lock expired. Please restart transaction to fetch current exchange rate.');
+          closePaymentModal();
+        }
+      }, 1000);
+    }
+
+    // Capture screenshot upload details as Blob locally for downloading later
+    document.addEventListener('DOMContentLoaded', () => {
+      const fileInput = document.getElementById('payment-screenshot');
+      if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+          const file = e.target.files[0];
+          if (file) {
+            fileName = file.name;
+            const reader = new FileReader();
+            reader.onload = function(evt) {
+              fileBlob = new Blob([evt.target.result], { type: file.type });
+            };
+            reader.readAsArrayBuffer(file);
+          }
+        });
+      }
+    });
+
+    function downloadScreenshot() {
+      if (!fileBlob) {
+        alert('Please select or upload a transaction screenshot file first.');
+        return;
+      }
+      const url = URL.createObjectURL(fileBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function triggerVerification() {
+      const txHash = document.getElementById('payment-tx-hash').value.trim();
+      const screenshot = document.getElementById('payment-screenshot').value;
+      
+      if (!txHash) {
+        alert('Transaction Hash (TXID) is required.');
+        return;
+      }
+      if (!screenshot) {
+        alert('Screenshot of completed transaction is required.');
+        return;
+      }
+
+      goToStep(5);
+      
+      // Simulate verification query latency
+      setTimeout(async () => {
+        const amount = document.getElementById('payment-crypto-amount').textContent;
+        const wallet = document.getElementById('payment-wallet-address').value;
+        
+        const success = await verifyTransaction(txHash, selectedCoin, amount, wallet);
+        
+        document.getElementById('verification-loading').style.display = 'none';
+        document.getElementById('verification-result').style.display = 'block';
+      }, 3000);
+    }
+
+    // Placeholder blockchain transaction validator
+    /* 
+      PLACEHOLDER — REQUIRES REAL API KEY & BACKEND SERVER RELAY
+      Note: Client-side CORS issues will block API requests to third-party blockchain providers in some environments.
+      Should be implemented on a secure proxy backend.
+    */
+    async function verifyTransaction(txHash, coin, expectedAmount, walletAddress) {
+      console.log(`[P2P VERIFIER] Staring verify query for ${txHash} (${coin}) targeting ${walletAddress} expecting ${expectedAmount}`);
+      try {
+        if (coin === 'BTC') {
+          // fetch(`https://blockchain.info/rawtx/${txHash}`)
+          // fetch(`https://blockstream.info/api/tx/${txHash}`)
+        } else if (coin === 'ETH' || coin === 'USDT') {
+          // fetch(`https://api.etherscan.io/api?module=transaction&action=gettxreceiptstatus&txhash=${txHash}&apikey=KEY`)
+        }
+      } catch (e) {
+        console.error('[P2P VERIFIER] Verification lookup failed:', e);
+      }
+      return false; // return false to force manual verification fallback
+    }
+
+    function openEmailDraft() {
+      const email = document.getElementById('payment-email').value.trim();
+      if (!email) {
+        alert('Please enter your email address for license key delivery.');
+        return;
+      }
+
+      const txHash = document.getElementById('payment-tx-hash').value.trim();
+      const amount = document.getElementById('payment-crypto-amount').textContent;
+      
+      const durationStr = selectedBilling === 'lifetime' ? 'LIFETIME' : `${selectedDuration} ${selectedBilling === 'monthly' ? 'MONTHS' : 'YEARS'}`;
+      const subject = encodeURIComponent(`GhostLink License Request — ${selectedPlan} — ${durationStr}`);
+      const body = encodeURIComponent(
+        `Plan: ${selectedPlan}\n` +
+        `Billing: ${selectedBilling.toUpperCase()}\n` +
+        `Duration: ${selectedBilling === 'lifetime' ? 'Lifetime' : selectedDuration + ' ' + (selectedBilling === 'monthly' ? 'month(s)' : 'year(s)')}\n` +
+        `Amount Paid: ${amount} ($${totalPriceUSD} USD)\n` +
+        `Transaction Hash: ${txHash}\n` +
+        `Verification Status: Pending Manual Review\n\n` +
+        `[Screenshot attached separately — please attach the payment screenshot file to this email before sending]`
+      );
+
+      // Open user mail client with prefilled metadata
+      window.location.href = `mailto:ghostlinkweb@proton.me?subject=${subject}&body=${body}`;
+
+      // Show confirmation info
+      document.getElementById('conf-email').textContent = email;
+      
+      const refId = 'GL-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+      document.getElementById('conf-ref-id').textContent = refId;
+
+      setTimeout(() => {
+        goToStep(7);
+      }, 1000);
+    }
+  </script>
+<script>
+    // ═════════════════════════════════════════════════════════════════════════
+    // MOTION LAYER — the same behaviours landing.html carries
+    // ═════════════════════════════════════════════════════════════════════════
+    // Reveals, tilt and magnetism are attached by selector rather than by hand
+    // so new cards added to any section pick them up with no extra markup.
+    // Every effect checks prefers-reduced-motion first and every one of them is
+    // optional: with scripting off the page loses movement, not content.
+    (function () {
+      'use strict';
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var header = document.querySelector('header');
+      var progress = document.getElementById('progress');
+
+      /* ── reading position + header elevation ── */
+      function onScroll() {
+        var y = window.scrollY || 0;
+        if (header) header.classList.toggle('scrolled', y > 12);
+        var h = document.documentElement.scrollHeight - window.innerHeight;
+        if (progress) progress.style.width = (h > 0 ? (y / h) * 100 : 0) + '%';
+      }
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+
+      /* ── ambient pointer light (fine pointers only) ── */
+      var glow = document.getElementById('glow');
+      if (glow && window.matchMedia('(hover:hover) and (pointer:fine)').matches && !reduce) {
+        var gx = 50, gy = 20, tx = 50, ty = 20;
+        document.addEventListener('pointermove', function (e) {
+          tx = (e.clientX / window.innerWidth) * 100;
+          ty = (e.clientY / window.innerHeight) * 100;
+        }, { passive: true });
+        (function glowLoop() {
+          gx += (tx - gx) * 0.08;
+          gy += (ty - gy) * 0.08;
+          glow.style.setProperty('--mx', gx + '%');
+          glow.style.setProperty('--my', gy + '%');
+          requestAnimationFrame(glowLoop);
+        })();
+      }
+
+      /* ── reveal on scroll, staggered within each group ── */
+      var GROUPS = [
+        '.sec-header', '.step-card', '.feature-card', '.download-card',
+        '.price-card', '.security-item', '.security-visual', '.security-text',
+        '.faq-item', '.legal-content'
+      ];
+      var revealIO = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          if (!en.isIntersecting) return;
+          en.target.classList.add('in');
+          revealIO.unobserve(en.target);
+        });
+      }, { threshold: 0.12, rootMargin: '0px 0px -6% 0px' });
+
+      GROUPS.forEach(function (sel) {
+        var nodes = document.querySelectorAll(sel);
+        nodes.forEach(function (el, i) {
+          el.classList.add('rv');
+          el.style.transitionDelay = Math.min(i % 4, 3) * 0.09 + 's';
+          revealIO.observe(el);
+        });
+      });
+
+      /* ── counters: any number the page marks up as countable ── */
+      var countIO = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          if (!en.isIntersecting) return;
+          countIO.unobserve(en.target);
+          var el = en.target,
+              target = +el.dataset.count,
+              suffix = el.dataset.suffix || '';
+          if (reduce || !target) { el.textContent = target + suffix; return; }
+          var t0 = null;
+          (function step(ts) {
+            if (!t0) t0 = ts;
+            var prog = Math.min((ts - t0) / 1200, 1);
+            el.textContent = Math.round(target * (1 - Math.pow(1 - prog, 3))) + suffix;
+            if (prog < 1) requestAnimationFrame(step);
+          })(performance.now());
+        });
+      }, { threshold: 0.5 });
+      document.querySelectorAll('[data-count]').forEach(function (el) { countIO.observe(el); });
+
+      /* ── tilt cards + magnetic buttons (pointer devices) ── */
+      if (window.matchMedia('(hover:hover)').matches && !reduce) {
+        document.querySelectorAll(
+          '.step-card, .feature-card, .download-card, .price-card, .security-item'
+        ).forEach(function (card) {
+          card.classList.add('tilt');
+          card.addEventListener('pointermove', function (e) {
+            var r = card.getBoundingClientRect();
+            var x = (e.clientX - r.left) / r.width;
+            var y = (e.clientY - r.top) / r.height;
+            card.style.setProperty('--px', (x * 100) + '%');
+            card.style.setProperty('--py', (y * 100) + '%');
+            card.style.transform =
+              'perspective(820px) rotateX(' + ((0.5 - y) * 6) + 'deg) rotateY(' +
+              ((x - 0.5) * 8) + 'deg) translateY(-4px)';
+          });
+          card.addEventListener('pointerleave', function () { card.style.transform = ''; });
+        });
+
+        document.querySelectorAll('.btn').forEach(function (b) {
+          b.classList.add('magnetic');
+          b.addEventListener('pointermove', function (e) {
+            var r = b.getBoundingClientRect();
+            b.style.transform =
+              'translate(' + (e.clientX - (r.left + r.width / 2)) * 0.12 + 'px,' +
+              (e.clientY - (r.top + r.height / 2)) * 0.18 + 'px)';
+          });
+          b.addEventListener('pointerleave', function () { b.style.transform = ''; });
+        });
+      }
+
+      /* ── hero particle mesh ── */
+      var canvas = document.getElementById('particles');
+      if (canvas && !reduce) {
+        var ctx = canvas.getContext('2d');
+        var W, H, pts = [], mouse = { x: -9999, y: -9999 };
+        function resize() {
+          var r = canvas.parentElement.getBoundingClientRect();
+          W = canvas.width = r.width * devicePixelRatio;
+          H = canvas.height = r.height * devicePixelRatio;
+          canvas.style.width = r.width + 'px';
+          canvas.style.height = r.height + 'px';
+          var n = Math.min(70, Math.floor(r.width / 16));
+          pts = [];
+          for (var i = 0; i < n; i++) {
+            pts.push({
+              x: Math.random() * W, y: Math.random() * H,
+              vx: (Math.random() - 0.5) * 0.28 * devicePixelRatio,
+              vy: (Math.random() - 0.5) * 0.28 * devicePixelRatio,
+              r: (Math.random() * 1.4 + 0.6) * devicePixelRatio
+            });
+          }
+        }
+        resize();
+        window.addEventListener('resize', resize);
+        canvas.parentElement.addEventListener('pointermove', function (e) {
+          var r = canvas.getBoundingClientRect();
+          mouse.x = (e.clientX - r.left) * devicePixelRatio;
+          mouse.y = (e.clientY - r.top) * devicePixelRatio;
+        }, { passive: true });
+        var LINK = 130 * devicePixelRatio;
+        (function draw() {
+          ctx.clearRect(0, 0, W, H);
+          for (var i = 0; i < pts.length; i++) {
+            var p = pts[i];
+            p.x += p.vx; p.y += p.vy;
+            if (p.x < 0 || p.x > W) p.vx *= -1;
+            if (p.y < 0 || p.y > H) p.vy *= -1;
+            var dx = p.x - mouse.x, dy = p.y - mouse.y, d = Math.sqrt(dx * dx + dy * dy);
+            if (d < 110 * devicePixelRatio && d > 0.01) { p.x += dx / d * 0.7; p.y += dy / d * 0.7; }
+            for (var j = i + 1; j < pts.length; j++) {
+              var q = pts[j], ddx = p.x - q.x, ddy = p.y - q.y;
+              var dist = Math.sqrt(ddx * ddx + ddy * ddy);
+              if (dist < LINK) {
+                ctx.strokeStyle = 'rgba(79,227,176,' + (0.13 * (1 - dist / LINK)) + ')';
+                ctx.lineWidth = devicePixelRatio;
+                ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+              }
+            }
+            ctx.fillStyle = 'rgba(79,227,176,.45)';
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+          }
+          requestAnimationFrame(draw);
+        })();
+      }
+
+      /* ── toast + copy-to-clipboard email ── */
+      var toast = document.getElementById('toast');
+      var toastText = document.getElementById('toast-text');
+      var toastTimer;
+      function showToast(msg) {
+        if (!toast) return;
+        toastText.textContent = msg;
+        toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 2200);
+      }
+      var copyBtn = document.getElementById('copy-email');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', function () {
+          var mail = this.dataset.mail;
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(mail).then(function () {
+              showToast('Email copied — say hi, anonymously');
+            });
+          } else {
+            var ta = document.createElement('textarea');
+            ta.value = mail; document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); showToast('Email copied'); }
+            catch (e) { showToast(mail); }
+            document.body.removeChild(ta);
+          }
+        });
+      }
+
+      /* ── anchor jumps clear the sticky header ── */
+      document.querySelectorAll('a[href^="#"]').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+          var id = a.getAttribute('href');
+          if (id.length < 2) return;
+          var target = document.querySelector(id);
+          if (!target) return;
+          e.preventDefault();
+          window.scrollTo({
+            top: target.getBoundingClientRect().top + window.scrollY - 76,
+            behavior: reduce ? 'auto' : 'smooth'
+          });
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
+

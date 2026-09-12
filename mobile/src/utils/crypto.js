@@ -4,7 +4,10 @@ import {hmac as nobleHmac} from '@noble/hashes/hmac';
 import {pbkdf2Async} from '@noble/hashes/pbkdf2';
 import {gcm} from '@noble/ciphers/aes';
 import {p256} from '@noble/curves/p256';
+import {x25519} from '@noble/curves/ed25519';
+import {sha512} from '@noble/hashes/sha512';
 import {WORDLIST, SEED_PHRASE_WORDS} from './wordlist';
+import {ghostAddressFromNodeId} from './ghost-address';
 
 /**
  * React Native ships no Web Crypto. Every primitive below comes from @noble —
@@ -157,6 +160,42 @@ function deriveSharedKey(privateKeyHex, peerPublicKeyHex) {
   // Drop the leading format byte and hash the X coordinate, which is what
   // WebCrypto's ECDH deriveBits yields before its own KDF step.
   return bytesToHex(nobleSha256(shared.slice(1)));
+}
+
+/**
+ * The Ghost Mesh identity for a recovery phrase, and the Ghost Address that
+ * names it.
+ *
+ * This is the same derivation gmp-core/identity.js performs, so the same phrase
+ * yields the same address on mobile, desktop and the web app — which is the
+ * whole point of the address being a name for *you* rather than for a device:
+ *
+ *   seed      = PBKDF2-HMAC-SHA512(phrase, "ghostlink-yggdrasil-v1", 100k, 32)
+ *   staticPub = X25519(seed)
+ *   nodeId    = SHA-512(staticPub)
+ *   address   = first 45 bits of nodeId, Crockford base32
+ *
+ * Note the SHA-512: mobile's old CryptoService sketched this with SHA-256,
+ * which would have produced a different seed and therefore a different address
+ * from every other GhostLink client.
+ *
+ * Deliberately slow — 100,000 PBKDF2 iterations — so derive once at setup and
+ * keep the result, rather than recomputing it to render a screen.
+ */
+async function deriveGhostIdentity(words) {
+  const phrase = Array.isArray(words) ? words.join(' ') : String(words);
+  const seed = await pbkdf2Async(sha512, utf8(phrase), utf8('ghostlink-yggdrasil-v1'), {
+    c: 100000,
+    dkLen: 32,
+  });
+  const staticPubKey = x25519.getPublicKey(seed);
+  const nodeId = sha512(staticPubKey);
+  const nodeIdHex = bytesToHex(nodeId);
+  return {
+    nodeIdHex,
+    staticPubKeyHex: bytesToHex(staticPubKey),
+    ghostAddress: ghostAddressFromNodeId(nodeIdHex),
+  };
 }
 
 /**
@@ -385,6 +424,7 @@ export const CryptoEngine = {
   generateKeyPair: generateKeyPairSync,
   deriveSharedKey,
   publicKeyFromPrivate,
+  deriveGhostIdentity,
   sha256,
   hmacSha256,
   encrypt: aesGcmEncrypt,
@@ -406,5 +446,5 @@ export const CryptoEngine = {
   getRandomBytes,
 };
 
-export {ShamirSSS, generateBackupFragments, combineFragments, hmacSha256, sha256, generateSeedPhrase};
+export {ShamirSSS, generateBackupFragments, combineFragments, hmacSha256, sha256, generateSeedPhrase, deriveGhostIdentity};
 export default CryptoEngine;

@@ -34,6 +34,8 @@ import {Gesture, GestureDetector, GestureHandlerRootView} from 'react-native-ges
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import {CryptoEngine} from '../utils/crypto';
+import Clipboard from '@react-native-clipboard/clipboard';
+import {normalizeGhostAddress} from '../utils/ghost-address';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const SWIPE_THRESHOLD = 80;
@@ -228,7 +230,7 @@ function ChatItem({item, theme, onPress, onPin, onMute, onDelete}) {
 // ==================== MAIN CHAT LIST SCREEN ====================
 export default function ChatListScreen({navigation}) {
   const {theme} = useTheme();
-  const {state, dispatch} = useApp();
+  const {state, dispatch, identity} = useApp();
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [addPeerModalVisible, setAddPeerModalVisible] = useState(false);
@@ -354,15 +356,37 @@ export default function ChatListScreen({navigation}) {
     [dispatch],
   );
 
-  // Add peer via invite code
+  const handleCopyAddress = useCallback(() => {
+    if (!identity?.ghostAddress) return;
+    Clipboard.setString(identity.ghostAddress);
+    Vibration.vibrate(15);
+    Alert.alert('Copied', `${identity.ghostAddress}\n\nShare this with a peer so they can add you.`);
+  }, [identity]);
+
+  // Add peer via Ghost Address or invite code
   const handleAddPeer = useCallback(async () => {
-    const code = inviteCodeInput.trim().toUpperCase();
-    if (!code) {
-      Alert.alert('Invalid Code', 'Enter an invite code to add a peer.');
+    const raw = inviteCodeInput.trim();
+    if (!raw) {
+      Alert.alert('Nothing entered', 'Enter a Ghost Address or invite code to add a peer.');
       return;
     }
-    if (!code.startsWith('GL-') || code.length < 35) {
-      Alert.alert('Invalid Format', 'Invite codes start with GL- followed by 4 groups of 8 characters.');
+
+    // A Ghost Address is the normal way to reach someone; the older GL- invite
+    // code still works. normalizeGhostAddress tolerates lower case, missing
+    // dashes and the characters people mistype (O for 0, I for 1).
+    const ghost = normalizeGhostAddress(raw);
+    const code = ghost || raw.toUpperCase();
+
+    if (!ghost && (!code.startsWith('GL-') || code.length < 35)) {
+      Alert.alert(
+        'Not recognised',
+        'Enter a Ghost Address like GHOST-7K2-M4Q-8ZB, or a GL- invite code.',
+      );
+      return;
+    }
+
+    if (ghost && identity?.ghostAddress && ghost === identity.ghostAddress) {
+      Alert.alert('That is your own address', 'Share it with someone else so they can add you.');
       return;
     }
 
@@ -375,8 +399,9 @@ export default function ChatListScreen({navigation}) {
       type: 'ADD_PEER',
       payload: {
         id: peerId,
-        name: `Peer ${(state.peers?.size ?? 0) + 1}`,
-        inviteCode: code,
+        name: ghost || `Peer ${(state.peers?.size ?? 0) + 1}`,
+        ghostAddress: ghost || '',
+        inviteCode: ghost ? '' : code,
         fingerprint: fingerprint.slice(0, 16),
         online: false,
         pinned: false,
@@ -388,7 +413,7 @@ export default function ChatListScreen({navigation}) {
 
     setInviteCodeInput('');
     setAddPeerModalVisible(false);
-  }, [inviteCodeInput, dispatch, state.peers]);
+  }, [inviteCodeInput, dispatch, state.peers, identity]);
 
   // Open QR scanner
   const handleScanQR = useCallback(() => {
@@ -551,22 +576,28 @@ export default function ChatListScreen({navigation}) {
                 No conversations yet
               </Text>
               <Text style={[styles.emptyDesc, {color: theme.textMuted}]}>
-                Tap the + button to add a peer using an{'\n'}invite code or QR scan.
+                Tap the + button and enter a peer's{'\n'}Ghost Address to start one.
               </Text>
 
-              {/* Invite code display if available */}
-              {state.inviteCode ? (
-                <View style={[styles.myCodeBox, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
+              {/* Your Ghost Address. This replaced `state.inviteCode`, which was
+                  never set by anything — the reducer has no such field — so this
+                  box never rendered and the app appeared to have no address of
+                  its own at all. */}
+              {identity?.ghostAddress ? (
+                <TouchableOpacity
+                  onPress={handleCopyAddress}
+                  activeOpacity={0.7}
+                  style={[styles.myCodeBox, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
                   <Text style={[styles.myCodeLabel, {color: theme.textMuted}]}>
-                    Your invite code
+                    Your Ghost Address
                   </Text>
                   <Text style={[styles.myCodeValue, {color: theme.accent}]} selectable>
-                    {state.inviteCode}
+                    {identity.ghostAddress}
                   </Text>
                   <Text style={[styles.myCodeHint, {color: theme.textMuted}]}>
-                    Share this code with peers to connect
+                    Tap to copy · share this so peers can reach you
                   </Text>
-                </View>
+                </TouchableOpacity>
               ) : null}
             </Animated.View>
           </View>
@@ -616,7 +647,7 @@ export default function ChatListScreen({navigation}) {
                     Add Peer
                   </Text>
                   <Text style={[styles.modalDesc, {color: theme.textSecondary}]}>
-                    Enter an invite code or scan a QR code to connect with a peer.
+                    Enter a peer's Ghost Address — the short GHOST- name they share with you.
                   </Text>
 
                   {/* Invite code input */}
@@ -627,7 +658,7 @@ export default function ChatListScreen({navigation}) {
                     ]}>
                     <TextInput
                       style={[styles.modalInput, {color: theme.text}]}
-                      placeholder="GL-XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX"
+                      placeholder="GHOST-XXX-XXX-XXX"
                       placeholderTextColor={theme.textMuted}
                       value={inviteCodeInput}
                       onChangeText={setInviteCodeInput}

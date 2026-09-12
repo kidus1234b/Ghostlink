@@ -43,12 +43,15 @@ function fail(code, message) {
  * The object stored on device and split into Shamir fragments. One shape for
  * both, so the two restore paths cannot disagree about field names again.
  */
-export function createRecoveryBundle({wrappedKey, publicKeyHex, name}) {
+export function createRecoveryBundle({wrappedKey, publicKeyHex, name, ghostAddress}) {
   return {
     v: RECOVERY_BUNDLE_VERSION,
     wrappedKey,
     publicKeyHex,
     name: name || '',
+    // Carried rather than re-derived: deriving it costs another 100,000 PBKDF2
+    // iterations, and it is a public name, not a secret.
+    ghostAddress: ghostAddress || '',
   };
 }
 
@@ -56,10 +59,10 @@ export function createRecoveryBundle({wrappedKey, publicKeyHex, name}) {
  * Wrap a freshly generated private key under the recovery phrase and return the
  * bundle to store and to split. Used at setup.
  */
-export async function wrapIdentity({privateKeyRaw, publicKeyHex, name}, words) {
+export async function wrapIdentity({privateKeyRaw, publicKeyHex, name, ghostAddress}, words) {
   const wrapKey = await CryptoEngine.deriveKeyFromSeed(words);
   const wrappedKey = CryptoEngine.encrypt(privateKeyRaw, wrapKey);
-  return createRecoveryBundle({wrappedKey, publicKeyHex, name});
+  return createRecoveryBundle({wrappedKey, publicKeyHex, name, ghostAddress});
 }
 
 /**
@@ -108,6 +111,7 @@ export async function unlockBundle(bundle, words) {
     publicKeyHex: derivedPublicKey,
     privateKeyRaw,
     fingerprint: fingerprint.slice(0, 16),
+    ghostAddress: bundle.ghostAddress || '',
   };
 }
 
@@ -186,6 +190,7 @@ export async function restoreFromFragments(fragmentHexes, words) {
     wrappedKey: combined.blob.wrappedKey,
     publicKeyHex: identity.publicKeyHex,
     name: identity.name,
+    ghostAddress: identity.ghostAddress,
   }));
   await CryptoEngine.storeKeyPair(identity.publicKeyHex, identity.privateKeyRaw);
   return identity;

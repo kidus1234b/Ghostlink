@@ -127,11 +127,17 @@ export default function SetupScreen({navigation}) {
       // 2. Wrap the private key under the phrase (AES-256-GCM envelope). The
       //    same bundle is stored on device and split into fragments, so both
       //    restore paths read the identical shape.
+      // The Ghost Mesh identity for this phrase. Derived here, once, and kept
+      // on the identity: it is what other people use to reach you, and the same
+      // phrase produces the same address on desktop and the web app.
+      const ghost = await CryptoEngine.deriveGhostIdentity(seedPhrase);
+
       const bundle = await wrapIdentity(
         {
           privateKeyRaw: keyPair.privateKeyRaw,
           publicKeyHex: keyPair.publicKeyHex,
           name: displayName.trim(),
+          ghostAddress: ghost.ghostAddress,
         },
         seedPhrase,
       );
@@ -158,6 +164,8 @@ export default function SetupScreen({navigation}) {
         publicKeyHex: keyPair.publicKeyHex,
         fingerprint: fingerprint.slice(0, 16),
         name: displayName.trim(),
+        ghostAddress: ghost.ghostAddress,
+        meshNodeId: ghost.nodeIdHex,
       };
 
       // AppContext exposes intent-named helpers, not the raw dispatcher — this
