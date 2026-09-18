@@ -6,16 +6,28 @@ import logger from './logger.js';
 import metrics from './metrics.js';
 import type { CachedPeer } from './types.js';
 
+/** The minimum a bootstrap dial needs; both CachedPeer and PublicPeerEntry satisfy it. */
+type DialableCandidate = Pick<CachedPeer, 'nodeId' | 'address' | 'port'>;
+
 export class BootstrapManager extends EventEmitter {
   private node: GMPNodeLike;
   private minPeers: number;
   private parallelCount: number;
-  private disableBootstrap: boolean;
+  /**
+   * Private so only this class decides whether to bootstrap; metrics reads it
+   * through the getter below to avoid reporting a node as unhealthy when
+   * bootstrapping was deliberately switched off (tests, public peers).
+   */
+  private _disableBootstrap: boolean;
   private publicPeersPath: string | null;
   private stage1TimeoutMs: number;
   private stage2TimeoutMs: number;
   private rebootstrapBackoffInitialMs: number;
-  private stage: 'stage1' | 'stage2' | 'failed' | 'sufficient';
+  /**
+   * Private so only the bootstrap flow moves it; metrics reads it through the
+   * `stage` getter below to decide whether to report the node as degraded.
+   */
+  private _stage: 'stage1' | 'stage2' | 'failed' | 'sufficient';
   private isBootstrapping: boolean;
   private failureCount: number;
   private dialingNodeIds: Set<string>;
@@ -39,13 +51,13 @@ export class BootstrapManager extends EventEmitter {
 
     this.minPeers = options.minPeers ?? config.GMP_MIN_PEERS;
     this.parallelCount = options.parallelCount ?? 5;
-    this.disableBootstrap = options.disableBootstrap ?? false;
+    this._disableBootstrap = options.disableBootstrap ?? false;
     this.publicPeersPath = options.publicPeersPath ?? null;
     this.stage1TimeoutMs = options.stage1TimeoutMs ?? config.GMP_BOOTSTRAP_STAGE1_TIMEOUT_MS;
     this.stage2TimeoutMs = options.stage2TimeoutMs ?? config.GMP_BOOTSTRAP_STAGE2_TIMEOUT_MS;
     this.rebootstrapBackoffInitialMs = options.rebootstrapBackoffInitialMs ?? config.GMP_REBOOTSTRAP_BACKOFF_INITIAL_MS;
 
-    this.stage = 'failed';
+    this._stage = 'failed';
     this.isBootstrapping = false;
     this.failureCount = 0;
 
@@ -61,13 +73,32 @@ export class BootstrapManager extends EventEmitter {
     this.node.on('close', this.closeListener);
   }
 
+  /** Read-only view of the bootstrap stage, for metrics reporting. */
+  get stage(): 'stage1' | 'stage2' | 'failed' | 'sufficient' {
+    return this._stage;
+  }
+
+  /**
+   * Whether bootstrapping is switched off. Readable for metrics, and writable
+   * because it is legitimately toggled after construction: GMPNode defaults it
+   * to IS_TEST_PROCESS, and a test that does want bootstrapping turns it back
+   * on once the node is up.
+   */
+  get disableBootstrap(): boolean {
+    return this._disableBootstrap;
+  }
+
+  set disableBootstrap(value: boolean) {
+    this._disableBootstrap = value;
+  }
+
   getDirectConnectionCount(): number {
     return Array.from(this.node.connections.values())
       .filter((link: GMPLinkLike) => link.state === 'connected' && !(link as GMPLinkLike & { isVirtual: boolean }).isVirtual).length;
   }
 
   async start(): Promise<void> {
-    if (this.disableBootstrap || this.isBootstrapping) return;
+    if (this._disableBootstrap || this.isBootstrapping) return;
 
     if (this.rebootstrapTimer) {
       clearTimeout(this.rebootstrapTimer);
@@ -81,9 +112,12 @@ export class BootstrapManager extends EventEmitter {
     this.publicPeersSeen = 0;
 
     metrics.increment('bootstrap.attempts');
-    metrics.set('bootstrap.lastAttemptAt', new Date().toISOString());
+    // Epoch ms, not an ISO string: both the Registry entry and the
+    // lastAttemptAt field in the metrics JSON are declared number | null, and
+    // this was the only place emitting a string into them.
+    metrics.set('bootstrap.lastAttemptAt', Date.now());
 
-    this.stage = 'stage1';
+    this._stage = 'stage1';
     const candidates = this.node.peerCache.getCandidates() || [];
     const topN = candidates.slice(0, this.parallelCount);
 
@@ -98,7 +132,7 @@ export class BootstrapManager extends EventEmitter {
     let startTime = Date.now();
     while (Date.now() - startTime < this.stage1TimeoutMs) {
       if (this.getDirectConnectionCount() >= this.minPeers) {
-        this.stage = 'sufficient';
+        this._stage = 'sufficient';
         this.isBootstrapping = false;
         this.failureCount = 0;
         const count = this.getDirectConnectionCount();
@@ -110,7 +144,7 @@ export class BootstrapManager extends EventEmitter {
       await new Promise(r => setTimeout(r, 100));
     }
 
-    this.stage = 'stage2';
+    this._stage = 'stage2';
     const publicPeers = loadPublicPeers(this.publicPeersPath || undefined);
     this.publicPeersSeen = publicPeers.length;
     const availablePublic = publicPeers.filter(p => !this.node.getLinkByNodeId(p.nodeId));
@@ -127,7 +161,7 @@ export class BootstrapManager extends EventEmitter {
     startTime = Date.now();
     while (Date.now() - startTime < this.stage2TimeoutMs) {
       if (this.getDirectConnectionCount() >= this.minPeers) {
-        this.stage = 'sufficient';
+        this._stage = 'sufficient';
         this.isBootstrapping = false;
         this.failureCount = 0;
         const count = this.getDirectConnectionCount();
@@ -139,7 +173,7 @@ export class BootstrapManager extends EventEmitter {
       await new Promise(r => setTimeout(r, 100));
     }
 
-    this.stage = 'failed';
+    this._stage = 'failed';
     this.isBootstrapping = false;
     const count = this.getDirectConnectionCount();
 
@@ -172,7 +206,12 @@ export class BootstrapManager extends EventEmitter {
     }
   }
 
-  async dialCandidate(candidate: CachedPeer): Promise<void> {
+  /**
+   * Takes only the three fields a dial actually needs. It was typed CachedPeer,
+   * but stage 2 hands it PublicPeerEntry, which carries no cache bookkeeping —
+   * and nothing in here ever looked at that bookkeeping anyway.
+   */
+  async dialCandidate(candidate: DialableCandidate): Promise<void> {
     if (!candidate || !candidate.nodeId) return;
 
     const nodeIdHex = candidate.nodeId;
@@ -195,7 +234,7 @@ export class BootstrapManager extends EventEmitter {
         address: candidate.address,
         port: candidate.port,
         nodeId: nodeIdHex,
-        stage: this.stage === 'stage2' ? 'public' : 'cached',
+        stage: this._stage === 'stage2' ? 'public' : 'cached',
         kind: classifyDialError(err),
         message: err && err.message ? err.message : String(e)
       });
@@ -261,7 +300,7 @@ export class BootstrapManager extends EventEmitter {
   }
 
   checkAndTriggerRebootstrap(): void {
-    if (this.disableBootstrap || this.isBootstrapping || this.rebootstrapTimer) return;
+    if (this._disableBootstrap || this.isBootstrapping || this.rebootstrapTimer) return;
     const count = this.getDirectConnectionCount();
     if (count < this.minPeers / 2) {
       this.failureCount = 0;

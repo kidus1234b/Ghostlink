@@ -5,6 +5,7 @@ import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
 import { NONCE_STATE_FILE } from './paths.js';
+import { StateAuthenticationError } from './types.js';
 
 // Resolved from the package root, not process.cwd(). The bridge is launched
 // from the repo root, from electron/, and from a container working directory —
@@ -70,6 +71,36 @@ export class NonceStore extends EventEmitter {
     return `${peerHex}:${sessionKeyFingerprint}`;
   }
 
+  /**
+   * A state file that exists but cannot be authenticated.
+   *
+   * This is not the same as having no file: starting fresh here throws away
+   * every persisted high-water mark, so a peer may reconnect and replay nonces
+   * this node has already accepted. Under AES-GCM a reused key/counter pair
+   * leaks the XOR of two plaintexts, which is exactly what the store prevents.
+   * Logged at ERROR, not WARN, because nothing downstream can tell afterwards
+   * that protection was lost.
+   *
+   * With GMP_STRICT_STATE set, refuse outright rather than run unprotected.
+   * The default is to continue, so that a corrupt file does not lock a user out
+   * of their own client — but an unattended node should be running strict.
+   */
+  private _onUnauthenticatedState(error: Error): void {
+    logger.error(
+      'nonce-store',
+      'state-authentication-failed',
+      `Nonce state file exists but could not be authenticated; replay protection is being reset: ${error.message}`,
+      { err: error.message, stateFile: this.stateFile, strict: !!config.GMP_STRICT_STATE }
+    );
+    if (config.GMP_STRICT_STATE) {
+      throw new StateAuthenticationError(
+        `Refusing to start: nonce state at ${this.stateFile} could not be authenticated ` +
+        `(${error.message}). Continuing would discard replay protection. ` +
+        `Move or delete the file to start fresh deliberately, or unset GMP_STRICT_STATE.`
+      );
+    }
+  }
+
   load(): this {
     if (!this.encryptionKey) {
       this.state = { entries: {}, version: 1 };
@@ -85,9 +116,24 @@ export class NonceStore extends EventEmitter {
           const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
           const authTag = encryptedBlob.slice(0, 16);
           const ciphertext = encryptedBlob.slice(16);
-          const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-          decipher.setAuthTag(authTag);
-          const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+
+          // Decryption gets its own catch so an authentication failure can be
+          // told apart from a missing file or a syntax error. A file that is
+          // present and well-formed but will not authenticate has either been
+          // tampered with or belongs to a different identity, and discarding it
+          // silently resets every high-water mark this store exists to keep.
+          let decrypted: Buffer;
+          try {
+            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+            decipher.setAuthTag(authTag);
+            decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+          } catch (err) {
+            this._onUnauthenticatedState(err as Error);
+            this.state = { entries: {}, version: 1 };
+            this._loaded = true;
+            return this;
+          }
+
           const stateObj = JSON.parse(decrypted.toString('utf8')) as NonceState;
           if (stateObj && stateObj.version === 1) {
             this.state = stateObj;
@@ -100,6 +146,10 @@ export class NonceStore extends EventEmitter {
         this.state = { entries: {}, version: 1 };
       }
     } catch (err) {
+      // A strict-mode refusal must not be absorbed here. This catch exists to
+      // survive unreadable or malformed files by starting fresh, which is the
+      // precise behaviour strict mode is meant to prevent.
+      if (err instanceof StateAuthenticationError) throw err;
       const error = err as Error;
       logger.warn('nonce-store', 'load-failed', `Failed to load state file, starting fresh: ${error.message}`, { err: error.message });
       this.state = { entries: {}, version: 1 };

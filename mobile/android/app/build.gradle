@@ -97,7 +97,16 @@ android {
         applicationId "io.ghostlink.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        // versionCode is what Play Store and sideload upgrades compare; versionName
+        // is only a label. Increment versionCode on EVERY release build you hand
+        // to anyone, and never reuse a number — a build that reuses one cannot
+        // install over its predecessor, and Play rejects it outright. It moves
+        // independently of versionName: several builds of "2.0.0" are fine, each
+        // with its own versionCode.
+        //
+        //   2  — 2.0.0 (first shippable build; versionCode 1 was the unshipped
+        //        pair of APKs built on 2026-09-13)
+        versionCode 2
         versionName "2.0.0"
 
         // Opt-in ABI filtering, for producing a phone-sized APK:

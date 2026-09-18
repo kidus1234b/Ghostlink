@@ -30,7 +30,8 @@ interface GMPLinkLike {
 
 interface PeerCacheLike {
   cache: CachedPeer[];
-  replaceNodeId(oldNodeId: string, newNodeId: string, newPublicKey: Uint8Array): void;
+  // PeerCache.replaceNodeId takes a hex string; this said Uint8Array.
+  replaceNodeId(oldNodeId: string, newNodeId: string, newPublicKey: string): void;
 }
 
 interface CachedPeer {

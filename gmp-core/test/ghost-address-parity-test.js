@@ -1,5 +1,5 @@
 /**
- * index.html carries a hand-inlined copy of gmp-core/ghost-address.js, because
+ * index.html carries a hand-inlined copy of gmp-core/src/ghost-address.js, because
  * the Electron build loads the page over file:// where a relative ES-module
  * import is blocked. That duplication is the dangerous kind: if the two copies
  * ever disagree, two peers derive two different addresses for the same identity

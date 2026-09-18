@@ -4,7 +4,7 @@
  *   GHOST-XXX-XXX-XXX
  *
  * A short, human-copyable name for a mesh identity, derived from the first 45
- * bits of the NodeID. This is a port of gmp-core/ghost-address.js and must stay
+ * bits of the NodeID. This is a port of gmp-core/src/ghost-address.js and must stay
  * byte-for-byte identical to it: the desktop, the web app and this file all
  * have to produce the same address for the same identity, or two peers compute
  * two different names for the same person. test/ghost-address checks that

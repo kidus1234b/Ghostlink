@@ -8,6 +8,7 @@ import { Writable } from 'stream';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import config, { loadConfig } from './config.js';
+import type { GMPNodeManagerOptions } from './types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,10 +17,18 @@ function getMetricsPort(): number {
   return config.GMP_METRICS_PORT || 9090;
 }
 
+/** stdout wrapper that can blank out what it echoes, for password entry. */
+interface MutableStdout extends Writable {
+  muted: boolean;
+}
+
 function askQuestion(query: string, silent: boolean = false): Promise<string> {
   return new Promise((resolve) => {
     const mutableStdout = new Writable({
-      write: function(chunk: Buffer | string, encoding: BufferEncoding, callback: () => void): void {
+      // `this` inside a Writable's write() is the stream itself, which the
+      // built-in type says is a plain Writable. The muted flag is ours, added
+      // just below, so the callback has to be told what `this` really is.
+      write: function(this: MutableStdout, chunk: Buffer | string, encoding: BufferEncoding, callback: () => void): void {
         const str = chunk.toString();
         if (this.muted || (!this.muted && str.includes(query))) {
           process.stdout.write(chunk, encoding);
@@ -30,7 +39,7 @@ function askQuestion(query: string, silent: boolean = false): Promise<string> {
         }
         callback();
       }
-    }) as Writable & { muted: boolean };
+    }) as MutableStdout;
     mutableStdout.muted = false;
 
     const rl = readline.createInterface({
@@ -54,7 +63,12 @@ interface JsonResponse {
   [key: string]: unknown;
 }
 
-function getJson(url: string): Promise<JsonResponse> {
+/**
+ * The caller names the shape it expects. JSON.parse returns `any`, so one
+ * assertion at the parse boundary is unavoidable; doing it here, once, is
+ * better than each call site casting a JsonResponse into an unrelated type.
+ */
+function getJson<T = JsonResponse>(url: string): Promise<T> {
   return new Promise((resolve, reject) => {
     http.get(url, (res: http.IncomingMessage) => {
       if (res.statusCode !== 200) {
@@ -65,7 +79,7 @@ function getJson(url: string): Promise<JsonResponse> {
       res.on('data', (chunk: Buffer) => { body += chunk; });
       res.on('end', () => {
         try {
-          resolve(JSON.parse(body));
+          resolve(JSON.parse(body) as T);
         } catch (e) {
           reject(e);
         }
@@ -74,7 +88,7 @@ function getJson(url: string): Promise<JsonResponse> {
   });
 }
 
-function postJson(url: string, data: Record<string, unknown>): Promise<JsonResponse> {
+function postJson<T = JsonResponse>(url: string, data: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
     const dataStr = JSON.stringify(data);
     const parsedUrl = new URL(url);
@@ -94,7 +108,7 @@ function postJson(url: string, data: Record<string, unknown>): Promise<JsonRespo
       res.on('data', (chunk: Buffer) => { body += chunk; });
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(body) as JsonResponse;
+          const parsed = JSON.parse(body) as T & JsonResponse;
           if (res.statusCode && res.statusCode >= 400) {
             reject(new Error((parsed.error as string) || `HTTP ${res.statusCode}`));
           } else {
@@ -205,7 +219,7 @@ async function startNode(isPublic: boolean = false): Promise<void> {
   }
 
   console.log(`Starting Ghost Link Node (isPublicPeer=${isPublic || false})...`);
-  const manager = new GMPNodeManager(options as Parameters<typeof GMPNodeManager>[0]);
+  const manager = new GMPNodeManager(options as GMPNodeManagerOptions);
 
   try {
     const status = await manager.start();
@@ -280,7 +294,7 @@ async function main(): Promise<void> {
     }
     case 'status': {
       try {
-        const data = await getJson(`${metricsUrl}/metrics`) as MetricsData;
+        const data = await getJson<MetricsData>(`${metricsUrl}/metrics`);
         const uptimeStr = formatUptime(data.node.uptimeSeconds);
         const peersCount = `${data.peers.current} connected`;
         const routesCount = `${data.routing.tableSize} known`;
@@ -304,7 +318,7 @@ async function main(): Promise<void> {
     }
     case 'peers': {
       try {
-        const peers = await getJson(`${metricsUrl}/peers`) as PeersData[];
+        const peers = await getJson<PeersData[]>(`${metricsUrl}/peers`);
         if (peers.length === 0) {
           console.log('No active peer connections.');
           return;
@@ -365,7 +379,7 @@ async function main(): Promise<void> {
 
       try {
         console.log('Initiating rotation flood across the mesh...');
-        const res = await postJson(`${metricsUrl}/rotate-key`, { newSeedPhrase: newSeed }) as RotateResponse;
+        const res = await postJson<RotateResponse>(`${metricsUrl}/rotate-key`, { newSeedPhrase: newSeed });
         console.log(`\nSuccess! Node identity successfully rotated.`);
         console.log(`New NodeID: ${res.newNodeId}`);
         console.log('The rotation certificate has been flooded. Your configuration files have been updated.');
@@ -383,7 +397,7 @@ async function main(): Promise<void> {
       }
       try {
         console.log(`Sending virtual ping to ${target.slice(0, 16)}...`);
-        const res = await postJson(`${metricsUrl}/ping`, { targetNodeId: target }) as PingResponse;
+        const res = await postJson<PingResponse>(`${metricsUrl}/ping`, { targetNodeId: target });
         console.log(`Ping success! RTT = ${res.rtt}ms, Hops = ${res.hops}`);
       } catch (e) {
         const err = e as Error;

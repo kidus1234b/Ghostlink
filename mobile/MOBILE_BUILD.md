@@ -48,6 +48,21 @@ Signing comes from `android/keystore.properties` — see `android/KEYSTORE.md`.
 Without that file the build falls back to the Android debug key and the APK
 **must not be distributed**.
 
+### Before every release build: bump versionCode
+
+`versionCode` in `android/app/build.gradle` is the only number Android compares
+when deciding whether one build may replace another — Play Store uploads and
+plain sideload upgrades both key off it. `versionName` ("2.0.0") is a label and
+has no effect on upgrades.
+
+The rule is: **increment `versionCode` on every release build that leaves this
+machine, and never reuse a value.** It moves independently of `versionName`, so
+several builds of 2.0.0 each get their own code. Reusing one means the new APK
+cannot install over the old, and Play rejects the upload.
+
+Current value: `2`. (`1` belonged to the two APKs built on 2026-09-13, which
+were never shipped.)
+
 ## Installing (sideload)
 
 1. On the phone: Settings → Security → enable **Install unknown apps** for

@@ -188,7 +188,11 @@ export class TopologyManager extends EventEmitter {
           withdrawn: false,
           ttl
         };
-        this.flood(announce);
+        // null, not a peer: these announcements originate here, so there is no
+        // sender to split-horizon against and every peer should receive them.
+        // The argument was simply missing, which passed undefined and behaved
+        // the same way; this states it.
+        this.flood(announce, null);
         this.updateLSDB(announce);
       }
     }

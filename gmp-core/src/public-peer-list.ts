@@ -6,17 +6,17 @@ import { PUBLIC_PEERS_FILE } from './paths.js';
 
 const DEFAULT_PEERS_FILE = PUBLIC_PEERS_FILE;
 
-interface GMPNodeLike {
+export interface GMPNodeLike {
   dial(address: string, port: number, options?: { tls?: boolean }): Promise<DialResult>;
 }
 
-interface DialResult {
+export interface DialResult {
   connId: string;
   link: GMPLinkLike;
   peerNodeId: string;
 }
 
-interface GMPLinkLike {
+export interface GMPLinkLike {
   on(event: string, handler: (...args: unknown[]) => void): this;
   once(event: string, handler: (...args: unknown[]) => void): this;
   destroy(error?: Error): void;

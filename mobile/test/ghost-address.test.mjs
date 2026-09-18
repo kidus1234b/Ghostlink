@@ -15,7 +15,7 @@ const ROOT = '/home/shadow/Documents/Ghostlink';
 
 // The reference: gmp-core, exactly as the desktop and web app use it.
 const {ghostAddressFromNodeId: refAddress, normalizeGhostAddress: refNormalize} =
-  await import(`${ROOT}/gmp-core/ghost-address.js`);
+  await import(`${ROOT}/gmp-core/dist/ghost-address.js`);
 const {deriveIdentityFromSeedPhrase} = await import(`${ROOT}/gmp-core/dist/identity.js`);
 
 // Mobile's port, with its RN-only import stubbed.

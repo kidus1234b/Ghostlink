@@ -1,20 +1,14 @@
 import type { NatType, PublicPeerEntry } from './types.js';
-import { querySinglePeer } from './public-peer-list.js';
+// The node/link shapes come from public-peer-list, which owns querySinglePeer.
+// This file used to declare its own narrower copies; they omitted
+// sendBindingRequest(), so the two definitions were structurally incompatible
+// and every call below failed to type-check.
+import { querySinglePeer, type GMPNodeLike } from './public-peer-list.js';
 import logger from './logger.js';
 
 interface QueryResult {
   address: string;
   port: number;
-}
-
-interface GMPNodeLike {
-  dial(address: string, port: number, options?: { tls?: boolean }): Promise<{ connId: string; link: GMPLinkLike; peerNodeId: string }>;
-}
-
-interface GMPLinkLike {
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  once(event: string, handler: (...args: unknown[]) => void): this;
-  destroy(error?: Error): void;
 }
 
 export function classifyNAT(q1: QueryResult | null, q2: QueryResult | null, q3: QueryResult | null): NatType {

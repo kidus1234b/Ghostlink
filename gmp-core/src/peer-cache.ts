@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import config from './config.js';
+import { StateAuthenticationError } from './types.js';
 import logger from './logger.js';
 import { PEER_CACHE_FILE } from './paths.js';
 import type { CachedPeer } from './types.js';
@@ -50,6 +51,31 @@ export class PeerCache {
     this.load();
   }
 
+  /**
+   * A cache file that exists but cannot be authenticated.
+   *
+   * Less severe than the nonce store losing its marks — the worst case here is
+   * re-bootstrapping from the public peer list rather than a security
+   * regression — but it means the file was tampered with or belongs to another
+   * identity, and that is worth an ERROR rather than a WARN that scrolls past.
+   * GMP_STRICT_STATE makes it fatal, for the same reasons as the nonce store.
+   */
+  private _onUnauthenticatedState(error: Error): void {
+    logger.error(
+      'peer-cache',
+      'state-authentication-failed',
+      `Peer cache exists but could not be authenticated; discarding it: ${error.message}`,
+      { err: error.message, cacheFile: this.filePath, strict: !!config.GMP_STRICT_STATE }
+    );
+    if (config.GMP_STRICT_STATE) {
+      throw new StateAuthenticationError(
+        `Refusing to start: peer cache at ${this.filePath} could not be authenticated ` +
+        `(${error.message}). Move or delete the file to start fresh deliberately, ` +
+        `or unset GMP_STRICT_STATE.`
+      );
+    }
+  }
+
   load(): void {
     if (!this.encryptionKey) {
       this.cache = [];
@@ -64,9 +90,19 @@ export class PeerCache {
           const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
           const authTag = encryptedBlob.slice(0, 16);
           const ciphertext = encryptedBlob.slice(16);
-          const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-          decipher.setAuthTag(authTag);
-          const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+          // Separate catch so an authentication failure is distinguishable from
+          // a missing file or a syntax error — see _onUnauthenticatedState.
+          let decrypted: Buffer;
+          try {
+            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+            decipher.setAuthTag(authTag);
+            decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+          } catch (err) {
+            this._onUnauthenticatedState(err as Error);
+            this.cache = [];
+            return;
+          }
+
           const parsedCache = JSON.parse(decrypted.toString('utf8'));
           if (Array.isArray(parsedCache)) {
             this.cache = parsedCache;
@@ -82,6 +118,9 @@ export class PeerCache {
         this.cache = [];
       }
     } catch (err) {
+      // See the note in NonceStore.load(): a strict-mode refusal has to pass
+      // straight through this catch, not be turned into a fresh start.
+      if (err instanceof StateAuthenticationError) throw err;
       const error = err as Error;
       logger.warn('peer-cache', 'load-failed', `Failed to load cache, starting fresh: ${error.message}`, { err: error.message });
       this.cache = [];

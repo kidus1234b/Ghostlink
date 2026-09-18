@@ -4,7 +4,7 @@ import config from './config.js';
 import metrics from './metrics.js';
 import logger from './logger.js';
 import { ghostAddressFromNodeId, normalizeGhostAddress, findNodeIdsForAddress } from './ghost-address.js';
-import type { GMPConfig } from './types.js';
+import type { GMPConfig, GMPNodeManagerOptions, GMPNodeConstructorOptions } from './types.js';
 import type { BootstrapDiagnosis } from './bootstrap.js';
 import { loadPublicPeers, queryPublicAddress } from './public-peer-list.js';
 
@@ -17,19 +17,30 @@ function toHex(nodeId: string | Buffer | Uint8Array): string {
 }
 
 export class GMPNodeManager extends EventEmitter {
-  private config: GMPConfig;
-  private node: GMPNode | null;
+  private config: GMPConfig & GMPNodeManagerOptions;
+  /**
+   * The live node. Private so only this class can swap it in and out; the
+   * bridge and the CLI read it through the `node` getter below, which is
+   * read-only. Both of them null-check it on every use, because it is null
+   * before start() and again after stop().
+   */
+  private _node: GMPNode | null;
   private connToNodeId: Map<string, string>;
   private externalAddress: { address: string; port: number } | null;
   private discoveringExternal: boolean;
 
-  constructor(options: Partial<GMPConfig> = {}) {
+  constructor(options: GMPNodeManagerOptions = {}) {
     super();
-    this.config = { ...config, ...options } as GMPConfig;
-    this.node = null;
+    this.config = { ...config, ...options } as GMPConfig & GMPNodeManagerOptions;
+    this._node = null;
     this.connToNodeId = new Map();
     this.externalAddress = null;
     this.discoveringExternal = false;
+  }
+
+  /** Read-only access to the live node for the bridge and CLI. */
+  get node(): GMPNode | null {
+    return this._node;
   }
 
   /**
@@ -41,13 +52,13 @@ export class GMPNodeManager extends EventEmitter {
    * refuses the query should not wedge the node into retrying forever.
    */
   private async discoverExternalAddress(): Promise<void> {
-    if (!this.node || this.externalAddress || this.discoveringExternal) return;
+    if (!this._node || this.externalAddress || this.discoveringExternal) return;
     const peers = loadPublicPeers();
     if (peers.length === 0) return;
 
     this.discoveringExternal = true;
     try {
-      const found = await queryPublicAddress(this.node as never, peers, 5000);
+      const found = await queryPublicAddress(this._node as never, peers, 5000);
       this.externalAddress = found;
       logger.info('gmp-node-manager', 'external-address', `External address is ${found.address}:${found.port}`, found);
       this.emit('external-address', found);
@@ -60,13 +71,13 @@ export class GMPNodeManager extends EventEmitter {
   }
 
   async start(): Promise<{ nodeId: string; address: string; port: number }> {
-    if (this.node) {
+    if (this._node) {
       throw new Error('GMPNodeManager already started');
     }
 
-    const seedPhrase = this.config.GMP_SEED_PHRASE as unknown as string || (this.config as Record<string, unknown>)['seedPhrase'] as string;
+    const seedPhrase = this.config.GMP_SEED_PHRASE || this.config.seedPhrase;
 
-    this.node = new GMPNode({
+    const nodeOptions: GMPNodeConstructorOptions = {
       port: this.config.GMP_PORT,
       minPeers: this.config.GMP_MIN_PEERS,
       maxPeers: this.config.GMP_MAX_PEERS,
@@ -95,9 +106,11 @@ export class GMPNodeManager extends EventEmitter {
       peerCachePruneFailureThreshold: this.config.GMP_PEER_CACHE_PRUNE_FAILURE_THRESHOLD,
       peerCachePruneAgeDays: this.config.GMP_PEER_CACHE_PRUNE_AGE_DAYS,
       seedPhrase
-    });
+    };
 
-    this.node.on('connection', ({ connId, link, peerNodeId }: { connId: string; link: GMPLinkInstance; peerNodeId: Uint8Array }) => {
+    this._node = new GMPNode(nodeOptions);
+
+    this._node.on('connection', ({ connId, link, peerNodeId }: { connId: string; link: GMPLinkInstance; peerNodeId: Uint8Array }) => {
       const nodeIdHex = toHex(peerNodeId);
       this.connToNodeId.set(connId, nodeIdHex);
 
@@ -109,7 +122,7 @@ export class GMPNodeManager extends EventEmitter {
       void this.discoverExternalAddress();
     });
 
-    this.node.on('close', ({ connId }: { connId: string }) => {
+    this._node.on('close', ({ connId }: { connId: string }) => {
       const nodeIdHex = this.connToNodeId.get(connId);
       if (nodeIdHex) {
         this.connToNodeId.delete(connId);
@@ -118,11 +131,11 @@ export class GMPNodeManager extends EventEmitter {
       }
     });
 
-    this.node.on('message', ({ connId, msg }: { connId: string; msg: Uint8Array }) => {
+    this._node.on('message', ({ connId, msg }: { connId: string; msg: Uint8Array }) => {
       const nodeIdHex = this.connToNodeId.get(connId);
       let fromHex = nodeIdHex;
-      if (!fromHex && this.node) {
-        const link = this.node.links.get(connId);
+      if (!fromHex && this._node) {
+        const link = this._node.links.get(connId);
         if (link && link.remoteNodeId) {
           fromHex = toHex(link.remoteNodeId);
         }
@@ -145,42 +158,42 @@ export class GMPNodeManager extends EventEmitter {
       }
     });
 
-    this.node.on('bootstrap-complete', (peersConnected: number) => {
+    this._node.on('bootstrap-complete', (peersConnected: number) => {
       this.emit('bootstrap-complete', { peersConnected });
     });
 
-    this.node.on('bootstrap-failed', (peersConnected: number, diagnosis?: BootstrapDiagnosis) => {
+    this._node.on('bootstrap-failed', (peersConnected: number, diagnosis?: BootstrapDiagnosis) => {
       this.emit('bootstrap-failed', { peersConnected, diagnosis: diagnosis ?? null });
     });
 
-    this.node.on('routing-degraded', (data: unknown) => {
+    this._node.on('routing-degraded', (data: unknown) => {
       this.emit('routing-degraded', data);
     });
 
-    await this.node.loadIdentity(seedPhrase);
+    await this._node.loadIdentity(seedPhrase);
 
-    metrics.registerNode(this.node, this);
+    metrics.registerNode(this._node, this);
     metrics.startServer(this.config.GMP_METRICS_PORT);
 
-    await this.node.listen();
+    await this._node.listen();
 
     return {
-      nodeId: this.node.identity.nodeIdHex,
+      nodeId: this._node.identity.nodeIdHex,
       address: '127.0.0.1',
-      port: this.node.port
+      port: this._node.port
     };
   }
 
   async stop(): Promise<void> {
-    if (!this.node) return;
+    if (!this._node) return;
 
     metrics.stopServer();
 
-    if (this.node.topologyManager) {
-      for (const link of this.node.connections.values()) {
+    if (this._node.topologyManager) {
+      for (const link of this._node.connections.values()) {
         if (link.state === 'connected' && link.remoteNodeId && !link.isVirtual) {
           try {
-            this.node.topologyManager.handleLinkClosed(link.remoteNodeId);
+            this._node.topologyManager.handleLinkClosed(link.remoteNodeId);
           } catch { }
         }
       }
@@ -188,21 +201,21 @@ export class GMPNodeManager extends EventEmitter {
 
     await new Promise(r => setTimeout(r, 100));
 
-    if (this.node.peerCache) {
+    if (this._node.peerCache) {
       try {
-        this.node.peerCache.save();
+        this._node.peerCache.save();
       } catch { }
     }
 
-    this.node.close();
-    this.node = null;
+    this._node.close();
+    this._node = null;
     this.connToNodeId.clear();
   }
 
   async connectToPeer(address: string, port: number, options: { tls?: boolean } = {}): Promise<{ nodeId: string | null; connected: boolean }> {
-    if (!this.node) throw new Error('GMPNodeManager not started');
+    if (!this._node) throw new Error('GMPNodeManager not started');
     try {
-      const result = await this.node.dial(address, port, { tls: options.tls === true || port === 443 });
+      const result = await this._node.dial(address, port, { tls: options.tls === true || port === 443 });
       const nodeIdHex = toHex(result.peerNodeId);
       return { nodeId: nodeIdHex, connected: true };
     } catch {
@@ -213,20 +226,20 @@ export class GMPNodeManager extends EventEmitter {
   private async _getOrConnect(destinationNodeId: string | Uint8Array): Promise<GMPLinkInstance> {
     const destHex = toHex(destinationNodeId);
 
-    if (!this.node) throw new Error('GMPNodeManager not started');
+    if (!this._node) throw new Error('GMPNodeManager not started');
 
-    let link = this.node.getLinkByNodeId(destHex);
+    let link = this._node.getLinkByNodeId(destHex);
     if (link && link.state === 'connected') {
       return link;
     }
 
     const prefix = destHex.slice(0, 64);
-    link = this.node.virtualConnections.get(prefix);
+    link = this._node.virtualConnections.get(prefix);
     if (link && link.state === 'connected') {
       return link;
     }
 
-    const route = this.node.routingTable.getBestRoute(destHex);
+    const route = this._node.routingTable.getBestRoute(destHex);
     if (!route) {
       const err = new Error('No route to destination');
       err.name = 'NoRouteError';
@@ -234,7 +247,7 @@ export class GMPNodeManager extends EventEmitter {
     }
 
     try {
-      const result = await this.node.dialVirtual(Buffer.from(destHex, 'hex'));
+      const result = await this._node.dialVirtual(Buffer.from(destHex, 'hex'));
       return result.link;
     } catch (e) {
       const err = new Error(`Failed to route message: ${(e as Error).message}`);
@@ -244,15 +257,15 @@ export class GMPNodeManager extends EventEmitter {
   }
 
   async sendMessage(destinationNodeId: string | Uint8Array, encryptedPayload: string): Promise<void> {
-    if (!this.node) throw new Error('GMPNodeManager not started');
+    if (!this._node) throw new Error('GMPNodeManager not started');
     const link = await this._getOrConnect(destinationNodeId);
     await link.send(encryptedPayload);
   }
 
   async sendDirect(destinationNodeId: string | Uint8Array, encryptedPayload: string): Promise<void> {
-    if (!this.node) throw new Error('GMPNodeManager not started');
+    if (!this._node) throw new Error('GMPNodeManager not started');
     const destHex = toHex(destinationNodeId);
-    const link = this.node.getLinkByNodeId(destHex);
+    const link = this._node.getLinkByNodeId(destHex);
     if (!link || link.state !== 'connected') {
       const err = new Error('No direct connection to peer');
       err.name = 'NoPeerError';
@@ -262,8 +275,8 @@ export class GMPNodeManager extends EventEmitter {
   }
 
   getNodeId(): string {
-    if (!this.node) throw new Error('GMPNodeManager not started');
-    return this.node.identity.nodeIdHex;
+    if (!this._node) throw new Error('GMPNodeManager not started');
+    return this._node.identity.nodeIdHex;
   }
 
   getGhostAddress(): string {
@@ -273,19 +286,19 @@ export class GMPNodeManager extends EventEmitter {
   resolveGhostAddress(address: string): { reason: string; nodeId?: string } {
     const normalized = normalizeGhostAddress(address);
     if (!normalized) return { reason: 'invalid-address' };
-    if (!this.node) return { reason: 'not-found' };
+    if (!this._node) return { reason: 'not-found' };
     const knownNodeIds: string[] = [];
     // Direct connections
-    for (const link of this.node.connections.values()) {
+    for (const link of this._node.connections.values()) {
       if (link.remoteNodeId) knownNodeIds.push(toHex(link.remoteNodeId));
     }
     // Virtual connections
-    for (const link of this.node.virtualConnections.values()) {
+    for (const link of this._node.virtualConnections.values()) {
       if (link.remoteNodeId) knownNodeIds.push(toHex(link.remoteNodeId));
     }
     // Routing table entries (topology-announced peers)
-    if (this.node.routingTable) {
-      const allRoutes = this.node.routingTable.getAllRoutes();
+    if (this._node.routingTable) {
+      const allRoutes = this._node.routingTable.getAllRoutes();
       if (Array.isArray(allRoutes)) {
         for (const route of allRoutes) {
           const dest = route.destinationNodeId;
@@ -308,21 +321,21 @@ export class GMPNodeManager extends EventEmitter {
   }
 
   async connectByNodeId(nodeId: string): Promise<{ connected: boolean; transport: string }> {
-    if (!this.node) throw new Error('GMPNodeManager not started');
+    if (!this._node) throw new Error('GMPNodeManager not started');
     if (nodeId === this.getNodeId()) return { connected: false, transport: 'self' };
     // Check direct connections
-    const existing = this.node.getLinkByNodeId(nodeId);
+    const existing = this._node.getLinkByNodeId(nodeId);
     if (existing && existing.state === 'connected') {
       return { connected: true, transport: existing.isVirtual ? 'virtual' : 'direct' };
     }
     // Check virtual connections (keyed by prefix of nodeId)
     const prefix = nodeId.slice(0, 64);
-    const vLink = this.node.virtualConnections.get(prefix);
+    const vLink = this._node.virtualConnections.get(prefix);
     if (vLink && vLink.state === 'connected') {
       return { connected: true, transport: 'virtual' };
     }
     try {
-      await this.node.dialVirtual(Buffer.from(nodeId, 'hex'));
+      await this._node.dialVirtual(Buffer.from(nodeId, 'hex'));
       return { connected: true, transport: 'virtual' };
     } catch {
       return { connected: false, transport: 'failed' };
@@ -334,14 +347,14 @@ export class GMPNodeManager extends EventEmitter {
     externalAddress: { address: string; port: number } | null;
     peers: Array<{ nodeId: string; address: string | null; port: number | null; isVirtual: boolean }>;
   } {
-    if (!this.node) {
+    if (!this._node) {
       return { status: 'offline', externalAddress: null, peers: [] };
     }
 
-    const health = this.node.getHealthReport() || {};
+    const health = this._node.getHealthReport();
 
     const peers: Array<{ nodeId: string; address: string | null; port: number | null; isVirtual: boolean }> = [];
-    for (const link of this.node.connections.values()) {
+    for (const link of this._node.connections.values()) {
       if (link.state === 'connected' && link.remoteNodeId) {
         peers.push({
           nodeId: toHex(link.remoteNodeId),
@@ -351,7 +364,7 @@ export class GMPNodeManager extends EventEmitter {
         });
       }
     }
-    for (const link of this.node.virtualConnections.values()) {
+    for (const link of this._node.virtualConnections.values()) {
       if (link.state === 'connected' && link.remoteNodeId) {
         peers.push({
           nodeId: toHex(link.remoteNodeId),
@@ -363,8 +376,14 @@ export class GMPNodeManager extends EventEmitter {
     }
 
     return {
-      status: this.node.healthMonitor ? this.node.healthMonitor.status : 'healthy',
-      ...health,
+      ...(health ?? {}),
+      // getHealthReport() returns null when the node has no health monitor, so
+      // the status has to be defaulted here. The previous version read
+      // healthMonitor.status - a property that does not exist - and placed it
+      // before the spread, so it was either undefined or immediately
+      // overwritten. Taking it from the report keeps the real value when there
+      // is one and falls back only when there is genuinely no monitor.
+      status: health?.status ?? 'healthy',
       externalAddress: this.externalAddress,
       peers
     };

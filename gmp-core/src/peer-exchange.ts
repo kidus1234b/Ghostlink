@@ -39,6 +39,8 @@ interface CachedPeerInfo {
 interface GMPLinkLike {
   remoteNodeId: string | null;
   state: string;
+  /** Set by GMPLink for relayed links; peer exchange skips those. */
+  isVirtual?: boolean;
   sendPeerRequest(maxPeers: number): void;
   sendPeerResponse(peers: PeerInfo[]): void;
 }

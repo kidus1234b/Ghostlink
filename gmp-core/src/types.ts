@@ -119,10 +119,16 @@ export interface PeerResponsePayload {
 
 export interface KeyRotationPayload {
   oldNodeId: string;
-  newPublicKey: Uint8Array;
+  /**
+   * Hex, not bytes. rotateKey() sets this from signingPubKeyHex, the verifier
+   * concatenates it into the signed message as a string, and PeerCache stores
+   * it as a string. It was declared Uint8Array, which matched none of those.
+   */
+  newPublicKey: string;
   newNodeId: string;
   rotationTimestamp: number;
-  signature: Uint8Array;
+  /** Hex, for the same reason: rotateKey() runs the signature through bytesToHex. */
+  signature: string;
 }
 
 // ── Routing ─────────────────────────────────────────
@@ -200,8 +206,86 @@ export interface GMPConfig {
   GMP_LOG_LEVEL: LogLevel;
   GMP_LOG_TO_FILE: boolean;
   GMP_LOG_TO_CONSOLE: boolean;
+  /**
+   * Refuse to run on a state file that exists but cannot be authenticated,
+   * instead of discarding it and continuing. Off by default so a corrupt file
+   * does not brick a user's client; turn it on for public peers and anything
+   * unattended, where silently losing replay protection is the worse outcome.
+   */
+  GMP_STRICT_STATE: boolean;
   GMP_BAN_DURATION_MS: number;
   GMP_REPUTATION_RECOVERY_INTERVAL_MS: number;
+
+  /**
+   * Seed phrase the identity is derived from.
+   *
+   * Optional because it has no default and is not always configured: the CLI
+   * reads process.env.GMP_SEED_PHRASE first and prompts for one if neither is
+   * set. Note that loadConfig only copies keys present in DEFAULTS, so a
+   * GMP_SEED_PHRASE in a config file is currently dropped — the env variable
+   * and the constructor option are the paths that work.
+   */
+  GMP_SEED_PHRASE?: string;
+}
+
+/**
+ * What GMPNodeManager's constructor accepts: any config override, plus the two
+ * shorthand names the bridge's 'start' message and the CLI actually send.
+ * These are aliases resolved in start(), not config keys in their own right,
+ * which is why they are not on GMPConfig.
+ */
+export interface GMPNodeManagerOptions extends Partial<GMPConfig> {
+  seedPhrase?: string;
+  port?: number;
+}
+
+/**
+ * The option bag GMPNodeManager hands to GMPNode.
+ *
+ * Only seven of these are read by GMPNode's constructor: port, minPeers,
+ * pingIntervalMs, pongTimeoutMs, timestampWindowMs, noncePruneAgeMs and
+ * seedPhrase. The other twenty-one are destructured nowhere and silently
+ * dropped. They are not dead settings — the modules that consume them (rate
+ * limiter, forwarder, peer cache, bootstrap, topology) import the shared config
+ * module directly, so a value set through the environment or config.json does
+ * take effect. What does NOT take effect is a per-instance override handed to
+ * `new GMPNodeManager({...})`: it lands in this.config, gets forwarded here,
+ * and GMPNode ignores it.
+ *
+ * They are kept in the call because they state the intended contract and start
+ * working the moment GMPNode's constructor accepts them. Declaring the shape
+ * here is what lets the compiler see the call instead of tripping over an
+ * excess-property check on an untyped literal.
+ */
+export interface GMPNodeConstructorOptions {
+  port?: number;
+  minPeers?: number;
+  maxPeers?: number;
+  maxConnections?: number;
+  helloTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
+  pingIntervalMs?: number;
+  pongTimeoutMs?: number;
+  timestampWindowMs?: number;
+  stage1TimeoutMs?: number;
+  stage2TimeoutMs?: number;
+  rebootstrapBackoffInitialMs?: number;
+  rateLimitWindowMs?: number;
+  rateLimitMaxPerIp?: number;
+  rateLimitMaxGlobal?: number;
+  forwardRateLimitPerSource?: number;
+  peerRequestRateLimitIntervalMs?: number;
+  sessionKeyLruSize?: number;
+  sequenceNumLruSize?: number;
+  noncePruneAgeMs?: number;
+  routeExpiryMs?: number;
+  topologyTtl?: number;
+  messageHopLimit?: number;
+  reannounceIntervalMs?: number;
+  peerCacheMaxSize?: number;
+  peerCachePruneFailureThreshold?: number;
+  peerCachePruneAgeDays?: number;
+  seedPhrase?: string;
 }
 
 // ── Events ──────────────────────────────────────────
@@ -329,4 +413,20 @@ export interface BridgeMessage {
 export interface OriginCheck {
   allowed: boolean;
   reason?: string;
+}
+
+/**
+ * Thrown when a state file exists but cannot be authenticated and
+ * GMP_STRICT_STATE says to refuse rather than discard it.
+ *
+ * It has its own type because the load() paths wrap everything in a broad
+ * try/catch that logs and starts fresh — exactly the behaviour strict mode
+ * exists to prevent — so that catch has to be able to recognise this and
+ * rethrow instead of swallowing it.
+ */
+export class StateAuthenticationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StateAuthenticationError';
+  }
 }

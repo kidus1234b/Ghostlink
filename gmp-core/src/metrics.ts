@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import config from './config.js';
 import logger from './logger.js';
-import type { NodeIdentity } from './types.js';
+import type { NodeIdentity, KeyRotationPayload } from './types.js';
 
 interface Registry {
   'peers.current': number;
@@ -28,6 +28,18 @@ interface Registry {
   'bootstrap.status': string;
 }
 
+/**
+ * The counters that can actually be incremented.
+ *
+ * Registry also holds a string ('bootstrap.status') and a nullable timestamp,
+ * and `+=` over the full key union collapses to never. Narrowing to the plain
+ * number entries makes the += legal and also makes incrementing a status
+ * string a compile error rather than a silent no-op.
+ */
+type NumericRegistryKey = {
+  [K in keyof Registry]: Registry[K] extends number ? K : never;
+}[keyof Registry];
+
 interface LinkInstance {
   state: string;
   isVirtual: boolean;
@@ -40,7 +52,17 @@ interface NodeInstance {
   identity?: NodeIdentity;
   connections: Map<string, LinkInstance>;
   virtualConnections: Map<string, LinkInstance>;
-  routingTable?: { table: Map<string, unknown> };
+  /**
+   * RoutingTable's real surface. This used to be declared as `{ table: Map }`,
+   * but RoutingTable keeps its routes in a private `routes` field and exposes
+   * no `table` at all — so the size lookup below always read undefined and
+   * silently fell back, and the ping path would have thrown on `.table.get`.
+   */
+  routingTable?: {
+    getAllRoutes(): Array<{ hopCount: number }>;
+    getBestRoute(dest: string): { nextHopNodeId: string; hopCount: number } | null;
+  };
+  rotateKey?(newIdentity: unknown): KeyRotationPayload;
   bootstrap?: { stage: string; disableBootstrap?: boolean };
 }
 
@@ -140,7 +162,7 @@ class MetricsTracker {
     this.nodeManagerInstance = null;
   }
 
-  increment(key: keyof Registry, count: number = 1): void {
+  increment(key: NumericRegistryKey, count: number = 1): void {
     if (this.registry[key] !== undefined) {
       this.registry[key] += count;
     }
@@ -234,8 +256,8 @@ class MetricsTracker {
       if (currentPeers > this.registry['peers.peak']) {
         this.registry['peers.peak'] = currentPeers;
       }
-      if (this.nodeInstance.routingTable && this.nodeInstance.routingTable.table) {
-        routingTableSize = this.nodeInstance.routingTable.table.size;
+      if (this.nodeInstance.routingTable) {
+        routingTableSize = this.nodeInstance.routingTable.getAllRoutes().length;
       }
       if (this.nodeInstance.bootstrap) {
         bootstrapStatus = this.nodeInstance.bootstrap.stage === 'failed' ? 'degraded' : 'healthy';
@@ -350,6 +372,9 @@ class MetricsTracker {
 
         const { deriveIdentityFromSeedPhrase } = await import('./identity.js');
         const newIdentity = await deriveIdentityFromSeedPhrase(newSeedPhrase);
+        if (!this.nodeInstance.rotateKey) {
+          throw new Error('Node does not support key rotation');
+        }
         const cert = this.nodeInstance.rotateKey(newIdentity);
 
         try {
@@ -398,9 +423,9 @@ class MetricsTracker {
         const start = Date.now();
 
         let hops = 1;
-        const route = this.nodeInstance.routingTable?.table.get(targetHex) as { hops?: number } | undefined;
-        if (route && route.hops) {
-          hops = route.hops;
+        const route = this.nodeInstance.routingTable?.getBestRoute(targetHex);
+        if (route && route.hopCount) {
+          hops = route.hopCount;
         }
 
         const onMessage = (data: { fromNodeId: string; payload: Buffer | string }): void => {

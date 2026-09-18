@@ -1,7 +1,7 @@
 {
   "name": "@ghostlink/gmp-core",
   "version": "1.0.0",
-  "description": "Ghost Mesh Protocol \u2014 GhostLink's peer-to-peer encrypted mesh networking stack",
+  "description": "Ghost Mesh Protocol — GhostLink's peer-to-peer encrypted mesh networking stack",
   "type": "module",
   "main": "dist/gmp-node-manager.js",
   "exports": {
@@ -35,5 +35,10 @@
     "@noble/curves": "^1.4.0",
     "@noble/hashes": "^1.4.0",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.3"
   }
 }

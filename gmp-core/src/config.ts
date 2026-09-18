@@ -38,11 +38,35 @@ export const DEFAULTS: GMPConfig = {
   GMP_LOG_LEVEL: 'INFO',
   GMP_LOG_TO_FILE: false,
   GMP_LOG_TO_CONSOLE: true,
+  GMP_STRICT_STATE: false,
   GMP_BAN_DURATION_MS: 86400000,
   GMP_REPUTATION_RECOVERY_INTERVAL_MS: 60000,
 };
 
 type DefaultKeys = keyof typeof DEFAULTS;
+
+/**
+ * Narrow a runtime string to a real config key.
+ *
+ * `key in DEFAULTS` does not narrow a plain `string` on its own, so without
+ * this the call sites below had to cast. Going through a guard means the
+ * assignment is checked against the actual key union instead.
+ */
+function isDefaultKey(key: string): key is DefaultKeys {
+  return key in DEFAULTS;
+}
+
+/**
+ * Write a config value whose key is only known at runtime.
+ *
+ * GMPConfig is an interface, so it has no implicit index signature and cannot
+ * be indexed by a computed key. The key has already been narrowed to one that
+ * exists in DEFAULTS, so the write is sound; this helper is the single place
+ * that reasoning lives, rather than a cast repeated at each call site.
+ */
+function setConfigValue(target: GMPConfig, key: DefaultKeys, value: unknown): void {
+  (target as Record<DefaultKeys, unknown>)[key] = value;
+}
 
 function envInt(key: DefaultKeys, fallback: number): number {
   const val = process.env[key];
@@ -101,9 +125,8 @@ export function loadConfig(customOptions: Partial<GMPConfig> = {}): GMPConfig {
   }
 
   for (const [key, value] of Object.entries(fileConfig)) {
-    const configKey = key as DefaultKeys;
-    if (configKey in DEFAULTS && value !== undefined) {
-      (config as Record<string, unknown>)[configKey] = value;
+    if (isDefaultKey(key) && value !== undefined) {
+      setConfigValue(config, key, value);
     }
   }
 
@@ -140,18 +163,19 @@ export function loadConfig(customOptions: Partial<GMPConfig> = {}): GMPConfig {
   config.GMP_LOG_LEVEL = envLogLevel('GMP_LOG_LEVEL', DEFAULTS.GMP_LOG_LEVEL);
   config.GMP_LOG_TO_FILE = envBool('GMP_LOG_TO_FILE', DEFAULTS.GMP_LOG_TO_FILE);
   config.GMP_LOG_TO_CONSOLE = envBool('GMP_LOG_TO_CONSOLE', DEFAULTS.GMP_LOG_TO_CONSOLE);
+  config.GMP_STRICT_STATE = envBool('GMP_STRICT_STATE', DEFAULTS.GMP_STRICT_STATE);
   config.GMP_BAN_DURATION_MS = envInt('GMP_BAN_DURATION_MS', DEFAULTS.GMP_BAN_DURATION_MS);
   config.GMP_REPUTATION_RECOVERY_INTERVAL_MS = envInt('GMP_REPUTATION_RECOVERY_INTERVAL_MS', DEFAULTS.GMP_REPUTATION_RECOVERY_INTERVAL_MS);
 
   for (const [key, value] of Object.entries(customOptions)) {
     if (value !== undefined) {
       const gmpKey = key.startsWith('GMP_') ? key : `GMP_${key.toUpperCase()}`;
-      if (gmpKey in DEFAULTS) {
-        (config as Record<string, unknown>)[gmpKey] = value;
+      if (isDefaultKey(gmpKey)) {
+        setConfigValue(config, gmpKey, value);
       } else {
         const mappedKey = mapOptionToConfigKey(key);
-        if (mappedKey && mappedKey in DEFAULTS) {
-          (config as Record<string, unknown>)[mappedKey] = value;
+        if (mappedKey && isDefaultKey(mappedKey)) {
+          setConfigValue(config, mappedKey, value);
         }
       }
     }
@@ -195,6 +219,7 @@ function mapOptionToConfigKey(key: string): string | undefined {
     logLevel: 'GMP_LOG_LEVEL',
     logToFile: 'GMP_LOG_TO_FILE',
     logToConsole: 'GMP_LOG_TO_CONSOLE',
+    strictState: 'GMP_STRICT_STATE',
     banDurationMs: 'GMP_BAN_DURATION_MS',
     recoveryIntervalMs: 'GMP_REPUTATION_RECOVERY_INTERVAL_MS',
   };
