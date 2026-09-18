@@ -255,7 +255,7 @@ export default function ChatListScreen({navigation}) {
         const msgs = state.messages?.get?.(roomId) ?? [];
         const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
         const unread = msgs.filter(
-          m => !m.read && m.sender !== state.displayName,
+          m => !m.read && m.sender !== identity?.name,
         ).length;
 
         return {
@@ -276,7 +276,7 @@ export default function ChatListScreen({navigation}) {
         if (!a.pinned && b.pinned) return 1;
         return (b.lastMessageTime || 0) - (a.lastMessageTime || 0);
       });
-  }, [state.peers, state.messages, state.displayName]);
+  }, [state.peers, state.messages, identity]);
 
   // Filtered list based on search
   const filteredChats = useMemo(() => {
@@ -300,10 +300,12 @@ export default function ChatListScreen({navigation}) {
   // Chat item press
   const handleChatPress = useCallback(
     item => {
-      dispatch({type: 'SET_ACTIVE_PEER', payload: item.id});
+      // The Chat screen reads the peer from its route params; there is no
+      // activePeer in state and nothing ever read one, so dispatching
+      // SET_ACTIVE_PEER (which the reducer does not handle) did nothing.
       navigation.navigate('Chat', {peerId: item.id, peerName: item.name, roomId: item.roomId});
     },
-    [dispatch, navigation],
+    [navigation],
   );
 
   // Swipe actions

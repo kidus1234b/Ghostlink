@@ -99,6 +99,23 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "2.0.0"
+
+        // Opt-in ABI filtering, for producing a phone-sized APK:
+        //
+        //   ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
+        //
+        // Passing that property alone is not enough on its own — it controls
+        // what React Native compiles, but dependencies like react-native-webrtc
+        // ship prebuilt .so files for every ABI and those are packaged
+        // regardless. abiFilters is what actually drops them. Without the
+        // property the build stays universal, which is the right default for a
+        // file someone sideloads onto an unknown device.
+        if (project.hasProperty("reactNativeArchitectures")) {
+            ndk {
+                abiFilters.clear()
+                abiFilters.addAll(project.property("reactNativeArchitectures").split(",").collect { it.trim() })
+            }
+        }
     }
     // Release credentials come from android/keystore.properties, which is not in
     // version control. Without it the release build falls back to the debug key

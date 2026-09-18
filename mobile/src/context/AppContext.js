@@ -55,6 +55,7 @@ const INITIAL_STATE = {
 const Actions = {
   SET_IDENTITY: 'SET_IDENTITY',
   ADD_PEER: 'ADD_PEER',
+  UPDATE_PEER: 'UPDATE_PEER',
   REMOVE_PEER: 'REMOVE_PEER',
   ADD_MESSAGE: 'ADD_MESSAGE',
   UPDATE_SETTINGS: 'UPDATE_SETTINGS',
@@ -95,6 +96,17 @@ function appReducer(state, action) {
     case Actions.ADD_PEER: {
       const nextPeers = new Map(state.peers);
       nextPeers.set(action.payload.id, action.payload);
+      return {...state, peers: nextPeers};
+    }
+
+    case Actions.UPDATE_PEER: {
+      // Pin and mute dispatch this. Without a case here the reducer fell
+      // through to `default` and returned state unchanged, so both buttons
+      // animated and then did nothing.
+      const existing = state.peers.get(action.payload.id);
+      if (!existing) return state;
+      const nextPeers = new Map(state.peers);
+      nextPeers.set(action.payload.id, {...existing, ...action.payload});
       return {...state, peers: nextPeers};
     }
 

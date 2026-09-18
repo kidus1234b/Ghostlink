@@ -13,6 +13,7 @@
 
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 const TEST_STATE_FILE = '/tmp/gmp-nonce-test-state.json';
@@ -284,6 +285,84 @@ async function testUpdateCounters() {
   await cleanup();
 }
 
+/**
+ * Two ways the directional marks could quietly stop protecting anything.
+ * Both were live regressions when the marks were first added.
+ */
+async function testMarkInvariants() {
+  console.log('\n=== Test 6: High-Water Invariants ===');
+  await cleanup();
+
+  const peerId = new Uint8Array(64);
+  peerId.fill(0xB1);
+  const sessionKey = new Uint8Array(32);
+  sessionKey.fill(0xB2);
+
+  // A state file written before the directional marks existed — and anything
+  // checkNonce creates today — carries highWaterMark alone.
+  const legacy = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  legacy.checkNonce(peerId, 'legacy-fingerprint', 100);
+  const migrated = legacy.getEntry(peerId, 'legacy-fingerprint');
+  assertEqual(migrated.sendHighWater, undefined, 'Legacy entry has no directional send mark');
+
+  const replay = legacy.checkAndUpdate(peerId, 'legacy-fingerprint', 1, 1);
+  assertEqual(replay.allowed, false, 'Reconnect at 1/1 rejected against a legacy mark of 100');
+
+  const ahead = legacy.checkAndUpdate(peerId, 'legacy-fingerprint', 101, 101);
+  assertEqual(ahead.allowed, true, 'Reconnect above the legacy mark still allowed');
+  legacy.close();
+
+  await cleanup();
+
+  // The aggregate mark must cover the send counter too, because checkNonce
+  // reads it on its own.
+  const agg = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  agg.checkAndUpdate(peerId, sessionKey, 10, 10);
+  agg.checkAndUpdate(peerId, sessionKey, 150, 101);
+  const entry = agg.getEntry(peerId, sessionKey);
+  assertEqual(entry.highWaterMark, 150, 'Aggregate mark follows the higher of the two counters');
+
+  const below = agg.checkNonce(peerId, agg._fingerprint(sessionKey), 120);
+  assertEqual(below.valid, false, 'checkNonce rejects a nonce below the accepted send counter');
+  agg.close();
+
+  await cleanup();
+}
+
+/**
+ * The store being constructed at all. It was declared, imported, threaded
+ * through to every link and closed on shutdown — but never actually built, so
+ * every guard that used it short-circuited and none of the above ran in
+ * production. A default of null is easy to reintroduce; this catches it.
+ */
+async function testNodeWiring() {
+  console.log('\n=== Test 7: GMPNode Wiring ===');
+  const { GMPNode } = await import('../dist/link.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gmp-wiring-'));
+
+  const node = new GMPNode({
+    port: 49943,
+    peerCachePath: path.join(dir, 'peers.json'),
+    nonceStorePath: path.join(dir, 'nonce.json'),
+    disableBootstrap: true,
+    seedPhrase: 'wiring check seed',
+  });
+
+  assert(!!node.nonceStore, 'GMPNode constructs a NonceStore by default');
+  assertEqual(typeof node.nonceStore.claimSessionKey, 'function', 'The store exposes claimSessionKey');
+  assertEqual(typeof node.nonceStore.updateCounters, 'function', 'The store exposes updateCounters, which link.js calls');
+
+  await node.loadIdentity('wiring check seed');
+
+  const peer = new Uint8Array(64);
+  peer.fill(0xC3);
+  assertEqual(node.nonceStore.claimSessionKey(peer, 'wiring-fp').valid, true, 'A fresh session key is claimable');
+  assertEqual(node.nonceStore.claimSessionKey(peer, 'wiring-fp').valid, false, 'The same session key cannot be claimed twice');
+
+  node.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 async function runTests() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║  GMP Phase 2a / 5 — Nonce Persistence & Pruning Test       ║');
@@ -296,6 +375,8 @@ async function runTests() {
     await testPruningDefault90Days();
     await testMultiplePeers();
     await testUpdateCounters();
+    await testMarkInvariants();
+    await testNodeWiring();
 
     console.log('\n╔════════════════════════════════════════════════════════════╗');
     console.log(`║  Results: ${testsPassed} passed, ${testsFailed} failed, ${testsRun} total       ║`);
@@ -304,6 +385,9 @@ async function runTests() {
   } catch (err) {
     console.error('\nTest suite error:', err);
     console.error(err.stack);
+    // Count the throw as a failure. Without this a suite that crashed
+    // mid-run still exited 0, so a broken API read as a pass.
+    testsFailed++;
   }
 
   process.exit(testsFailed > 0 ? 1 : 0);

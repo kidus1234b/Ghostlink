@@ -62,3 +62,5 @@ landing.html
 ghostlink-website.html
 assets/site-shell.css
 assets/app-screenshot.png
+*.apk
+*.aab

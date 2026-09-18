@@ -83,9 +83,9 @@ async function testMetricsTracking() {
 
   const reportInit = node.getHealthReport();
   assertEqual(reportInit.status, 'isolated', "Initial health status is isolated");
-  assertEqual(reportInit.metrics.currentPeerCount, 0, "Initial peer count is 0");
-  assertEqual(reportInit.metrics.peakPeerCount, 0, "Initial peak peer count is 0");
-  assertEqual(reportInit.metrics.messagesForwarded, 0, "Initial messagesForwarded is 0");
+  assertEqual(reportInit.currentPeerCount, 0, "Initial peer count is 0");
+  assertEqual(reportInit.peakPeerCount, 0, "Initial peak peer count is 0");
+  assertEqual(reportInit.messagesForwarded, 0, "Initial messagesForwarded is 0");
 
   // Simulate forward event
   node.emit('forwarded', { payload: 'msg' });
@@ -93,9 +93,9 @@ async function testMetricsTracking() {
   node.emit('no-route', { payload: 'msg' });
 
   const reportAfter = node.getHealthReport();
-  assertEqual(reportAfter.metrics.messagesForwarded, 1, "messagesForwarded incremented");
-  assertEqual(reportAfter.metrics.messagesDroppedTTL, 1, "messagesDroppedTTL incremented");
-  assertEqual(reportAfter.metrics.messagesDroppedNoRoute, 1, "messagesDroppedNoRoute incremented");
+  assertEqual(reportAfter.messagesForwarded, 1, "messagesForwarded incremented");
+  assertEqual(reportAfter.messagesDroppedTTL, 1, "messagesDroppedTTL incremented");
+  assertEqual(reportAfter.messagesDroppedNoRoute, 1, "messagesDroppedNoRoute incremented");
 
   node.close();
 }

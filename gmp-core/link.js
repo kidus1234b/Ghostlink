@@ -443,13 +443,13 @@ class GMPLink extends EventEmitter {
 
     // Nonce store uniqueness check (Phase 2a persisted check)
     if (this.nonceStore) {
-      const nsResult = this.nonceStore.checkNonce(this.remoteNodeId, fingerprintKey(this.sendKey), 0);
+      const nsResult = this.nonceStore.claimSessionKey(this.remoteNodeId, fingerprintKey(this.sendKey));
       if (!nsResult.valid) {
-        logger.error('link', 'security-nonce-check-failed', `Nonce store check failed: ${nsResult.reason}`, {
+        logger.error('link', 'security-session-key-reuse', `Session key reuse detected: ${nsResult.reason}`, {
           reason: nsResult.reason
         });
-        this._penalizeUntrusted(`Nonce store check failed: ${nsResult.reason}`);
-        this.destroy(new Error(`Nonce store check failed: ${nsResult.reason}`));
+        this._penalizeUntrusted(`Session key reuse detected: ${nsResult.reason}`);
+        this.destroy(new Error(`Session key reuse detected: ${nsResult.reason}`));
         return;
       }
     }
@@ -568,13 +568,13 @@ class GMPLink extends EventEmitter {
 
     // Nonce store uniqueness check (Phase 2a persisted check)
     if (this.nonceStore) {
-      const nsResult = this.nonceStore.checkNonce(this.remoteNodeId, fingerprintKey(this.sendKey), 0);
+      const nsResult = this.nonceStore.claimSessionKey(this.remoteNodeId, fingerprintKey(this.sendKey));
       if (!nsResult.valid) {
-        logger.error('link', 'security-nonce-check-failed', `Nonce store check failed: ${nsResult.reason}`, {
+        logger.error('link', 'security-session-key-reuse', `Session key reuse detected: ${nsResult.reason}`, {
           reason: nsResult.reason
         });
-        this._penalizeUntrusted(`Nonce store check failed: ${nsResult.reason}`);
-        this.destroy(new Error(`Nonce store check failed: ${nsResult.reason}`));
+        this._penalizeUntrusted(`Session key reuse detected: ${nsResult.reason}`);
+        this.destroy(new Error(`Session key reuse detected: ${nsResult.reason}`));
         return;
       }
     }
@@ -1224,6 +1224,8 @@ class GMPNode extends EventEmitter {
     port = DEFAULT_PORT,
     rateLimiter = null,
     nonceStore = null,
+    nonceStorePath = null,
+    noncePruneAgeMs = null,
     sessionKeyLRUSet = null,
     isPublicPeer = false,
     establishedPeers = new Set(),
@@ -1287,6 +1289,18 @@ class GMPNode extends EventEmitter {
 
     // Phase 4 Modules
     this.peerCache = new PeerCache({ filePath: peerCachePath });
+
+    // Build a NonceStore unless one was injected. The default was null and
+    // nothing ever supplied one, so every guard below short-circuited and the
+    // persisted half of the session-key uniqueness check simply did not exist:
+    // a session key could be reused across restarts with nothing to notice,
+    // which with AES-GCM means nonce reuse.
+    if (!this.nonceStore) {
+      this.nonceStore = new NonceStore({
+        ...(nonceStorePath ? { stateFile: nonceStorePath } : {}),
+        ...(noncePruneAgeMs ? { pruneAgeMs: noncePruneAgeMs } : {}),
+      });
+    }
     if (cacheKey) {
       this.peerCache.setEncryptionKey(cacheKey);
     }

@@ -140,6 +140,13 @@ export class PeerCache {
         lastFailedAt: null,
         failureCount: 0,
       };
+        // The signing key must be recorded on first contact too. This branch
+        // dropped the argument, and a peer's first connection always lands
+        // here — so it was never stored at all, which made KeyRotationManager
+        // reject every rotation as an "unknown or untrusted old NodeID".
+        if (signingPubKey) {
+          (entry as CachedPeer & { signingPubKey?: string }).signingPubKey = signingPubKey;
+        }
       this.cache.push(entry);
     }
 

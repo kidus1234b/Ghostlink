@@ -55,6 +55,10 @@ export const PEER_CACHE_FILE = process.env.GMP_PEER_CACHE_PATH
   ? path.resolve(process.env.GMP_PEER_CACHE_PATH)
   : dataPath('peer-cache.json');
 
+export const NONCE_STATE_FILE = process.env.GMP_NONCE_STATE_PATH
+  ? path.resolve(process.env.GMP_NONCE_STATE_PATH)
+  : dataPath('nonce-state.json');
+
 export const CONFIG_FILE = process.env.GMP_CONFIG_PATH
   ? path.resolve(process.env.GMP_CONFIG_PATH)
   : dataPath('config.json');

@@ -292,6 +292,9 @@ async function runTests() {
   } catch (err) {
     console.error('\nTest suite error:', err);
     console.error(err.stack);
+    // Count the throw as a failure. Without this a suite that crashed
+    // mid-run still exited 0, so a broken API read as a pass.
+    testsFailed++;
   }
 
   process.exit(testsFailed > 0 ? 1 : 0);
