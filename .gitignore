@@ -64,3 +64,9 @@ assets/site-shell.css
 assets/app-screenshot.png
 *.apk
 *.aab
+
+# Track key docs despite the blanket *.md rule
+!README.md
+!SECURITY.md
+!docs/archive/DEPLOYMENT.md
+!gmp-core/PROTOCOL_SPEC.md

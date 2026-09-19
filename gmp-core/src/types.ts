@@ -402,37 +402,6 @@ export interface BootstrapLike {
   attemptCandidates(): void;
 }
 
-// ── Events ──────────────────────────────────────────
-
-export type GMPNodeEventName =
-  | 'connected'
-  | 'disconnected'
-  | 'message'
-  | 'error'
-  | 'rate-limited'
-  | 'forwarded'
-  | 'no-route'
-  | 'ttl-expired'
-  | 'clock-skew-detected'
-  | 'bootstrap-complete'
-  | 'bootstrap-failed'
-  | 'routing-degraded';
-
-export interface GMPNodeEventPayloads {
-  'connected': [peerNodeId: string, address: string, port: number];
-  'disconnected': [peerNodeId: string];
-  'message': [fromNodeId: string, data: Uint8Array];
-  'error': [error: Error];
-  'rate-limited': [ip: string, reason: string];
-  'forwarded': [fromNodeId: string, toNodeId: string];
-  'no-route': [destinationNodeId: string];
-  'ttl-expired': [destinationNodeId: string];
-  'clock-skew-detected': [peerNodeId: string, deltaMs: number];
-  'bootstrap-complete': [peersConnected: number];
-  'bootstrap-failed': [peersConnected: number];
-  'routing-degraded': [];
-}
-
 // ── Health ──────────────────────────────────────────
 
 export type NodeHealthStatus =

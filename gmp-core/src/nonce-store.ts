@@ -1,10 +1,10 @@
 import fs from 'fs';
-import path from 'path';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
 import { NONCE_STATE_FILE } from './paths.js';
+import { writeFileAtomicSync } from './atomic-file.js';
 import { StateAuthenticationError } from './types.js';
 
 // Resolved from the package root, not process.cwd(). The bridge is launched
@@ -61,9 +61,49 @@ export class NonceStore extends EventEmitter {
     this._saveTimer = null;
   }
 
-  setEncryptionKey(key: Buffer | null): void {
+  /**
+   * Attach the key the state file is sealed with, and reconcile what is
+   * already held in memory with what is on disk.
+   *
+   * link.js calls this *after* the node has derived its identity, which means a
+   * store can have been answering claims for the whole of startup before it has
+   * any way to persist them. load() used to replace the in-memory state
+   * outright, so every one of those claims was silently dropped here and the
+   * same session key fingerprint became claimable a second time — AES-GCM key
+   * and nonce reuse reached during an ordinary boot, no crash required. The
+   * load below merges instead; see _mergeState for the rules.
+   *
+   * Returns false if the merged state could not be written. The merge itself
+   * has already happened in memory at that point, so the process is protected;
+   * what is not guaranteed is that the *next* process will be, which is why
+   * this is an ERROR and why strict mode refuses to continue.
+   */
+  setEncryptionKey(key: Buffer | null): boolean {
     this.encryptionKey = key;
+    const carriedForward = this._entryCount() > 0;
     this.load();
+
+    if (!carriedForward || !this.encryptionKey) return true;
+
+    // Something was claimed before the key existed. It is only merged in
+    // memory so far, and the whole point of the merge is that it outlives this
+    // process.
+    if (!this._saveNow()) {
+      const message =
+        `Merged nonce state could not be written to ${this.stateFile}. Claims made before the ` +
+        `encryption key was configured are held in memory only, so a restart would accept a ` +
+        `session key this node has already used.`;
+      logger.error('nonce-store', 'state-merge-persist-failed', message, { stateFile: this.stateFile });
+      if (config.GMP_STRICT_STATE) {
+        throw new StateAuthenticationError(`Refusing to continue: ${message}`);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  private _entryCount(): number {
+    return Object.keys(this.state.entries).length;
   }
 
   private _getKey(peerNodeId: Uint8Array, sessionKeyFingerprint: string): string {
@@ -101,50 +141,48 @@ export class NonceStore extends EventEmitter {
     }
   }
 
-  load(): this {
-    if (!this.encryptionKey) {
-      this.state = { entries: {}, version: 1 };
-      this._loaded = true;
-      return this;
-    }
+  /**
+   * Read the persisted state, or null if there is nothing usable to read.
+   *
+   * Split out from load() so that "what is on disk" and "what becomes the
+   * live state" are separate decisions — the second is a merge, not an
+   * assignment.
+   */
+  private _readPersistedState(): NonceState | null {
+    if (!this.encryptionKey) return null;
     try {
-      if (fs.existsSync(this.stateFile)) {
-        const raw = fs.readFileSync(this.stateFile, 'utf8');
-        const parsed = JSON.parse(raw) as { iv: string; ciphertext: string; version?: number };
-        if (parsed && parsed.iv && parsed.ciphertext && parsed.version === 1) {
-          const iv = Buffer.from(parsed.iv, 'hex');
-          const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
-          const authTag = encryptedBlob.slice(0, 16);
-          const ciphertext = encryptedBlob.slice(16);
+      if (!fs.existsSync(this.stateFile)) return null;
 
-          // Decryption gets its own catch so an authentication failure can be
-          // told apart from a missing file or a syntax error. A file that is
-          // present and well-formed but will not authenticate has either been
-          // tampered with or belongs to a different identity, and discarding it
-          // silently resets every high-water mark this store exists to keep.
-          let decrypted: Buffer;
-          try {
-            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-            decipher.setAuthTag(authTag);
-            decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-          } catch (err) {
-            this._onUnauthenticatedState(err as Error);
-            this.state = { entries: {}, version: 1 };
-            this._loaded = true;
-            return this;
-          }
-
-          const stateObj = JSON.parse(decrypted.toString('utf8')) as NonceState;
-          if (stateObj && stateObj.version === 1) {
-            this.state = stateObj;
-          }
-        } else {
-          logger.warn('nonce-store', 'format-mismatch', 'Nonce state file format mismatch or plaintext, starting fresh.');
-          this.state = { entries: {}, version: 1 };
-        }
-      } else {
-        this.state = { entries: {}, version: 1 };
+      const raw = fs.readFileSync(this.stateFile, 'utf8');
+      const parsed = JSON.parse(raw) as { iv: string; ciphertext: string; version?: number };
+      if (!parsed || !parsed.iv || !parsed.ciphertext || parsed.version !== 1) {
+        logger.warn('nonce-store', 'format-mismatch', 'Nonce state file format mismatch or plaintext, starting fresh.');
+        return null;
       }
+
+      const iv = Buffer.from(parsed.iv, 'hex');
+      const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
+      const authTag = encryptedBlob.slice(0, 16);
+      const ciphertext = encryptedBlob.slice(16);
+
+      // Decryption gets its own catch so an authentication failure can be told
+      // apart from a missing file or a syntax error. A file that is present and
+      // well-formed but will not authenticate has either been tampered with or
+      // belongs to a different identity, and discarding it silently resets
+      // every high-water mark this store exists to keep.
+      let decrypted: Buffer;
+      try {
+        const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+        decipher.setAuthTag(authTag);
+        decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      } catch (err) {
+        this._onUnauthenticatedState(err as Error);
+        return null;
+      }
+
+      const stateObj = JSON.parse(decrypted.toString('utf8')) as NonceState;
+      if (stateObj && stateObj.version === 1 && stateObj.entries) return stateObj;
+      return null;
     } catch (err) {
       // A strict-mode refusal must not be absorbed here. This catch exists to
       // survive unreadable or malformed files by starting fresh, which is the
@@ -152,13 +190,112 @@ export class NonceStore extends EventEmitter {
       if (err instanceof StateAuthenticationError) throw err;
       const error = err as Error;
       logger.warn('nonce-store', 'load-failed', `Failed to load state file, starting fresh: ${error.message}`, { err: error.message });
-      this.state = { entries: {}, version: 1 };
+      return null;
+    }
+  }
+
+  /**
+   * Combine one session's persisted counters with the ones held in memory.
+   *
+   * A high-water mark may only ever move forward. Taking the loaded value over
+   * the in-memory one — or the reverse — would lower a mark somewhere, and a
+   * lowered mark is precisely the replay window this store exists to close.
+   * So every counter is the maximum of the two sides, firstSeen is the earlier
+   * sighting, and lastActivity the later one.
+   */
+  private _mergeEntry(mine: NonceStateEntry, theirs: NonceStateEntry): NonceStateEntry {
+    // Legacy entries carry only the aggregate mark. Falling back to it rather
+    // than to zero keeps a pre-directional state file from reopening the
+    // window the aggregate had already closed.
+    const sendHighWater = Math.max(
+      mine.sendHighWater ?? mine.highWaterMark,
+      theirs.sendHighWater ?? theirs.highWaterMark,
+    );
+    const recvHighWater = Math.max(
+      mine.recvHighWater ?? mine.highWaterMark,
+      theirs.recvHighWater ?? theirs.highWaterMark,
+    );
+    const seen = [mine.firstSeen, theirs.firstSeen].filter((v): v is number => typeof v === 'number');
+
+    return {
+      highWaterMark: Math.max(mine.highWaterMark, theirs.highWaterMark, sendHighWater, recvHighWater),
+      sendHighWater,
+      recvHighWater,
+      ...(seen.length ? { firstSeen: Math.min(...seen) } : {}),
+      lastActivity: Math.max(mine.lastActivity, theirs.lastActivity),
+    };
+  }
+
+  /**
+   * Fold the persisted state into the live one.
+   *
+   * The union of both entry sets, never the intersection and never a
+   * replacement: a fingerprint claimed in memory stays claimed even though the
+   * file on disk has never heard of it, and a fingerprint on disk stays claimed
+   * even though this process has not seen it. Returns whether anything the
+   * caller held in memory is not already represented on disk, which is what
+   * tells setEncryptionKey there is something new worth persisting.
+   */
+  private _mergeState(loaded: NonceState | null): boolean {
+    if (!loaded) return this._entryCount() > 0;
+
+    let carriedForward = false;
+    const merged: Record<string, NonceStateEntry> = { ...loaded.entries };
+
+    for (const [key, mine] of Object.entries(this.state.entries)) {
+      const theirs = loaded.entries[key];
+      if (!theirs) {
+        merged[key] = mine;
+        carriedForward = true;
+        continue;
+      }
+      const combined = this._mergeEntry(mine, theirs);
+      // Only a mark that actually moved is worth a write.
+      if (
+        combined.highWaterMark !== theirs.highWaterMark ||
+        combined.sendHighWater !== (theirs.sendHighWater ?? theirs.highWaterMark) ||
+        combined.recvHighWater !== (theirs.recvHighWater ?? theirs.highWaterMark)
+      ) {
+        carriedForward = true;
+      }
+      merged[key] = combined;
+    }
+
+    this.state = { entries: merged, version: 1 };
+    return carriedForward;
+  }
+
+  /**
+   * Bring the persisted state in, merging rather than replacing.
+   *
+   * Every caller reaches this with state that may already matter: the lazy
+   * `if (!this._loaded) this.load()` guards run on the first claim, and
+   * setEncryptionKey() runs after a whole startup's worth of claims. Assigning
+   * over this.state at any of those points drops claims on the floor.
+   */
+  load(): this {
+    const loaded = this._readPersistedState();
+    if (this._mergeState(loaded)) {
+      // Mark dirty so setEncryptionKey()'s flush has something to write and
+      // the batched timer retries if that flush fails.
+      this._dirty = true;
     }
     this._loaded = true;
     this._pruneOldEntries();
     return this;
   }
 
+  /**
+   * Mark the state dirty and let it be written within the next second.
+   *
+   * This is the routine path, used by updateCounters() on every frame link.js
+   * sends or receives. It must stay batched and asynchronous: a per-message
+   * fsync would put a disk round-trip in the data path and cost far more than
+   * the protection is worth, because a counter lost to a crash is re-derived
+   * from the peer's next frame anyway.
+   *
+   * claimSessionKey() deliberately does not use this — see _saveNow().
+   */
   save(): void {
     this._dirty = true;
     if (this._saveTimer) return;
@@ -169,13 +306,17 @@ export class NonceStore extends EventEmitter {
     }, 1000);
   }
 
-  private _saveNow(): void {
-    if (!this._dirty || !this.encryptionKey) return;
+  /**
+   * Write the state out now, and report whether it actually reached disk.
+   *
+   * The return value matters to claimSessionKey(), which may not tell a peer
+   * its session key was accepted until the claim is durable. Everything else
+   * calls this for effect and ignores the result.
+   */
+  private _saveNow(): boolean {
+    if (!this.encryptionKey) return false;
+    if (!this._dirty) return true;
     try {
-      const dir = path.dirname(this.stateFile);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
       const plaintextJson = JSON.stringify(this.state);
       const iv = crypto.randomBytes(12);
       const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
@@ -187,11 +328,13 @@ export class NonceStore extends EventEmitter {
         ciphertext: encryptedBlob.toString('hex'),
         version: 1
       };
-      fs.writeFileSync(this.stateFile, JSON.stringify(encryptedObj, null, 2));
+      writeFileAtomicSync(this.stateFile, JSON.stringify(encryptedObj, null, 2));
       this._dirty = false;
+      return true;
     } catch (err) {
       const error = err as Error;
       logger.error('nonce-store', 'save-failed', `Failed to save state: ${error.message}`, { err: error.message });
+      return false;
     }
   }
 
@@ -368,11 +511,56 @@ export class NonceStore extends EventEmitter {
     sessionKeyFingerprint: string,
   ): { valid: boolean; reason?: string } {
     const result = this.checkNonce(peerNodeId, sessionKeyFingerprint, 0);
-    if (result.valid) return result;
-    return {
-      valid: false,
-      reason: `Session key already used with this peer (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
-    };
+    if (!result.valid) {
+      return {
+        valid: false,
+        reason: `Session key already used with this peer (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+      };
+    }
+
+    // checkNonce() recorded the claim in memory and queued a write for up to a
+    // second from now. Returning here would hand the caller a success it cannot
+    // rely on: a crash, an OOM kill or a container restart inside that second
+    // loses the claim, the next process loads a state file that has never heard
+    // of this session key, and the same key is accepted a second time — which
+    // is the AES-GCM nonce reuse the claim exists to prevent. Flush before
+    // saying yes.
+    if (!this.encryptionKey) {
+      // No key yet means no state file to write to — link.js only supplies one
+      // once the identity has been derived. This is not a lost claim: load()
+      // merges rather than replaces, so everything recorded here survives
+      // setEncryptionKey() and is flushed to disk at that point.
+      logger.debug(
+        'nonce-store',
+        'claim-held-in-memory',
+        `Session key claim held in memory until an encryption key is configured ` +
+        `(fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        { stateFile: this.stateFile }
+      );
+      return result;
+    }
+
+    if (!this._saveNow()) {
+      logger.error(
+        'nonce-store',
+        'state-claim-persist-failed',
+        `Rejecting session key claim: the claim could not be persisted, and a claim that is not on disk ` +
+        `is a claim the next process will not honour (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        { stateFile: this.stateFile, peerNodeId: Buffer.from(peerNodeId).toString('hex').slice(0, 16) }
+      );
+      // The in-memory entry stays. Rolling it back would make this process
+      // willing to hand out a key that may in fact have reached disk; leaving
+      // it means the key is refused either way, which is the direction to fail
+      // in. The queued retry from checkNonce()'s save() may still land it later,
+      // and a claim that persists after being refused costs nothing.
+      return {
+        valid: false,
+        reason: 'Session key claim could not be persisted; refusing the connection rather than ' +
+                'accepting a key that would be re-accepted after a restart',
+      };
+    }
+
+    return result;
   }
 
   checkNonce(peerNodeId: Uint8Array, sessionKeyFingerprint: string, nonce: number): { valid: boolean; reason?: string } {
@@ -410,6 +598,8 @@ export class NonceStore extends EventEmitter {
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
+    // Best effort: a failure here is already logged by _saveNow(), and there is
+    // nothing left to refuse at shutdown.
     this._saveNow();
   }
 }

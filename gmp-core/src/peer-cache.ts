@@ -5,6 +5,7 @@ import config from './config.js';
 import { StateAuthenticationError } from './types.js';
 import logger from './logger.js';
 import { PEER_CACHE_FILE } from './paths.js';
+import { writeFileAtomicSync } from './atomic-file.js';
 import type { CachedPeer } from './types.js';
 
 const DEFAULT_CACHE_FILE = PEER_CACHE_FILE;
@@ -146,7 +147,10 @@ export class PeerCache {
         ciphertext: encryptedBlob.toString('hex'),
         version: 1
       };
-      fs.writeFileSync(this.filePath, JSON.stringify(encryptedObj, null, 2), 'utf8');
+      // Same reasoning as the nonce store: truncating the live cache and then
+      // failing leaves it empty, and an empty peer cache means a cold
+      // re-bootstrap for every peer it had learned.
+      writeFileAtomicSync(this.filePath, JSON.stringify(encryptedObj, null, 2));
     } catch (err) {
       const error = err as Error;
       logger.error('peer-cache', 'save-failed', `Failed to save cache: ${error.message}`, { err: error.message });
