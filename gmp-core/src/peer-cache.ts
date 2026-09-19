@@ -166,7 +166,7 @@ export class PeerCache {
       entry.connectionCount++;
       entry.failureCount = 0;
       if (signingPubKey) {
-        (entry as CachedPeer & { signingPubKey?: string }).signingPubKey = signingPubKey;
+        entry.signingPubKey = signingPubKey;
       }
     } else {
       entry = {
@@ -184,7 +184,7 @@ export class PeerCache {
         // here — so it was never stored at all, which made KeyRotationManager
         // reject every rotation as an "unknown or untrusted old NodeID".
         if (signingPubKey) {
-          (entry as CachedPeer & { signingPubKey?: string }).signingPubKey = signingPubKey;
+          entry.signingPubKey = signingPubKey;
         }
       this.cache.push(entry);
     }
@@ -213,7 +213,7 @@ export class PeerCache {
     const entry = this.cache.find(e => e.nodeId === oldNodeId);
     if (entry) {
       entry.nodeId = newNodeId;
-      (entry as CachedPeer & { signingPubKey?: string }).signingPubKey = newPublicKey;
+      entry.signingPubKey = newPublicKey;
       this.save();
       return true;
     }

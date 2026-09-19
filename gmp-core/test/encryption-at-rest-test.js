@@ -102,8 +102,11 @@ function testTamperedCiphertextFallback() {
   // Tamper with the file on disk
   const raw = fs.readFileSync(tempCachePath, 'utf8');
   const parsed = JSON.parse(raw);
-  // Modify the first character of ciphertext
-  parsed.ciphertext = 'a' + parsed.ciphertext.slice(1);
+  // Flip the first character of the ciphertext to something it is not. A flat
+  // `'a' + ...` was a no-op whenever the (random) auth tag already started with
+  // 'a', so 1 run in 16 wrote the file back unchanged, decrypted fine, and
+  // failed the assertion below.
+  parsed.ciphertext = (parsed.ciphertext[0] === 'a' ? 'b' : 'a') + parsed.ciphertext.slice(1);
   fs.writeFileSync(tempCachePath, JSON.stringify(parsed), 'utf8');
 
   // Attempt to read tampered file

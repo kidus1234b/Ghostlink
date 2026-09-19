@@ -4,7 +4,12 @@ import { PUBLIC_PEERS_FILE } from './paths.js';
 import config from './config.js';
 import logger from './logger.js';
 import metrics from './metrics.js';
-import type { CachedPeer } from './types.js';
+import type {
+  CachedPeer,
+  GMPNodeLike,
+  GMPLinkLike,
+  PeerCacheLike,
+} from './types.js';
 
 /** The minimum a bootstrap dial needs; both CachedPeer and PublicPeerEntry satisfy it. */
 type DialableCandidate = Pick<CachedPeer, 'nodeId' | 'address' | 'port'>;
@@ -94,7 +99,7 @@ export class BootstrapManager extends EventEmitter {
 
   getDirectConnectionCount(): number {
     return Array.from(this.node.connections.values())
-      .filter((link: GMPLinkLike) => link.state === 'connected' && !(link as GMPLinkLike & { isVirtual: boolean }).isVirtual).length;
+      .filter((link: GMPLinkLike) => link.state === 'connected' && !link.isVirtual).length;
   }
 
   async start(): Promise<void> {
@@ -325,25 +330,6 @@ export class BootstrapManager extends EventEmitter {
   }
 }
 
-interface GMPNodeLike extends EventEmitter {
-  connections: Map<string, GMPLinkLike>;
-  identity: { nodeIdHex: string } | null;
-  peerCache: PeerCacheLike;
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  emit(event: string, ...args: unknown[]): boolean;
-  dial(address: string, port: number): Promise<void>;
-  getLinkByNodeId(nodeId: string): GMPLinkLike | null;
-}
-
-interface GMPLinkLike {
-  state: string;
-  isVirtual: boolean;
-}
-
-interface PeerCacheLike {
-  getCandidates(): CachedPeer[];
-  recordFailure(nodeId: string): void;
-}
 export type BootstrapFailureReason =
   | 'insufficient-peers'
   | 'no-public-peers-configured'

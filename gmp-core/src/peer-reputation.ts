@@ -1,23 +1,16 @@
 import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
-import type { ReputationEvent, PeerTrustLevel } from './types.js';
+import type {
+  ReputationEvent,
+  PeerTrustLevel,
+  GMPNodeLike,
+  GMPLinkLike,
+} from './types.js';
 
 interface ReputationOptions {
   banDurationMs?: number;
   recoveryIntervalMs?: number;
-}
-
-interface GMPNodeLike {
-  links: Map<string, GMPLinkLike>;
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  emit(event: string, ...args: unknown[]): boolean;
-}
-
-interface GMPLinkLike {
-  remoteNodeId: string | null;
-  socket?: { remoteAddress?: string };
-  destroy(error?: Error): void;
 }
 
 export class ReputationManager extends EventEmitter {

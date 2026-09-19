@@ -1,6 +1,12 @@
 import { EventEmitter } from 'events';
 import { verifySignature, hexToBytes, stringToBytes } from './identity.js';
-import type { KeyRotationPayload } from './types.js';
+import type {
+  KeyRotationPayload,
+  GMPNodeLike,
+  GMPLinkLike,
+  PeerCacheLike,
+  RoutingTableLike,
+} from './types.js';
 import config from './config.js';
 import logger from './logger.js';
 
@@ -10,39 +16,6 @@ function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
     return Buffer.from(nodeId as Buffer | Uint8Array).toString('hex');
   }
   return String(nodeId);
-}
-
-interface GMPNodeLike {
-  identity: { nodeIdHex: string } | null;
-  connections: Map<string, GMPLinkLike>;
-  peerCache: PeerCacheLike;
-  routingTable: RoutingTableLike;
-  emit(event: string, ...args: unknown[]): boolean;
-}
-
-interface GMPLinkLike {
-  state: string;
-  remoteNodeId: string | null;
-  isVirtual?: boolean;
-  sendKeyRotation(cert: unknown, sequenceNumber: number, ttl: number): void;
-  _penalizeUntrusted?(reason: string): void;
-}
-
-interface PeerCacheLike {
-  cache: CachedPeer[];
-  // PeerCache.replaceNodeId takes a hex string; this said Uint8Array.
-  replaceNodeId(oldNodeId: string, newNodeId: string, newPublicKey: string): void;
-}
-
-interface CachedPeer {
-  nodeId: string;
-  signingPubKey?: string;
-}
-
-interface RoutingTableLike {
-  removeRoutesVia(nodeId: string): void;
-  routes: Map<string, Map<string, unknown>>;
-  removeRoute(destinationNodeId: string, nextHopNodeId: string): void;
 }
 
 interface RotationMessage {

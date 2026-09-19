@@ -1,7 +1,13 @@
 import config from './config.js';
 import logger from './logger.js';
 import metrics from './metrics.js';
-import type { ForwarderStats } from './types.js';
+import type {
+  ForwarderStats,
+  GMPNodeLike,
+  GMPLinkLike,
+  ReputationManagerLike,
+  RoutingTableLike,
+} from './types.js';
 
 function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
   if (typeof nodeId === 'string') return nodeId;
@@ -9,34 +15,6 @@ function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
     return Buffer.from(nodeId as Buffer | Uint8Array).toString('hex');
   }
   return String(nodeId);
-}
-
-interface GMPNodeLike {
-  identity: { nodeIdHex: string } | null;
-  reputation?: ReputationManagerLike;
-  routingTable: RoutingTableLike;
-  connections: Map<string, GMPLinkLike>;
-  getLinkByNodeId(nodeIdHex: string): GMPLinkLike | undefined;
-  emit(event: string, ...args: unknown[]): boolean;
-}
-
-interface ReputationManagerLike {
-  isBanned(nodeIdHex: string): boolean;
-}
-
-interface RoutingTableLike {
-  getBestRoute(destinationNodeId: string): RouteInfo | null;
-}
-
-interface RouteInfo {
-  nextHopNodeId: string;
-}
-
-interface GMPLinkLike {
-  state: string;
-  remoteNodeId: string | null;
-  _penalizeBanned(reason: string): void;
-  sendRoutedDATA(finalDest: Uint8Array, hopCount: number, payload: Uint8Array, sourceNodeId: Uint8Array): void;
 }
 
 export class Forwarder {
@@ -150,7 +128,9 @@ export class Forwarder {
     return { local: false };
   }
 
-  checkRateLimit(sourceNodeId: string | null): boolean {
+  // Takes the link's raw NodeID as well as a hex string: GMPLink.remoteNodeId
+  // is a Uint8Array, and toHex below normalizes either form.
+  checkRateLimit(sourceNodeId: string | Uint8Array | null): boolean {
     if (!sourceNodeId) return true;
     const sourceHex = toHex(sourceNodeId);
     const now = Date.now();

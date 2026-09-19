@@ -1,9 +1,5 @@
-import type { NatType, PublicPeerEntry } from './types.js';
-// The node/link shapes come from public-peer-list, which owns querySinglePeer.
-// This file used to declare its own narrower copies; they omitted
-// sendBindingRequest(), so the two definitions were structurally incompatible
-// and every call below failed to type-check.
-import { querySinglePeer, type GMPNodeLike } from './public-peer-list.js';
+import type { NatType, PublicPeerEntry, GMPNodeLike } from './types.js';
+import { querySinglePeer } from './public-peer-list.js';
 import logger from './logger.js';
 
 interface QueryResult {

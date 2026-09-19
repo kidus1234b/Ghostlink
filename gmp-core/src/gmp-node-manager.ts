@@ -4,7 +4,12 @@ import config from './config.js';
 import metrics from './metrics.js';
 import logger from './logger.js';
 import { ghostAddressFromNodeId, normalizeGhostAddress, findNodeIdsForAddress } from './ghost-address.js';
-import type { GMPConfig, GMPNodeManagerOptions, GMPNodeConstructorOptions } from './types.js';
+import type {
+  GMPConfig,
+  GMPNodeManagerOptions,
+  GMPNodeConstructorOptions,
+  GMPLinkLike,
+} from './types.js';
 import type { BootstrapDiagnosis } from './bootstrap.js';
 import { loadPublicPeers, queryPublicAddress } from './public-peer-list.js';
 
@@ -110,7 +115,7 @@ export class GMPNodeManager extends EventEmitter {
 
     this._node = new GMPNode(nodeOptions);
 
-    this._node.on('connection', ({ connId, link, peerNodeId }: { connId: string; link: GMPLinkInstance; peerNodeId: Uint8Array }) => {
+    this._node.on('connection', ({ connId, link, peerNodeId }: { connId: string; link: GMPLinkLike; peerNodeId: Uint8Array }) => {
       const nodeIdHex = toHex(peerNodeId);
       this.connToNodeId.set(connId, nodeIdHex);
 
@@ -223,7 +228,7 @@ export class GMPNodeManager extends EventEmitter {
     }
   }
 
-  private async _getOrConnect(destinationNodeId: string | Uint8Array): Promise<GMPLinkInstance> {
+  private async _getOrConnect(destinationNodeId: string | Uint8Array): Promise<GMPLinkLike> {
     const destHex = toHex(destinationNodeId);
 
     if (!this._node) throw new Error('GMPNodeManager not started');
@@ -390,10 +395,3 @@ export class GMPNodeManager extends EventEmitter {
   }
 }
 
-interface GMPLinkInstance {
-  state: string;
-  isVirtual: boolean;
-  remoteNodeId: Uint8Array | null;
-  socket: { remoteAddress?: string; remotePort?: number } | null;
-  send(payload: string): Promise<void>;
-}

@@ -1,27 +1,16 @@
 import fs from 'fs';
 import path from 'path';
-import type { PublicPeerEntry, BindingResponse } from './types.js';
+import type {
+  PublicPeerEntry,
+  BindingResponse,
+  GMPNodeLike,
+  GMPLinkLike,
+  DialResult,
+} from './types.js';
 import logger from './logger.js';
 import { PUBLIC_PEERS_FILE } from './paths.js';
 
 const DEFAULT_PEERS_FILE = PUBLIC_PEERS_FILE;
-
-export interface GMPNodeLike {
-  dial(address: string, port: number, options?: { tls?: boolean }): Promise<DialResult>;
-}
-
-export interface DialResult {
-  connId: string;
-  link: GMPLinkLike;
-  peerNodeId: string;
-}
-
-export interface GMPLinkLike {
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  once(event: string, handler: (...args: unknown[]) => void): this;
-  destroy(error?: Error): void;
-  sendBindingRequest(): void;
-}
 
 export function loadPublicPeers(filePath: string = DEFAULT_PEERS_FILE): PublicPeerEntry[] {
   try {

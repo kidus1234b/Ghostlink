@@ -2,7 +2,13 @@ import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
 import metrics from './metrics.js';
-import type { HealthReport, NodeHealthStatus } from './types.js';
+import type {
+  HealthReport,
+  NodeHealthStatus,
+  GMPNodeLike,
+  GMPLinkLike,
+  BootstrapLike,
+} from './types.js';
 
 export class NetworkHealthMonitor extends EventEmitter {
   private node: GMPNodeLike;
@@ -156,21 +162,3 @@ interface HealthMetrics {
   bootstrapAttempts: number;
 }
 
-interface GMPNodeLike {
-  connections: Map<string, GMPLinkLike>;
-  bootstrap?: BootstrapLike;
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  off(event: string, handler: (...args: unknown[]) => void): this;
-  emit(event: string, ...args: unknown[]): boolean;
-}
-
-interface GMPLinkLike {
-  state: string;
-  isVirtual?: boolean;
-}
-
-interface BootstrapLike {
-  minPeers: number;
-  isBootstrapping: boolean;
-  start(): Promise<void>;
-}

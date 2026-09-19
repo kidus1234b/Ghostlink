@@ -1,5 +1,11 @@
 import { EventEmitter } from 'events';
-import type { TopologyAnnouncePayload, RouteEntry } from './types.js';
+import type {
+  TopologyAnnouncePayload,
+  RouteEntry,
+  GMPNodeLike,
+  GMPLinkLike,
+  RoutingTableLike,
+} from './types.js';
 import config from './config.js';
 import metrics from './metrics.js';
 
@@ -46,26 +52,6 @@ interface AnnouncementEntry extends TopologyAnnouncePayload {
   timestamp: number;
   withdrawn: boolean;
   ttl: number;
-}
-
-interface GMPNodeLike {
-  identity: { nodeIdHex: string } | null;
-  connections: Map<string, GMPLinkLike>;
-  getLinkByNodeId(nodeIdHex: string): GMPLinkLike | undefined;
-  routingTable: RoutingTableLike;
-}
-
-interface GMPLinkLike {
-  state: string;
-  remoteNodeId: string | null;
-  isVirtual?: boolean;
-  sendTopologyAnnounce(announce: AnnouncementEntry): void;
-}
-
-interface RoutingTableLike {
-  getAllRoutes(): RouteEntry[];
-  addRoute(destinationNodeId: string, nextHopNodeId: string, hopCount: number): void;
-  removeRoute(destinationNodeId: string, nextHopNodeId: string): void;
 }
 
 export class TopologyManager extends EventEmitter {

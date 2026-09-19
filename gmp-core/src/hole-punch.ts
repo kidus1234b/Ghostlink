@@ -1,5 +1,10 @@
 import net from 'net';
 import logger from './logger.js';
+import type {
+  GMPNodeLike,
+  GMPLinkLike,
+  DialResult,
+} from './types.js';
 
 interface HolePunchParams {
   node: GMPNodeLike;
@@ -9,25 +14,6 @@ interface HolePunchParams {
   attemptTimestamp: number;
   retryIntervalMs?: number;
   timeoutMs?: number;
-}
-
-interface DialResult {
-  connId: string;
-  link: GMPLinkLike;
-  peerNodeId: string;
-}
-
-interface GMPNodeLike {
-  dial(address: string, port: number): Promise<DialResult>;
-  dialWithSocket(socket: net.Socket): Promise<DialResult>;
-}
-
-interface GMPLinkLike {
-  dial(address: string, port: number): Promise<DialResult>;
-  dialWithSocket(socket: net.Socket): Promise<DialResult>;
-  on(event: string, handler: (...args: unknown[]) => void): this;
-  once(event: string, handler: (...args: unknown[]) => void): this;
-  destroy(error?: Error): void;
 }
 
 export async function holePunchConnect({

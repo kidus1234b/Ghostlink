@@ -1,3 +1,5 @@
+import type net from 'net';
+
 // ── Message Types ──────────────────────────────────
 
 export const enum MessageType {
@@ -151,6 +153,8 @@ export interface CachedPeer {
   connectionCount: number;
   lastFailedAt: number | null;
   failureCount: number;
+  /** Recorded on first contact; KeyRotationManager verifies rotations against it. */
+  signingPubKey?: string;
 }
 
 export interface PublicPeerEntry {
@@ -286,6 +290,116 @@ export interface GMPNodeConstructorOptions {
   peerCachePruneFailureThreshold?: number;
   peerCachePruneAgeDays?: number;
   seedPhrase?: string;
+}
+
+// ── Structural views of the link.js runtime objects ──
+
+/**
+ * GMPNode and GMPLink live in link.js and are untyped, so every protocol
+ * manager that takes one in its constructor needs a structural contract for
+ * it. Each manager used to declare that contract privately, holding just the
+ * members it happened to touch — eleven private copies, and eleven chances to
+ * drift apart. They had drifted: six copies typed `remoteNodeId` as `string`
+ * when link.js assigns a Uint8Array, hole-punch's link copy carried the
+ * *node's* dial methods, and nat-detector and public-peer-list broke outright
+ * when one side of that pair changed.
+ *
+ * These are the canonical shapes, kept in step with link.js. A manager that
+ * wants a narrower local contract should `Pick<>` from them rather than
+ * restate them.
+ */
+export interface GMPLinkLike {
+  state: string;
+  isVirtual: boolean;
+  /** link.js assigns the raw 64-byte NodeID here, never its hex form. */
+  remoteNodeId: Uint8Array | null;
+  socket: { remoteAddress?: string; remotePort?: number } | null;
+  send(data: string): Promise<void>;
+  destroy(error?: Error): void;
+  on(event: string, handler: (...args: unknown[]) => void): this;
+  once(event: string, handler: (...args: unknown[]) => void): this;
+  sendBindingRequest(): void;
+  sendRoutedDATA(
+    finalDest: string | Uint8Array,
+    hopCount: number,
+    payload: Uint8Array,
+    sourceNodeId: Uint8Array
+  ): void;
+  sendTopologyAnnounce(announce: TopologyAnnouncePayload): void;
+  sendPeerRequest(maxPeers: number): void;
+  sendPeerResponse(peers: PeerInfo[]): void;
+  sendKeyRotation(cert: KeyRotationPayload, sequenceNumber: number, ttl: number): void;
+  _penalizeSuspicious(reason: string): void;
+  _penalizeUntrusted(reason: string): void;
+  _penalizeBanned(reason: string): void;
+}
+
+/** @see GMPLinkLike for why these live here rather than in each manager. */
+export interface GMPNodeLike {
+  identity: NodeIdentity | null;
+  /** Every link, keyed by connection id, handshaking ones included. */
+  links: Map<string, GMPLinkLike>;
+  /** The subset that completed a handshake. */
+  connections: Map<string, GMPLinkLike>;
+  routingTable: RoutingTableLike;
+  peerCache: PeerCacheLike;
+  bootstrap?: BootstrapLike;
+  reputation?: ReputationManagerLike;
+  getLinkByNodeId(nodeId: string | Uint8Array): GMPLinkLike | null;
+  dial(address: string, port?: number, options?: { tls?: boolean }): Promise<DialResult>;
+  dialWithSocket(socket: net.Socket): Promise<DialResult>;
+  on(event: string, handler: (...args: unknown[]) => void): this;
+  off(event: string, handler: (...args: unknown[]) => void): this;
+  once(event: string, handler: (...args: unknown[]) => void): this;
+  emit(event: string, ...args: unknown[]): boolean;
+}
+
+/** What GMPNode.dial / dialWithSocket resolve to. */
+export interface DialResult {
+  connId: string;
+  link: GMPLinkLike;
+  peerNodeId: string;
+}
+
+export interface RouteLookup {
+  nextHopNodeId: string;
+  hopCount: number;
+}
+
+/** The RoutingTable surface reachable through GMPNodeLike.routingTable. */
+export interface RoutingTableLike {
+  routes: Map<string, Map<string, unknown>>;
+  addRoute(
+    dest: string | Buffer | Uint8Array,
+    nextHop: string | Buffer | Uint8Array,
+    hopCount: number
+  ): void;
+  getBestRoute(dest: string | Buffer | Uint8Array): RouteLookup | null;
+  getAllRoutes(): RouteEntry[];
+  removeRoute(dest: string | Buffer | Uint8Array, nextHop: string | Buffer | Uint8Array): void;
+  removeRoutesVia(deadNodeId: string | Buffer | Uint8Array): void;
+}
+
+/** The PeerCache surface reachable through GMPNodeLike.peerCache. */
+export interface PeerCacheLike {
+  cache: CachedPeer[];
+  getCandidates(): CachedPeer[];
+  getDirectPeers24h(): CachedPeer[];
+  recordFailure(nodeId: string): void;
+  replaceNodeId(oldNodeId: string, newNodeId: string, newPublicKey: string): boolean;
+}
+
+/** The ReputationManager surface reachable through GMPNodeLike.reputation. */
+export interface ReputationManagerLike {
+  isBanned(nodeIdHex: string, ip?: string | null): boolean;
+}
+
+/** The BootstrapManager surface reachable through GMPNodeLike.bootstrap. */
+export interface BootstrapLike {
+  minPeers: number;
+  isBootstrapping: boolean;
+  start(): Promise<void>;
+  attemptCandidates(): void;
 }
 
 // ── Events ──────────────────────────────────────────

@@ -1,6 +1,14 @@
 import { EventEmitter } from 'events';
 import config from './config.js';
-import type { PeerInfo, PeerRequestPayload, PeerResponsePayload } from './types.js';
+import type {
+  PeerInfo,
+  PeerRequestPayload,
+  PeerResponsePayload,
+  GMPNodeLike,
+  GMPLinkLike,
+  BootstrapLike,
+  PeerCacheLike,
+} from './types.js';
 
 function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
   if (typeof nodeId === 'string') return nodeId;
@@ -8,41 +16,6 @@ function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
     return Buffer.from(nodeId as Buffer | Uint8Array).toString('hex');
   }
   return String(nodeId);
-}
-
-interface GMPNodeLike {
-  identity: { nodeIdHex: string } | null;
-  peerCache: PeerCacheLike;
-  bootstrap?: BootstrapLike;
-  on(event: 'connection', handler: (info: { link: GMPLinkLike; peerNodeId: string }) => void): this;
-  off(event: 'connection', handler: (info: { link: GMPLinkLike; peerNodeId: string }) => void): this;
-  getLinkByNodeId(nodeIdHex: string): GMPLinkLike | undefined;
-}
-
-interface BootstrapLike {
-  isBootstrapping: boolean;
-  attemptCandidates(): void;
-  minPeers: number;
-}
-
-interface PeerCacheLike {
-  getDirectPeers24h(): CachedPeerInfo[] | null;
-}
-
-interface CachedPeerInfo {
-  nodeId: string;
-  address: string;
-  port: number;
-  lastSeen: number;
-}
-
-interface GMPLinkLike {
-  remoteNodeId: string | null;
-  state: string;
-  /** Set by GMPLink for relayed links; peer exchange skips those. */
-  isVirtual?: boolean;
-  sendPeerRequest(maxPeers: number): void;
-  sendPeerResponse(peers: PeerInfo[]): void;
 }
 
 interface PeerExchangeEvents {
