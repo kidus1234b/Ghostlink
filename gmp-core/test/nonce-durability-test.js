@@ -11,6 +11,7 @@
 
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -45,10 +46,42 @@ function assertEqual(actual, expected, message) {
 
 const SEED = 'durability test seed phrase';
 const statePath = path.join(__dirname, 'data', 'temp-durability-nonce.json');
-const tmpPath = `${statePath}.tmp`;
+// Claims now live in their own append-only log; the state JSON holds counters.
+const claimsPath = `${statePath}.claims.log`;
+const lockPath = `${claimsPath}.lock`;
+// Temp names carry the pid and random bytes so two writers cannot collide on
+// one file; a test can no longer block a write by planting `<path>.tmp`.
+const tempFiles = () => {
+  const dir = path.dirname(statePath);
+  const prefix = `${path.basename(claimsPath)}.`;
+  try {
+    return fs.readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.tmp'));
+  } catch { return []; }
+};
+
+/**
+ * Make every write fail, without touching the state file.
+ *
+ * Holds the store's lock as a live process would. Acquisition then times out,
+ * _saveNow() reports failure, and the caller must fail closed — which also
+ * exercises the lock-timeout path directly.
+ */
+function blockWrites() {
+  fs.mkdirSync(path.dirname(claimsPath), { recursive: true });
+  fs.writeFileSync(lockPath, JSON.stringify({
+    pid: process.pid,            // alive, so the lock is never judged stale
+    hostname: os.hostname(),
+    acquiredAt: Date.now(),
+  }));
+}
+const unblockWrites = () => { try { fs.rmSync(lockPath, { force: true }); } catch { /* gone */ } };
+
+// A short lock timeout keeps the blocked-write tests quick.
+const IMPATIENT = { lockTimeoutMs: 150 };
 
 function clean() {
-  for (const p of [statePath, tmpPath]) {
+  const dir = path.dirname(statePath);
+  for (const p of [statePath, claimsPath, lockPath, ...tempFiles().map(f => path.join(dir, f))]) {
     try {
       fs.rmSync(p, { recursive: true, force: true });
     } catch { /* not there */ }
@@ -71,7 +104,7 @@ function testClaimIsDurableWithoutClose() {
   const claim = store1.claimSessionKey(peer, 'fingerprint-aaaa');
   assertEqual(claim.valid, true, 'First claim succeeds');
 
-  assert(fs.existsSync(statePath), 'State file exists the moment the claim returns');
+  assert(fs.existsSync(claimsPath), 'The claim log exists the moment the claim returns');
 
   // Deliberately no store1.close(): stand in for SIGKILL / OOM / power loss.
   const store2 = new NonceStore({ stateFile: statePath, seedPhrase: SEED });
@@ -88,18 +121,16 @@ function testClaimIsDurableWithoutClose() {
 
 /**
  * If the write cannot happen, the claim must be refused rather than reported as
- * successful. The failure is induced by planting a *directory* where the atomic
- * writer needs to create its temp file, so openSync fails with EISDIR — no
- * dependence on file permissions, which root would ignore.
+ * successful. The failure is induced by holding the store's lock, so the write
+ * times out — no dependence on file permissions, which root would ignore.
  */
 function testPersistenceFailureRejectsTheClaim() {
   console.log('\n=== Test 2: A claim that cannot be persisted is refused ===');
   clean();
 
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.mkdirSync(tmpPath, { recursive: true });
+  blockWrites();
 
-  const store = new NonceStore({ stateFile: statePath, seedPhrase: SEED });
+  const store = new NonceStore({ stateFile: statePath, seedPhrase: SEED, ...IMPATIENT });
   const claim = store.claimSessionKey(peer, 'fingerprint-bbbb');
 
   assertEqual(claim.valid, false, 'Claim is REJECTED when the state cannot be written');
@@ -107,8 +138,9 @@ function testPersistenceFailureRejectsTheClaim() {
     (claim.reason || '').includes('could not be persisted'),
     'The refusal says the claim could not be persisted'
   );
-  assert(!fs.existsSync(statePath), 'No state file was produced');
+  assert(!fs.existsSync(claimsPath), 'No claim record was produced');
 
+  unblockWrites();
   clean();
 }
 
@@ -126,31 +158,30 @@ function testPartialWriteLeavesOriginalIntact() {
   assertEqual(store1.claimSessionKey(peer, 'fingerprint-cccc').valid, true, 'Baseline claim succeeds');
   store1.close();
 
-  const goodBytes = fs.readFileSync(statePath, 'utf8');
+  const goodBytes = fs.readFileSync(claimsPath);
 
-  // (a) A crashed write leaves a truncated temp file behind. It must be inert:
-  //     nothing renames it into place, so the live file is untouched.
-  fs.writeFileSync(tmpPath, goodBytes.slice(0, Math.floor(goodBytes.length / 3)), 'utf8');
-  assertEqual(
-    fs.readFileSync(statePath, 'utf8'),
-    goodBytes,
-    'A stale truncated temp file does not touch the live state file'
+  // (a) A crashed write leaves a temp file behind. It must be inert: nothing
+  //     ever renames a temp file it did not itself create.
+  const orphan = `${claimsPath}.999999.abcdef123456.tmp`;
+  fs.writeFileSync(orphan, goodBytes.subarray(0, Math.floor(goodBytes.length / 3)));
+  assert(
+    fs.readFileSync(claimsPath).equals(goodBytes),
+    'A stale truncated temp file does not touch the live claim log'
   );
-  fs.rmSync(tmpPath, { force: true });
+  fs.rmSync(orphan, { force: true });
 
   // (b) The sharper case: a write that FAILS while state already exists. The
   //     live file must survive it whole — a writer that opens the target with
   //     O_TRUNC would have emptied it by this point.
-  fs.mkdirSync(tmpPath, { recursive: true });
-  const store2 = new NonceStore({ stateFile: statePath, seedPhrase: SEED });
+  blockWrites();
+  const store2 = new NonceStore({ stateFile: statePath, seedPhrase: SEED, ...IMPATIENT });
   const refused = store2.claimSessionKey(peer, 'fingerprint-dddd');
   assertEqual(refused.valid, false, 'The claim is refused while the write is failing');
-  assertEqual(
-    fs.readFileSync(statePath, 'utf8'),
-    goodBytes,
-    'The pre-existing state file is byte-identical after the failed write'
+  assert(
+    fs.readFileSync(claimsPath).equals(goodBytes),
+    'The pre-existing claim log is byte-identical after the failed write'
   );
-  fs.rmSync(tmpPath, { recursive: true, force: true });
+  unblockWrites();
 
   // (c) And what survived is real state, not just intact bytes.
   const store3 = new NonceStore({ stateFile: statePath, seedPhrase: SEED });
@@ -166,7 +197,7 @@ function testPartialWriteLeavesOriginalIntact() {
   );
   store3.close();
 
-  assert(!fs.existsSync(tmpPath), 'No temp file is left behind after a successful write');
+  assertEqual(tempFiles().length, 0, 'No temp file is left behind after a successful write');
 
   clean();
 }
@@ -189,7 +220,7 @@ function testUpdateCountersStaysBatched() {
 
   assert(
     !fs.existsSync(statePath),
-    '50 counter updates wrote nothing to disk (still inside the 1s batching window)'
+    '50 counter updates wrote nothing to the state file (still inside the 1s batching window)'
   );
 
   const started = process.hrtime.bigint();
@@ -347,11 +378,10 @@ function testMergePersistFailureFailsClosed() {
   console.log('\n=== Test 10: A merge that cannot be persisted fails closed ===');
   clean();
 
-  const store = new NonceStore({ stateFile: statePath });
+  const store = new NonceStore({ stateFile: statePath, ...IMPATIENT });
   assertEqual(store.claimSessionKey(peer, 'fp-fail').valid, true, 'Fingerprint claimed with no key');
 
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.mkdirSync(tmpPath, { recursive: true });
+  blockWrites();
 
   assertEqual(
     store.setEncryptionKey(keyFor(SEED)),
@@ -366,7 +396,7 @@ function testMergePersistFailureFailsClosed() {
     'The claim is still honoured in memory despite the failed write'
   );
 
-  fs.rmSync(tmpPath, { recursive: true, force: true });
+  unblockWrites();
   clean();
 }
 

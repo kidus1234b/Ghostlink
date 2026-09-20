@@ -59,6 +59,16 @@ export const NONCE_STATE_FILE = process.env.GMP_NONCE_STATE_PATH
   ? path.resolve(process.env.GMP_NONCE_STATE_PATH)
   : dataPath('nonce-state.json');
 
+/**
+ * The append-only session-key claim log. Separate from the nonce state because
+ * claims are permanent and counters are not: counters prune and stay bounded,
+ * so their file can be rewritten wholesale, while claims only ever accumulate
+ * and must never pay an O(n) rewrite per handshake.
+ */
+export const NONCE_CLAIMS_FILE = process.env.GMP_NONCE_CLAIMS_PATH
+  ? path.resolve(process.env.GMP_NONCE_CLAIMS_PATH)
+  : dataPath('nonce-claims.log');
+
 export const CONFIG_FILE = process.env.GMP_CONFIG_PATH
   ? path.resolve(process.env.GMP_CONFIG_PATH)
   : dataPath('config.json');

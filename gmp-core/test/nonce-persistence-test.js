@@ -190,14 +190,23 @@ async function testPruningDefault90Days() {
   const entryAfter31Days = store2.getEntry(fakePeerId, fakeSessionKey);
   assert(entryAfter31Days !== null, 'Entries at 31 days are NOT pruned under 90-day default');
 
-  // Now simulate 91 days
-  const entryInStore2 = store2.state.entries[Object.keys(store2.state.entries)[0]];
-  const veryOldTimestamp = Date.now() - (91 * 24 * 60 * 60 * 1000); // 91 days old
-  entryInStore2.lastActivity = veryOldTimestamp;
-  entryInStore2.firstSeen = veryOldTimestamp;
-  store2._dirty = true;
-
   store2.close();
+
+  // Now simulate 91 days. This needs a fresh file: _saveNow() re-reads and
+  // merges before writing, and the merge takes the LATER lastActivity, so an
+  // entry cannot be aged backwards once a newer timestamp is on disk. That is
+  // the intended behaviour — a high-water mark, and the activity stamp that
+  // guards it, only ever move forward — so the old record has to carry its age
+  // from the moment it is first written.
+  await cleanup();
+
+  const aged = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
+  aged.checkAndUpdate(fakePeerId, fakeSessionKey, 1, 1);
+  const agedEntry = aged.state.entries[Object.keys(aged.state.entries)[0]];
+  const veryOldTimestamp = Date.now() - (91 * 24 * 60 * 60 * 1000); // 91 days old
+  agedEntry.lastActivity = veryOldTimestamp;
+  agedEntry.firstSeen = veryOldTimestamp;
+  aged.close();
 
   const store3 = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
   await store3.load();
@@ -298,12 +307,33 @@ async function testMarkInvariants() {
   const sessionKey = new Uint8Array(32);
   sessionKey.fill(0xB2);
 
-  // A state file written before the directional marks existed — and anything
-  // checkNonce creates today — carries highWaterMark alone.
+  // A state file written before the directional marks existed carries
+  // highWaterMark alone. checkNonce no longer produces such an entry — it now
+  // carries the directional marks up with the aggregate, so that a later
+  // checkAndUpdate cannot read a stale `sendHighWater ?? highWaterMark` and
+  // re-accept a nonce checkNonce had already taken — so the legacy shape is
+  // constructed directly here, which is what a real pre-upgrade file holds.
   const legacy = new NonceStore({ stateFile: TEST_STATE_FILE, seedPhrase: TEST_SEED });
-  legacy.checkNonce(peerId, 'legacy-fingerprint', 100);
+  legacy.state.entries[legacy._getKey(peerId, 'legacy-fingerprint')] = {
+    highWaterMark: 100,
+    lastActivity: Date.now(),
+  };
   const migrated = legacy.getEntry(peerId, 'legacy-fingerprint');
-  assertEqual(migrated.sendHighWater, undefined, 'Legacy entry has no directional send mark');
+  assertEqual(migrated.sendHighWater, undefined, 'A legacy entry has no directional send mark');
+
+  // And the new behaviour: checkNonce keeps both marks in step.
+  const stepped = new NonceStore({ stateFile: TEST_STATE_FILE + '.stepped', seedPhrase: TEST_SEED });
+  stepped.checkNonce(peerId, 'stepped-fingerprint', 100);
+  const steppedEntry = stepped.getEntry(peerId, 'stepped-fingerprint');
+  assertEqual(steppedEntry.sendHighWater, 100, 'checkNonce raises the send mark with the aggregate');
+  assertEqual(steppedEntry.recvHighWater, 100, 'checkNonce raises the recv mark with the aggregate');
+  assertEqual(
+    stepped.checkAndUpdate(peerId, 'stepped-fingerprint', 100, 100).allowed,
+    false,
+    'checkAndUpdate cannot re-accept a nonce checkNonce already took'
+  );
+  stepped.close();
+  fs.rmSync(TEST_STATE_FILE + '.stepped', { force: true });
 
   const replay = legacy.checkAndUpdate(peerId, 'legacy-fingerprint', 1, 1);
   assertEqual(replay.allowed, false, 'Reconnect at 1/1 rejected against a legacy mark of 100');

@@ -5,7 +5,8 @@ import config from './config.js';
 import { StateAuthenticationError } from './types.js';
 import logger from './logger.js';
 import { PEER_CACHE_FILE } from './paths.js';
-import { writeFileAtomicSync } from './atomic-file.js';
+import { writeFileAtomicSync, cleanStaleTempFiles } from './atomic-file.js';
+import { withFileLock } from './file-lock.js';
 import type { CachedPeer } from './types.js';
 
 const DEFAULT_CACHE_FILE = PEER_CACHE_FILE;
@@ -35,6 +36,9 @@ export class PeerCache {
       }
     }
 
+    // Unique temp names mean a process killed mid-write leaves its file behind.
+    cleanStaleTempFiles(this.filePath);
+
     this.load();
     this.prune();
 
@@ -47,9 +51,23 @@ export class PeerCache {
     }
   }
 
+  /**
+   * Attach the key the cache file is sealed with, and reconcile what is held
+   * in memory with what is on disk.
+   *
+   * link.js supplies the key only once the identity has been derived, so a
+   * cache can already have recorded peers by the time this runs. load() used to
+   * assign over this.cache, which dropped every one of them — the same
+   * replace-on-load shape as the nonce store, with a milder consequence: a
+   * forgotten peer costs a colder bootstrap rather than replay protection.
+   */
   setEncryptionKey(key: Buffer | null): void {
     this.encryptionKey = key;
+    const hadEntries = this.cache.length > 0;
     this.load();
+    if (hadEntries && this.encryptionKey) {
+      this.save();
+    }
   }
 
   /**
@@ -77,55 +95,115 @@ export class PeerCache {
     }
   }
 
-  load(): void {
-    if (!this.encryptionKey) {
-      this.cache = [];
-      return;
-    }
+  /**
+   * Read the persisted cache, or null if there is nothing usable to read.
+   *
+   * Separated from load() so that "what is on disk" and "what becomes the live
+   * cache" stay distinct decisions — the second is a merge.
+   */
+  private _readPersistedCache(): CachedPeer[] | null {
+    if (!this.encryptionKey) return null;
     try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf8');
-        const parsed = JSON.parse(raw) as { iv: string; ciphertext: string; version?: number };
-        if (parsed && parsed.iv && parsed.ciphertext && parsed.version === 1) {
-          const iv = Buffer.from(parsed.iv, 'hex');
-          const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
-          const authTag = encryptedBlob.slice(0, 16);
-          const ciphertext = encryptedBlob.slice(16);
-          // Separate catch so an authentication failure is distinguishable from
-          // a missing file or a syntax error — see _onUnauthenticatedState.
-          let decrypted: Buffer;
-          try {
-            const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-            decipher.setAuthTag(authTag);
-            decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-          } catch (err) {
-            this._onUnauthenticatedState(err as Error);
-            this.cache = [];
-            return;
-          }
+      if (!fs.existsSync(this.filePath)) return null;
 
-          const parsedCache = JSON.parse(decrypted.toString('utf8'));
-          if (Array.isArray(parsedCache)) {
-            this.cache = parsedCache;
-          } else {
-            logger.warn('peer-cache', 'format-mismatch', 'Cache file format mismatch or plaintext, starting fresh.');
-            this.cache = [];
-          }
-        } else {
-          logger.warn('peer-cache', 'format-mismatch', 'Cache file format mismatch or plaintext, starting fresh.');
-          this.cache = [];
-        }
-      } else {
-        this.cache = [];
+      const raw = fs.readFileSync(this.filePath, 'utf8');
+      const parsed = JSON.parse(raw) as { iv: string; ciphertext: string; version?: number };
+      if (!parsed || !parsed.iv || !parsed.ciphertext || parsed.version !== 1) {
+        logger.warn('peer-cache', 'format-mismatch', 'Cache file format mismatch or plaintext, starting fresh.');
+        return null;
       }
+
+      const iv = Buffer.from(parsed.iv, 'hex');
+      const encryptedBlob = Buffer.from(parsed.ciphertext, 'hex');
+      const authTag = encryptedBlob.slice(0, 16);
+      const ciphertext = encryptedBlob.slice(16);
+
+      // Separate catch so an authentication failure is distinguishable from a
+      // missing file or a syntax error — see _onUnauthenticatedState.
+      let decrypted: Buffer;
+      try {
+        const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+        decipher.setAuthTag(authTag);
+        decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      } catch (err) {
+        this._onUnauthenticatedState(err as Error);
+        return null;
+      }
+
+      const parsedCache = JSON.parse(decrypted.toString('utf8')) as unknown;
+      if (Array.isArray(parsedCache)) return parsedCache as CachedPeer[];
+
+      logger.warn('peer-cache', 'format-mismatch', 'Cache file format mismatch or plaintext, starting fresh.');
+      return null;
     } catch (err) {
-      // See the note in NonceStore.load(): a strict-mode refusal has to pass
-      // straight through this catch, not be turned into a fresh start.
+      // See the note in NonceStore._readPersistedState(): a strict-mode refusal
+      // has to pass straight through this catch, not be turned into a fresh
+      // start.
       if (err instanceof StateAuthenticationError) throw err;
       const error = err as Error;
       logger.warn('peer-cache', 'load-failed', `Failed to load cache, starting fresh: ${error.message}`, { err: error.message });
-      this.cache = [];
+      return null;
     }
+  }
+
+  /**
+   * Combine what is known about one peer from memory and from disk.
+   *
+   * Each field takes the more conservative of the two readings: the most recent
+   * sighting, the larger success and failure tallies, and the earliest first
+   * contact. Keeping the higher failureCount matters most — discarding failures
+   * would hand a peer that has been failing steadily a clean record every time
+   * the cache reloaded, and it would never age out of the candidate list.
+   */
+  private _mergePeer(mine: CachedPeer, theirs: CachedPeer): CachedPeer {
+    const newer = mine.lastSeen >= theirs.lastSeen ? mine : theirs;
+    const failedAt = [mine.lastFailedAt, theirs.lastFailedAt].filter(
+      (v): v is number => typeof v === 'number',
+    );
+
+    return {
+      ...newer,
+      nodeId: mine.nodeId,
+      lastSeen: Math.max(mine.lastSeen, theirs.lastSeen),
+      firstSeen: Math.min(mine.firstSeen, theirs.firstSeen),
+      connectionCount: Math.max(mine.connectionCount, theirs.connectionCount),
+      failureCount: Math.max(mine.failureCount, theirs.failureCount),
+      lastFailedAt: failedAt.length ? Math.max(...failedAt) : null,
+      // Address and port come from `newer` via the spread: the most recent
+      // sighting is the one worth dialling.
+      signingPubKey: newer.signingPubKey ?? mine.signingPubKey ?? theirs.signingPubKey,
+    };
+  }
+
+  /**
+   * Fold the persisted cache into the live one: the union of both, keyed by
+   * NodeID, never a replacement.
+   */
+  private _mergeCache(loaded: CachedPeer[] | null): void {
+    if (!loaded) return;
+
+    const byId = new Map<string, CachedPeer>();
+    for (const peer of loaded) {
+      if (peer && typeof peer.nodeId === 'string') byId.set(peer.nodeId, peer);
+    }
+    for (const mine of this.cache) {
+      if (!mine || typeof mine.nodeId !== 'string') continue;
+      const theirs = byId.get(mine.nodeId);
+      byId.set(mine.nodeId, theirs ? this._mergePeer(mine, theirs) : mine);
+    }
+    this.cache = [...byId.values()];
+  }
+
+  /**
+   * Bring the persisted cache in, merging rather than replacing.
+   *
+   * Reached from the constructor, from setEncryptionKey(), and from any
+   * external caller. Assigning over this.cache at any of those points discards
+   * peers this process has already learned — including, on the no-key path,
+   * every peer recorded before the identity was derived.
+   */
+  load(): void {
+    this._mergeCache(this._readPersistedCache());
     if (!Array.isArray(this.cache)) {
       this.cache = [];
     }
@@ -136,25 +214,34 @@ export class PeerCache {
       return;
     }
     try {
-      const plaintextJson = JSON.stringify(this.cache);
-      const iv = crypto.randomBytes(12);
-      const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-      const ciphertext = Buffer.concat([cipher.update(plaintextJson, 'utf8'), cipher.final()]);
-      const authTag = cipher.getAuthTag();
-      const encryptedBlob = Buffer.concat([authTag, ciphertext]);
-      const encryptedObj = {
-        iv: iv.toString('hex'),
-        ciphertext: encryptedBlob.toString('hex'),
-        version: 1
-      };
-      // Same reasoning as the nonce store: truncating the live cache and then
-      // failing leaves it empty, and an empty peer cache means a cold
-      // re-bootstrap for every peer it had learned.
-      writeFileAtomicSync(this.filePath, JSON.stringify(encryptedObj, null, 2));
+      // The same unsynchronised read-modify-write the nonce store had: this
+      // serialises the in-memory cache over whatever is on disk, so two nodes
+      // sharing a data directory each erase the peers the other learned. The
+      // consequence is milder than losing replay state — a colder bootstrap,
+      // not nonce reuse — but a known race left in place is how the next audit
+      // finds it. Re-read inside the lock and merge, exactly as load() does.
+      withFileLock(this.filePath, () => {
+        this._mergeCache(this._readPersistedCache());
+        writeFileAtomicSync(this.filePath, this._serialize());
+      });
     } catch (err) {
       const error = err as Error;
       logger.error('peer-cache', 'save-failed', `Failed to save cache: ${error.message}`, { err: error.message });
     }
+  }
+
+  /** The encrypted on-disk envelope for the current cache. */
+  private _serialize(): string {
+    const plaintextJson = JSON.stringify(this.cache);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey as Buffer, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintextJson, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return JSON.stringify({
+      iv: iv.toString('hex'),
+      ciphertext: Buffer.concat([authTag, ciphertext]).toString('hex'),
+      version: 1,
+    }, null, 2);
   }
 
   recordSuccess(nodeId: string, address: string, port: number, signingPubKey: string | null = null): void {

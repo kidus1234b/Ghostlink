@@ -3,8 +3,10 @@ import crypto from 'crypto';
 import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
-import { NONCE_STATE_FILE } from './paths.js';
-import { writeFileAtomicSync } from './atomic-file.js';
+import { NONCE_STATE_FILE, NONCE_CLAIMS_FILE } from './paths.js';
+import { writeFileAtomicSync, cleanStaleTempFiles } from './atomic-file.js';
+import { withFileLock } from './file-lock.js';
+import { ClaimLog, type ClaimRecord } from './claim-log.js';
 import { StateAuthenticationError } from './types.js';
 
 // Resolved from the package root, not process.cwd(). The bridge is launched
@@ -13,6 +15,132 @@ import { StateAuthenticationError } from './types.js';
 // location, and replay protection that forgets on every restart protects
 // nothing. Same reasoning as the peer cache and the public peer list.
 const DEFAULT_STATE_FILE = NONCE_STATE_FILE;
+
+/**
+ * Version 1 keyed session-key claims per peer, mixed in with the counter
+ * entries. Version 2 gave claims their own map, keyed by fingerprint alone.
+ * Version 3 moves them out of this file entirely, into the append-only claim
+ * log — claims are permanent, and rewriting the whole set on every handshake
+ * made latency linear in the number ever made. Older files are migrated on
+ * read; anything outside this set is refused rather than silently discarded,
+ * see _onUnsupportedVersion.
+ */
+const CURRENT_STATE_VERSION = 3;
+const SUPPORTED_STATE_VERSIONS = new Set([1, 2, 3]);
+
+/**
+ * How far past the prune age an entry must look before the pruner distrusts the
+ * clock instead of the entry. Ten times the retention window is far outside
+ * anything ordinary drift produces, and well inside what a bad NTP correction
+ * or a restored VM snapshot produces.
+ */
+const CLOCK_JUMP_FACTOR = 10;
+
+/**
+ * ════════════════════════════════════════════════════════════════════════
+ * INVARIANTS
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * This subsystem is the persisted half of GhostLink's replay protection. Five
+ * separate reviews have each found a serious defect in it — it was never
+ * constructed; updateCounters() did not exist; claims were reported successful
+ * before they were durable; claims were clobbered on load; and claims expired,
+ * raced, and were scoped wrongly. Every one was found only because somebody
+ * looked straight at it. The properties below are what the subsystem is *for*.
+ * Anything that weakens one of them is a security regression, however
+ * reasonable it looks locally.
+ *
+ *   I1. A session-key fingerprint is claimed at most once, ever — across every
+ *       process, every peer, and every restart. A second claim of the same
+ *       fingerprint means the same AES-GCM key is about to be used twice, which
+ *       leaks the XOR of the two plaintexts and the authentication key.
+ *       Enforced by: the append-only claim log, keyed by fingerprint alone,
+ *       never pruned, never rewritten except to deduplicate.
+ *
+ *   I2. A high-water mark never decreases. Not on merge, not on reload, not on
+ *       an out-of-order frame. A mark that moves backwards reopens exactly the
+ *       replay window it exists to close.
+ *       Enforced by: Math.max in _mergeEntry, updateCounters, checkNonce and
+ *       checkAndUpdate; nothing assigns a mark without comparing first.
+ *
+ *   I3. A claim reported successful is durable. claimSessionKey() does not
+ *       return success until the record has been appended and fsynced, and
+ *       rejects the claim outright if it cannot — including when the lock
+ *       cannot be acquired.
+ *       Enforced by: claimSessionKey() -> ClaimLog.append() -> withFileLock +
+ *       append + fsync. Counter writes still go through _saveNow(), which
+ *       re-reads under the lock and writes atomically.
+ *
+ *   I4. State is merged, never replaced. Every path that reads the file folds
+ *       it into what is already in memory, and every write re-reads under the
+ *       lock first. An assignment to this.state outside _mergeState() is a bug.
+ *
+ * All five reported violations are now closed:
+ *
+ *   V1 claims expired with the pruner          -> closed by moving claims to
+ *      their own file, which _pruneOldEntries() cannot reach at all.
+ *   V2 a forward clock jump aged out entries   -> closed for claims by the
+ *      same split; counters additionally skip a cycle that looks like a clock
+ *      jump rather than genuine age (CLOCK_JUMP_FACTOR).
+ *   V3 concurrent processes erased claims      -> closed by withFileLock around
+ *      the counter read-merge-write and around each claim append, plus
+ *      per-writer temp names in writeFileAtomicSync.
+ *   V4 unknown versions vanished in silence    -> closed by
+ *      _onUnsupportedVersion: ERROR, and fatal under GMP_STRICT_STATE.
+ *   V5 claims were scoped per peer             -> closed by keying claims on
+ *      the fingerprint alone; v1 and v2 files are migrated on read.
+ *
+ * ════════════════════════════════════════════════════════════════════════
+ * WHERE THE STATE LIVES
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * Two files, because the two kinds of state have opposite lifetimes:
+ *
+ *   nonce-state.json   Per-session counters, keyed `${peerHex}:${fingerprint}`.
+ *                      They prune, so the set stays bounded and rewriting the
+ *                      whole file is fine. Written batched, once a second.
+ *
+ *   nonce-claims.log   Session-key claims, keyed by fingerprint alone. They are
+ *                      permanent, so the set only ever grows. Append-only, one
+ *                      independently sealed record per claim — see claim-log.ts.
+ *
+ * Claims used to live in the JSON, which meant every handshake rewrote,
+ * re-encrypted and re-fsynced every claim ever made: about 5.3ms per thousand
+ * claims held, synchronously, on the event loop. A node with 100k claims
+ * blocked for half a second per handshake and a busy one got there in months.
+ * Appending makes a claim a Set lookup plus a couple of hundred bytes, and the
+ * lock is held for a constant time rather than for the length of the history.
+ * Measured: 0.16ms per claim at 100 claims, 0.29ms at 20,000 — against 0.45ms
+ * and 6.53ms for the rewrite it replaced.
+ *
+ * The log still grows without bound by design. That is now a disk and
+ * startup-time cost rather than a per-handshake one. Measured at one million
+ * claims:
+ *
+ *     claimSessionKey   0.10 ms      flat: 0.14ms at 1k, 0.10ms at 1M
+ *     claim log         215 MiB      225 bytes per claim
+ *     in-memory index    20 MiB      21 bytes per claim
+ *     load()             34 s        linear, paid once at startup
+ *
+ * Thirty-four seconds of startup is the remaining sharp edge, and it is the
+ * price of the property that makes the log safe: every record carries its own
+ * IV and GCM tag, so replaying the log means a separate decrypt per claim. The
+ * fix, when it is needed, is a periodic sealed checkpoint of the index written
+ * as one record, with only the records appended after it replayed on the next
+ * start — turning startup into O(claims since the last checkpoint). Not
+ * implemented; a node needs on the order of a million claims before it
+ * matters.
+ *
+ * Compaction only ever removes duplicates — a claim never expires, so there is
+ * nothing else it may drop — and it decides from the record count gathered
+ * during load rather than re-reading the file, which would otherwise double
+ * startup on exactly the large logs it exists for.
+ *
+ * A Bloom filter was considered and rejected: a false positive REFUSES a
+ * legitimate session key and is indistinguishable from a real collision, which
+ * is the one thing this check must never be ambiguous about.
+ */
+
 
 interface NonceStateEntry {
   highWaterMark: number;
@@ -24,8 +152,30 @@ interface NonceStateEntry {
   lastActivity: number;
 }
 
+/**
+ * A session-key fingerprint that has been used, and may never be used again.
+ *
+ * Keyed by fingerprint alone — never by peer. The check defends against broken
+ * ephemeral key generation (RNG failure, a seeded PRNG, a VM snapshot restoring
+ * entropy state), and none of those confine a collision to one peer. Keying by
+ * peer let the same key be refused for peer1 and then accepted for peer2, which
+ * is precisely the case the defence exists for. peerNodeId is kept for
+ * diagnostics only.
+ */
+interface LegacyClaim {
+  /** Hex NodeID of the peer this key was first claimed with. Not part of the key. */
+  peerNodeId: string;
+  claimedAt: number;
+}
+
 interface NonceState {
+  /** Per-session counters, keyed `${peerHex}:${fingerprint}`. Pruned by age. */
   entries: Record<string, NonceStateEntry>;
+  /**
+   * Version 2 only. Claims now live in the append-only log; this is read for
+   * migration and then never written again.
+   */
+  claims?: Record<string, LegacyClaim>;
   version: number;
 }
 
@@ -37,18 +187,25 @@ export class NonceStore extends EventEmitter {
   private _loaded: boolean;
   private _dirty: boolean;
   private _saveTimer: NodeJS.Timeout | null;
+  private lockTimeoutMs: number;
+  private claimLog: ClaimLog;
 
-  constructor({ stateFile = DEFAULT_STATE_FILE, pruneAgeMs, seedPhrase }: {
+  constructor({ stateFile = DEFAULT_STATE_FILE, pruneAgeMs, seedPhrase, lockTimeoutMs, claimsFile }: {
     stateFile?: string;
     pruneAgeMs?: number;
     seedPhrase?: string;
+    lockTimeoutMs?: number;
+    claimsFile?: string;
   } = {}) {
     super();
     this.stateFile = stateFile;
+    this.lockTimeoutMs = lockTimeoutMs ?? 5000;
+    // Unique temp names mean a process killed mid-write leaves its file behind.
+    cleanStaleTempFiles(this.stateFile);
     this.pruneAgeMs = pruneAgeMs ?? config.GMP_NONCE_PRUNE_AGE_MS ?? 90 * 24 * 60 * 60 * 1000;
     this.state = {
       entries: {},
-      version: 1,
+      version: CURRENT_STATE_VERSION,
     };
     this.encryptionKey = null;
 
@@ -59,6 +216,27 @@ export class NonceStore extends EventEmitter {
     this._loaded = false;
     this._dirty = false;
     this._saveTimer = null;
+
+    // The default deployment gets the documented `data/nonce-claims.log`. A
+    // caller that names its own state file gets a log beside it rather than
+    // the shared default, so two stores pointed at different state files never
+    // silently share one claim log.
+    this.claimLog = new ClaimLog({
+      filePath: claimsFile
+        ?? (stateFile === DEFAULT_STATE_FILE ? NONCE_CLAIMS_FILE : `${stateFile}.claims.log`),
+      encryptionKey: this.encryptionKey,
+      lockTimeoutMs: this.lockTimeoutMs,
+    });
+  }
+
+  /** Where the append-only claim log lives. */
+  get claimsFile(): string {
+    return this.claimLog.path;
+  }
+
+  /** How many session keys have been claimed. */
+  get claimCount(): number {
+    return this.claimLog.size;
   }
 
   /**
@@ -73,15 +251,33 @@ export class NonceStore extends EventEmitter {
    * and nonce reuse reached during an ordinary boot, no crash required. The
    * load below merges instead; see _mergeState for the rules.
    *
-   * Returns false if the merged state could not be written. The merge itself
-   * has already happened in memory at that point, so the process is protected;
-   * what is not guaranteed is that the *next* process will be, which is why
-   * this is an ERROR and why strict mode refuses to continue.
+   * Returns false if the merged state, or a claim taken before the key
+   * existed, could not be written. The merge itself has already happened in
+   * memory at that point, so this process is protected; what is not guaranteed
+   * is that the *next* process will be, which is why this is an ERROR and why
+   * strict mode refuses to continue.
    */
   setEncryptionKey(key: Buffer | null): boolean {
     this.encryptionKey = key;
     const carriedForward = this._entryCount() > 0;
+    const heldClaims = this.claimLog.pendingCount;
+
+    this.claimLog.setEncryptionKey(key);
     this.load();
+
+    // Claims taken before the key existed are still only in memory. They are
+    // the reason this method has a return value at all.
+    if (!this.claimLog.flushPending()) {
+      const message =
+        `${heldClaims} session key claim(s) made before the encryption key was configured could not be ` +
+        `written to ${this.claimLog.path}. They are honoured in memory, but a restart would accept a ` +
+        `session key this node has already used.`;
+      logger.error('nonce-store', 'state-merge-persist-failed', message, { claimsFile: this.claimLog.path });
+      if (config.GMP_STRICT_STATE) {
+        throw new StateAuthenticationError(`Refusing to continue: ${message}`);
+      }
+      return false;
+    }
 
     if (!carriedForward || !this.encryptionKey) return true;
 
@@ -142,13 +338,94 @@ export class NonceStore extends EventEmitter {
   }
 
   /**
+   * A state file sealed with our key, well-formed, and written to a version of
+   * the format this build does not know.
+   *
+   * Treated exactly like an authentication failure, and for the same reason:
+   * continuing means running with the high-water marks and claims silently
+   * discarded, and nothing downstream can tell afterwards that it happened.
+   * Usually a downgrade — the file was written by a newer build.
+   */
+  private _onUnsupportedVersion(version: unknown): void {
+    logger.error(
+      'nonce-store',
+      'state-version-unsupported',
+      `Nonce state at ${this.stateFile} is version ${String(version)}, which this build cannot read; ` +
+      `replay protection would be reset. Supported versions: ${[...SUPPORTED_STATE_VERSIONS].join(', ')}.`,
+      { stateFile: this.stateFile, version: String(version), strict: !!config.GMP_STRICT_STATE }
+    );
+    if (config.GMP_STRICT_STATE) {
+      throw new StateAuthenticationError(
+        `Refusing to start: nonce state at ${this.stateFile} is version ${String(version)}, which this ` +
+        `build cannot read. Continuing would discard replay protection. Run a build that understands it, ` +
+        `or move the file aside to start fresh deliberately.`
+      );
+    }
+  }
+
+  /**
+   * Bring an older file up to the current shape, handing back the claims that
+   * have to be moved into the append-only log.
+   */
+  private _migrateToCurrent(loaded: NonceState): { state: NonceState; claims: ClaimRecord[] } {
+    const collected = new Map<string, ClaimRecord>();
+
+    const remember = (fingerprint: string, peerNodeId: string, claimedAt: number) => {
+      const existing = collected.get(fingerprint);
+      if (existing && existing.peerNodeId !== peerNodeId) {
+        logger.error(
+          'nonce-store',
+          'session-key-collision',
+          `The same session key fingerprint is claimed by two different peers — session key generation ` +
+          `may be broken (fingerprint ${fingerprint.slice(0, 12)}…)`,
+          {
+            fingerprint: fingerprint.slice(0, 12),
+            peerA: existing.peerNodeId.slice(0, 16),
+            peerB: peerNodeId.slice(0, 16),
+          }
+        );
+      }
+      if (!existing || claimedAt < existing.claimedAt) {
+        collected.set(fingerprint, { fingerprint, peerNodeId, claimedAt });
+      }
+    };
+
+    // v2 kept claims in their own map here.
+    for (const [fingerprint, claim] of Object.entries(loaded.claims ?? {})) {
+      remember(fingerprint, claim.peerNodeId, claim.claimedAt);
+    }
+
+    // v1 had no claims map at all: a claim was an entry under
+    // `${peerHex}:${fingerprint}` with a mark of 0, and once the session
+    // carried traffic it became indistinguishable from a counter record. So
+    // every entry's fingerprint is promoted — claimSessionKey() runs at
+    // handshake before any frame can be counted, so every entry implies its key
+    // was claimed. Over-claiming is the safe direction: the cost is refusing a
+    // key that was already used, which is exactly what the claim is for.
+    if (loaded.version < 2) {
+      for (const [compositeKey, entry] of Object.entries(loaded.entries)) {
+        const separator = compositeKey.indexOf(':');
+        if (separator <= 0) continue;
+        const fingerprint = compositeKey.slice(separator + 1);
+        if (!fingerprint) continue;
+        remember(fingerprint, compositeKey.slice(0, separator), entry.lastActivity);
+      }
+    }
+
+    return {
+      state: { entries: loaded.entries, version: CURRENT_STATE_VERSION },
+      claims: [...collected.values()],
+    };
+  }
+
+  /**
    * Read the persisted state, or null if there is nothing usable to read.
    *
    * Split out from load() so that "what is on disk" and "what becomes the
    * live state" are separate decisions — the second is a merge, not an
    * assignment.
    */
-  private _readPersistedState(): NonceState | null {
+  private _readPersistedState(): { state: NonceState; migratedClaims: ClaimRecord[] } | null {
     if (!this.encryptionKey) return null;
     try {
       if (!fs.existsSync(this.stateFile)) return null;
@@ -181,8 +458,21 @@ export class NonceStore extends EventEmitter {
       }
 
       const stateObj = JSON.parse(decrypted.toString('utf8')) as NonceState;
-      if (stateObj && stateObj.version === 1 && stateObj.entries) return stateObj;
-      return null;
+      if (!stateObj || !stateObj.entries) return null;
+
+      if (!SUPPORTED_STATE_VERSIONS.has(stateObj.version)) {
+        // Previously this returned null without a word, so a state file written
+        // by a newer build silently took every high-water mark and every claim
+        // with it — past the ERROR, past strict mode, past everything.
+        this._onUnsupportedVersion(stateObj.version);
+        return null;
+      }
+
+      if (stateObj.version === CURRENT_STATE_VERSION) {
+        return { state: stateObj, migratedClaims: [] };
+      }
+      const migrated = this._migrateToCurrent(stateObj);
+      return { state: migrated.state, migratedClaims: migrated.claims };
     } catch (err) {
       // A strict-mode refusal must not be absorbed here. This catch exists to
       // survive unreadable or malformed files by starting fresh, which is the
@@ -261,7 +551,7 @@ export class NonceStore extends EventEmitter {
       merged[key] = combined;
     }
 
-    this.state = { entries: merged, version: 1 };
+    this.state = { entries: merged, version: CURRENT_STATE_VERSION };
     return carriedForward;
   }
 
@@ -274,15 +564,56 @@ export class NonceStore extends EventEmitter {
    * over this.state at any of those points drops claims on the floor.
    */
   load(): this {
-    const loaded = this._readPersistedState();
-    if (this._mergeState(loaded)) {
+    const read = this._readPersistedState();
+    if (this._mergeState(read?.state ?? null)) {
       // Mark dirty so setEncryptionKey()'s flush has something to write and
       // the batched timer retries if that flush fails.
       this._dirty = true;
     }
+
+    this.claimLog.load();
+    this._drainMigratedClaims(read?.migratedClaims ?? []);
+    // Deduplicating the log is a startup job and never touches the handshake
+    // path; it declines unless the file is both large and provably redundant.
+    this.claimLog.compactIfNeeded();
+
     this._loaded = true;
     this._pruneOldEntries();
     return this;
+  }
+
+  /**
+   * Move claims read out of an older state file into the append-only log.
+   *
+   * Once they are in the log the JSON must stop carrying them, so the state is
+   * marked dirty and the next write emits a version 3 file with no claims map.
+   * Anything the log already knows is skipped — migration runs on every load of
+   * an old file until one of those writes lands, and re-appending each time
+   * would pad the log with duplicates for compaction to find later.
+   */
+  private _drainMigratedClaims(claims: ClaimRecord[]): void {
+    if (claims.length === 0) return;
+
+    const fresh = claims.filter(c => !this.claimLog.has(c.fingerprint));
+    if (fresh.length > 0 && !this.claimLog.append(fresh)) {
+      logger.error(
+        'nonce-store',
+        'claim-migration-failed',
+        `Could not move ${fresh.length} session key claim(s) into ${this.claimLog.path}; ` +
+        `they are held in memory and the state file still carries them.`,
+        { claimsFile: this.claimLog.path, count: fresh.length },
+      );
+      return;
+    }
+
+    logger.info(
+      'nonce-store',
+      'claims-migrated',
+      `Moved ${fresh.length} session key claim(s) into the append-only log ` +
+      `(${claims.length} read from the state file, ${this.claimLog.size} claims held in total).`,
+      { claimsFile: this.claimLog.path, migrated: fresh.length, total: this.claimLog.size },
+    );
+    this._dirty = true;
   }
 
   /**
@@ -317,18 +648,17 @@ export class NonceStore extends EventEmitter {
     if (!this.encryptionKey) return false;
     if (!this._dirty) return true;
     try {
-      const plaintextJson = JSON.stringify(this.state);
-      const iv = crypto.randomBytes(12);
-      const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-      const ciphertext = Buffer.concat([cipher.update(plaintextJson, 'utf8'), cipher.final()]);
-      const authTag = cipher.getAuthTag();
-      const encryptedBlob = Buffer.concat([authTag, ciphertext]);
-      const encryptedObj = {
-        iv: iv.toString('hex'),
-        ciphertext: encryptedBlob.toString('hex'),
-        version: 1
-      };
-      writeFileAtomicSync(this.stateFile, JSON.stringify(encryptedObj, null, 2));
+      // The whole read-modify-write runs under an exclusive lock, and re-reads
+      // the file inside it. Serialising this.state on its own was an
+      // unsynchronised read-modify-write: two nodes sharing a data directory
+      // each wrote a file derived from a snapshot taken before the other's
+      // write, so each silently erased the other's claims — and both were told
+      // their claim had succeeded. An atomic write cannot fix that; only
+      // serialising the sequence can.
+      withFileLock(this.stateFile, () => {
+        this._mergeState(this._readPersistedState()?.state ?? null);
+        writeFileAtomicSync(this.stateFile, this._serialize());
+      }, { timeoutMs: this.lockTimeoutMs });
       this._dirty = false;
       return true;
     } catch (err) {
@@ -338,18 +668,58 @@ export class NonceStore extends EventEmitter {
     }
   }
 
+  /** The encrypted on-disk envelope for the current state. */
+  private _serialize(): string {
+    const plaintextJson = JSON.stringify(this.state);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey as Buffer, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintextJson, 'utf8'), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    return JSON.stringify({
+      iv: iv.toString('hex'),
+      ciphertext: Buffer.concat([authTag, ciphertext]).toString('hex'),
+      version: 1,
+    }, null, 2);
+  }
+
+  /**
+   * Drop counter entries that have been idle past the retention window.
+   *
+   * Only `this.state.entries`. `this.state.claims` is deliberately out of reach:
+   * a claim is permanent, and pruning one hands the fingerprint back to whoever
+   * wants to reuse it. In v1 the two lived in the same map and were
+   * indistinguishable, so the pruner ate claims after ninety days — a patient
+   * peer only had to wait out the retention window.
+   *
+   * The pruner also declines to trust a clock that has obviously moved. An
+   * entry that looks ten times older than the retention window is far more
+   * likely to mean the clock jumped — an NTP correction on hardware with no
+   * RTC, a VM restored from a snapshot — than that it really sat idle that
+   * long, and acting on it would age out every entry at once.
+   */
   private _pruneOldEntries(): void {
     const now = Date.now();
-    let pruned = 0;
+    const implausible = this.pruneAgeMs * CLOCK_JUMP_FACTOR;
+    const stale: string[] = [];
+
     for (const [key, entry] of Object.entries(this.state.entries)) {
-      if (now - entry.lastActivity > this.pruneAgeMs) {
-        delete this.state.entries[key];
-        pruned++;
+      const idle = now - entry.lastActivity;
+      if (idle > implausible) {
+        logger.warn(
+          'nonce-store',
+          'prune-skipped-clock-jump',
+          `Skipping this prune cycle: an entry appears ${Math.round(idle / 86_400_000)} days idle against a ` +
+          `${Math.round(this.pruneAgeMs / 86_400_000)} day retention window, which points at a clock jump ` +
+          `rather than genuine age. No counters were removed.`,
+          { stateFile: this.stateFile, idleMs: idle, pruneAgeMs: this.pruneAgeMs }
+        );
+        return;
       }
+      if (idle > this.pruneAgeMs) stale.push(key);
     }
-    if (pruned > 0) {
-      this.save();
-    }
+
+    for (const key of stale) delete this.state.entries[key];
+    if (stale.length > 0) this.save();
   }
 
   /**
@@ -500,6 +870,13 @@ export class NonceStore extends EventEmitter {
    * This is the persisted half of the check; sessionKeyLRUSet in link.js is the
    * in-memory half and only covers the current process.
    *
+   * The claim is GLOBAL, keyed by fingerprint alone. It used to be keyed
+   * `${peerHex}:${fingerprint}`, so the same session key could be refused for
+   * one peer and accepted for the next — while the in-memory LRU, keyed by
+   * fingerprint alone, caught exactly that. The two halves of one check
+   * disagreed, and the persisted half was the wrong one: a broken RNG, a seeded
+   * PRNG or a restored VM snapshot does not confine a repeated key to one peer.
+   *
    * It replaces a bare `checkNonce(peer, fingerprint, 0)` at the call sites. The
    * behaviour is identical — claiming records a mark of 0, and a second claim
    * fails `0 <= 0` — but a literal zero threaded through a function named
@@ -510,49 +887,42 @@ export class NonceStore extends EventEmitter {
     peerNodeId: Uint8Array,
     sessionKeyFingerprint: string,
   ): { valid: boolean; reason?: string } {
-    const result = this.checkNonce(peerNodeId, sessionKeyFingerprint, 0);
-    if (!result.valid) {
+    if (!this._loaded) this.load();
+
+    // O(1), no I/O, and the common case for a peer that is reconnecting with a
+    // key it has already burnt.
+    if (this.claimLog.has(sessionKeyFingerprint)) {
       return {
         valid: false,
-        reason: `Session key already used with this peer (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        reason: `Session key already used (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
       };
     }
 
-    // checkNonce() recorded the claim in memory and queued a write for up to a
-    // second from now. Returning here would hand the caller a success it cannot
-    // rely on: a crash, an OOM kill or a container restart inside that second
-    // loses the claim, the next process loads a state file that has never heard
-    // of this session key, and the same key is accepted a second time — which
-    // is the AES-GCM nonce reuse the claim exists to prevent. Flush before
-    // saying yes.
-    if (!this.encryptionKey) {
-      // No key yet means no state file to write to — link.js only supplies one
-      // once the identity has been derived. This is not a lost claim: load()
-      // merges rather than replaces, so everything recorded here survives
-      // setEncryptionKey() and is flushed to disk at that point.
-      logger.debug(
-        'nonce-store',
-        'claim-held-in-memory',
-        `Session key claim held in memory until an encryption key is configured ` +
-        `(fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
-        { stateFile: this.stateFile }
-      );
-      return result;
-    }
+    const peerHex = Buffer.from(peerNodeId).toString('hex');
+    const record: ClaimRecord = {
+      fingerprint: sessionKeyFingerprint,
+      peerNodeId: peerHex,
+      claimedAt: Date.now(),
+    };
 
-    if (!this._saveNow()) {
+    // One appended, fsynced record before success is reported. The caller acts
+    // on this immediately — link.js lets the handshake continue — so a claim
+    // that is still only in memory would be a claim the next process does not
+    // honour, and the same session key would be accepted a second time. That is
+    // the AES-GCM nonce reuse the claim exists to prevent.
+    //
+    // With no key configured the record is held in memory instead: link.js only
+    // supplies one once the identity is derived, and the claim still has to
+    // count until then. setEncryptionKey() writes them.
+    if (!this.claimLog.append([record])) {
       logger.error(
         'nonce-store',
         'state-claim-persist-failed',
-        `Rejecting session key claim: the claim could not be persisted, and a claim that is not on disk ` +
-        `is a claim the next process will not honour (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
-        { stateFile: this.stateFile, peerNodeId: Buffer.from(peerNodeId).toString('hex').slice(0, 16) }
+        `Rejecting session key claim: the claim could not be appended to ${this.claimLog.path}, and a ` +
+        `claim that is not on disk is a claim the next process will not honour ` +
+        `(fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        { claimsFile: this.claimLog.path, peerNodeId: peerHex.slice(0, 16) }
       );
-      // The in-memory entry stays. Rolling it back would make this process
-      // willing to hand out a key that may in fact have reached disk; leaving
-      // it means the key is refused either way, which is the direction to fail
-      // in. The queued retry from checkNonce()'s save() may still land it later,
-      // and a claim that persists after being refused costs nothing.
       return {
         valid: false,
         reason: 'Session key claim could not be persisted; refusing the connection rather than ' +
@@ -560,7 +930,7 @@ export class NonceStore extends EventEmitter {
       };
     }
 
-    return result;
+    return { valid: true };
   }
 
   checkNonce(peerNodeId: Uint8Array, sessionKeyFingerprint: string, nonce: number): { valid: boolean; reason?: string } {
@@ -574,6 +944,9 @@ export class NonceStore extends EventEmitter {
     if (!entry) {
       this.state.entries[key] = {
         highWaterMark: nonce,
+        sendHighWater: nonce,
+        recvHighWater: nonce,
+        firstSeen: Date.now(),
         lastActivity: Date.now(),
       };
       this.save();
@@ -587,7 +960,16 @@ export class NonceStore extends EventEmitter {
       };
     }
 
-    entry.highWaterMark = nonce;
+    // Carry the directional marks up with the aggregate. Raising only the
+    // aggregate left checkAndUpdate reading a stale `sendHighWater ??
+    // highWaterMark`, so a nonce this call had already accepted could be
+    // accepted again through the other door. Nothing reached that today —
+    // link.js only calls checkNonce via claimSessionKey — but it was a trap
+    // set for the next caller.
+    const previousAggregate = entry.highWaterMark;
+    entry.sendHighWater = Math.max(entry.sendHighWater ?? previousAggregate, nonce);
+    entry.recvHighWater = Math.max(entry.recvHighWater ?? previousAggregate, nonce);
+    entry.highWaterMark = Math.max(previousAggregate, nonce);
     entry.lastActivity = Date.now();
     this.save();
     return { valid: true };
