@@ -34,7 +34,18 @@ const freshFile = () => {
   return path.join(dir, 'nonce-state.json');
 };
 const dropDir = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* gone */ } };
-const claimsOf = (stateFile) => `${stateFile}.claims.log`;
+/**
+ * The claim log is named after the key that seals it, so that two identities
+ * sharing a data directory do not write records into one file that neither can
+ * fully read. Mirrors ClaimLog._scopePathToKey; prefer `store.claimsFile` where
+ * a store is in scope.
+ */
+function claimsPathFor(stateFile, seed) {
+  const key = crypto.pbkdf2Sync(seed, 'ghostlink-nonce-store-v1', 100000, 32, 'sha256');
+  const id = crypto.createHash('sha256').update('gmp-claim-log-id').update(key).digest('hex').slice(0, 16);
+  return `${stateFile}.claims.${id}.log`;
+}
+const claimsOf = (stateFile) => claimsPathFor(stateFile, SEED);
 const peer = Buffer.alloc(64, 5);
 const fp = (i) => crypto.createHash('sha256').update(`fp-${i}`).digest('hex').slice(0, 32);
 
@@ -130,6 +141,8 @@ function testMidFileCorruption() {
   bytes[target] ^= 0xff;
   fs.writeFileSync(claims, bytes);
 
+  const damaged = fs.readFileSync(claims);   // keep a copy: the load below repairs the file
+
   const seen = [];
   const realErr = console.error;
   console.error = (...x) => { seen.push(x.join(' ')); };
@@ -146,7 +159,19 @@ function testMidFileCorruption() {
   assert(seen.some(l => l.includes('state-claim-log-corrupt')), 'An ERROR naming state-claim-log-corrupt is logged');
   assert(recovered > 0, `Records before the damage survive (${recovered} recovered)`);
   assert(recovered < 10, 'Records after the damage are not trusted');
+  assert(
+    seen.some(l => l.includes('claim-log-quarantined')),
+    'The unreadable log is set aside and rebuilt so the node can still record claims'
+  );
+  assert(
+    fs.readdirSync(path.dirname(claims)).some(f => f.includes('.corrupt-')),
+    'The damaged file is preserved for inspection, not deleted'
+  );
 
+  // Strict mode gets its own copy of the damage: the load above repaired the
+  // live file, which is the whole point of the quarantine.
+  fs.writeFileSync(claims, damaged);
+  fs.rmSync(`${claims}.ckpt`, { force: true });
   let threw = null;
   try {
     config.GMP_STRICT_STATE = true;
@@ -224,6 +249,215 @@ function testClaimDurableBeforeReturn() {
   dropDir();
 }
 
+
+/**
+ * FIX 2: a partial record from a crash must not swallow later claims.
+ *
+ * _consumeTail stops before an incomplete final record. Marking the whole file
+ * consumed after appending behind it meant replay stopped at the partial record
+ * on the next start and never reached the new claim — a claim reported
+ * successful, silently gone, and the session key claimable again.
+ */
+function testAppendBehindPartialRecord() {
+  console.log('\n=== Test 6: A claim appended after a partial record survives a reload ===');
+  const stateFile = freshFile();
+  const claims = claimsOf(stateFile);
+
+  const a = new NonceStore({ stateFile, seedPhrase: SEED });
+  for (let i = 0; i < 4; i++) a.claimSessionKey(peer, fp(i));
+  a.close();
+
+  // A process killed partway through writing record five.
+  const whole = fs.readFileSync(claims);
+  fs.writeFileSync(claims, Buffer.concat([whole, whole.subarray(0, 24)]));
+  fs.rmSync(`${claims}.ckpt`, { force: true });
+
+  const b = new NonceStore({ stateFile, seedPhrase: SEED });
+  assertEqual(b.claimSessionKey(peer, 'after-partial').valid, true, 'A new claim is accepted');
+  b.close();
+
+  // The claim must be visible to a process that reads the file from scratch.
+  fs.rmSync(`${claims}.ckpt`, { force: true });
+  const c = new NonceStore({ stateFile, seedPhrase: SEED });
+  assertEqual(
+    c.claimSessionKey(peer, 'after-partial').valid,
+    false,
+    'It is still claimed after a full reload — not stranded behind the partial record'
+  );
+  for (let i = 0; i < 4; i++) {
+    if (c.claimSessionKey(peer, fp(i)).valid) { assert(false, `Earlier claim ${i} survived`); break; }
+  }
+  assert(true, 'And every earlier claim survived too');
+  c.close();
+  dropDir();
+}
+
+/**
+ * FIX 2, the other half: corruption is not a partial record, and must not be
+ * truncated away. Appending is refused instead, and the file is left alone.
+ */
+function testAppendRefusedOnCorruption() {
+  console.log('\n=== Test 7: A corrupt log refuses appends and is not truncated ===');
+  const stateFile = freshFile();
+  const claims = claimsOf(stateFile);
+
+  const a = new NonceStore({ stateFile, seedPhrase: SEED });
+  for (let i = 0; i < 6; i++) a.claimSessionKey(peer, fp(100 + i));
+  a.close();
+
+  // A live store with a valid offset, facing a bad record written past it —
+  // which is what another writer producing damage actually looks like.
+  // Overwriting the whole file behind the store instead would leave its offset
+  // pointing into unrelated bytes, which is a different (and unreal) scenario.
+  const b = new NonceStore({ stateFile, seedPhrase: SEED });
+  b.load();
+
+  const garbage = Buffer.alloc(64);
+  garbage.writeUInt32BE(0x00ffffff, 0);    // a length far beyond the 64 KiB cap
+  fs.appendFileSync(claims, garbage);
+  const sizeBefore = fs.statSync(claims).size;
+
+  const seen = [];
+  const realErr = console.error;
+  console.error = (...x) => { seen.push(x.join(' ')); };
+  let result;
+  try {
+    result = b.claimSessionKey(peer, 'against-corruption');
+  } finally { console.error = realErr; }
+
+  assertEqual(result.valid, false, 'The claim is REFUSED rather than appended behind the damage');
+  assert(
+    seen.some(l => l.includes('claim-log-append-blocked')),
+    'The refusal is logged as claim-log-append-blocked'
+  );
+  assertEqual(fs.statSync(claims).size, sizeBefore, 'The damaged file was not truncated');
+  b.close();
+  dropDir();
+}
+
+
+/**
+ * FIX 1: a log that cannot be READ is not a log that is damaged.
+ *
+ * _consumeTail used to answer 'corrupt' for any failure of open() or read() —
+ * EMFILE, EACCES, EIO, a mount that went away. load() then quarantined, which
+ * rebuilds the log from the in-memory index; on a cold start that index is
+ * empty, so a single failed open() replaced every persisted claim with nothing
+ * and every burnt session key became claimable again. Silently: nothing had
+ * failed authentication, so strict mode did not fire either.
+ */
+function testUnreadableLogIsNotCorruption() {
+  console.log('\n=== Test 8: An unreadable log is left alone, not quarantined ===');
+  const stateFile = freshFile();
+  const claims = claimsOf(stateFile);
+
+  const a = new NonceStore({ stateFile, seedPhrase: SEED });
+  for (let i = 0; i < 5; i++) a.claimSessionKey(peer, fp(200 + i));
+  a.close();
+
+  const before = fs.readFileSync(claims);
+  fs.chmodSync(claims, 0o000);
+  // Running as root ignores the mode bits, in which case this cannot be tested
+  // this way; skip rather than assert something untrue.
+  let readable = true;
+  try { fs.readFileSync(claims); } catch { readable = false; }
+  if (readable) {
+    console.log('  — skipped: the file is readable despite mode 000 (running as root?)');
+    fs.chmodSync(claims, 0o600);
+    dropDir();
+    return;
+  }
+
+  const seen = [];
+  const realErr = console.error;
+  console.error = (...x) => { seen.push(x.join(' ')); };
+  const previousStrict = config.GMP_STRICT_STATE;
+  try {
+    config.GMP_STRICT_STATE = false;
+    const b = new NonceStore({ stateFile, seedPhrase: SEED });
+    b.load();
+    b.close();
+  } finally { console.error = realErr; config.GMP_STRICT_STATE = previousStrict; }
+
+  assert(seen.some(l => l.includes('state-log-unreadable')), 'An ERROR naming state-log-unreadable is logged');
+  assert(!seen.some(l => l.includes('claim-log-quarantined')), 'The log was NOT quarantined');
+  assert(
+    !fs.readdirSync(path.dirname(claims)).some(f => f.includes('.corrupt-')),
+    'No .corrupt- rename happened'
+  );
+
+  fs.chmodSync(claims, 0o600);
+  assert(fs.readFileSync(claims).equals(before), 'The log is byte-identical: nothing was rebuilt over it');
+
+  // And the claims are all still there once it can be read again.
+  const c = new NonceStore({ stateFile, seedPhrase: SEED });
+  assertEqual(c.claimCount, 5, 'Every claim survived the unreadable start');
+  c.close();
+
+  // Strict mode must refuse rather than run without a replay record.
+  fs.chmodSync(claims, 0o000);
+  let threw = null;
+  try {
+    config.GMP_STRICT_STATE = true;
+    const realErr2 = console.error;
+    console.error = () => {};
+    try { new NonceStore({ stateFile, seedPhrase: SEED }).load(); } finally { console.error = realErr2; }
+  } catch (e) { threw = e; } finally { config.GMP_STRICT_STATE = previousStrict; }
+  assertEqual(threw && threw.name, 'StateAuthenticationError', 'Strict mode refuses to start');
+
+  fs.chmodSync(claims, 0o600);
+  dropDir();
+}
+
+/**
+ * The offset invariant assertion itself. Four separate paths have set
+ * consumedBytes to something that was not a record boundary; this is what is
+ * meant to catch the fifth.
+ */
+function testBoundaryAssertionFires() {
+  console.log('\n=== Test 9: A bad offset trips the invariant assertion ===');
+  const stateFile = freshFile();
+
+  const store = new NonceStore({ stateFile, seedPhrase: SEED });
+  for (let i = 0; i < 4; i++) store.claimSessionKey(peer, fp(300 + i));
+
+  const log = store.claimLog;
+  const goodOffset = log.consumedBytes;
+  const goodAccounted = log.bytesAccountedFor;
+
+  // (a) The offset advanced past a boundary — the shape of every one of the
+  //     four historical bugs.
+  log.consumedBytes = goodOffset - 3;
+  let threw = null;
+  try { log._assertConsumedBoundary('deliberate'); } catch (e) { threw = e; }
+  assert(threw !== null, 'An offset that is not a record boundary throws');
+  assert(
+    threw && /offset invariant violated/.test(threw.message),
+    'The message names the invariant that was broken'
+  );
+
+  // (b) The accounting witness catches an offset taken from the filesystem
+  //     even when it happens to land on a boundary.
+  log.consumedBytes = goodOffset;
+  log.bytesAccountedFor = goodAccounted - 1;
+  threw = null;
+  try { log._assertConsumedBoundary('deliberate'); } catch (e) { threw = e; }
+  assert(threw !== null, 'An offset not backed by accounted-for records throws');
+  assert(
+    threw && /accounted for/.test(threw.message),
+    'The message says how many bytes were actually accounted for'
+  );
+
+  // (c) And the healthy state passes.
+  log.bytesAccountedFor = goodAccounted;
+  threw = null;
+  try { log._assertConsumedBoundary('deliberate'); } catch (e) { threw = e; }
+  assert(threw === null, 'A correct offset passes');
+
+  store.close();
+  dropDir();
+}
+
 function run() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║  GMP — Claim Log Tests                                     ║');
@@ -234,6 +468,10 @@ function run() {
     testMidFileCorruption();
     testMigrationFromJson();
     testClaimDurableBeforeReturn();
+    testAppendBehindPartialRecord();
+    testAppendRefusedOnCorruption();
+    testUnreadableLogIsNotCorruption();
+    testBoundaryAssertionFires();
   } catch (err) {
     console.error('\nTest suite error:', err);
     dropDir();

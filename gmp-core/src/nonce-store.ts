@@ -63,6 +63,12 @@ const CLOCK_JUMP_FACTOR = 10;
  *       Enforced by: Math.max in _mergeEntry, updateCounters, checkNonce and
  *       checkAndUpdate; nothing assigns a mark without comparing first.
  *
+ *   I0. An offset into the claim log is always a record boundary. Not a
+ *       security property on its own, but every claim this subsystem has lost
+ *       has been lost by breaking it — in four separate paths, three of them
+ *       written after the class of bug was known. claim-log.ts asserts it after
+ *       every mutation under NODE_ENV=test or GMP_DEBUG_ASSERTS.
+ *
  *   I3. A claim reported successful is durable. claimSessionKey() does not
  *       return success until the record has been appended and fsynced, and
  *       rejects the claim outright if it cannot — including when the lock
@@ -113,23 +119,38 @@ const CLOCK_JUMP_FACTOR = 10;
  * Measured: 0.16ms per claim at 100 claims, 0.29ms at 20,000 — against 0.45ms
  * and 6.53ms for the rewrite it replaced.
  *
- * The log still grows without bound by design. That is now a disk and
- * startup-time cost rather than a per-handshake one. Measured at one million
- * claims:
+ * The log still grows without bound by design. That is now a disk cost rather
+ * than a per-handshake or a startup one. Measured at one million claims:
  *
- *     claimSessionKey   0.10 ms      flat: 0.14ms at 1k, 0.10ms at 1M
- *     claim log         215 MiB      225 bytes per claim
- *     in-memory index    20 MiB      21 bytes per claim
- *     load()             34 s        linear, paid once at startup
+ *     claimSessionKey        0.11 ms    flat: 0.14ms at 1k, 0.11ms at 1M
+ *     claim log              215 MiB    225 bytes per claim
+ *     checkpoint              31 MiB    33 bytes per claim
+ *     in-memory index         20 MiB    21 bytes per claim
+ *     load(), from checkpoint 0.90 s
+ *     load(), full replay     36.3 s    the fallback when no checkpoint is usable
  *
- * Thirty-four seconds of startup is the remaining sharp edge, and it is the
- * price of the property that makes the log safe: every record carries its own
- * IV and GCM tag, so replaying the log means a separate decrypt per claim. The
- * fix, when it is needed, is a periodic sealed checkpoint of the index written
- * as one record, with only the records appended after it replayed on the next
- * start — turning startup into O(claims since the last checkpoint). Not
- * implemented; a node needs on the order of a million claims before it
- * matters.
+ * Startup used to be the sharp edge: every record carries its own IV and GCM
+ * tag, so replaying a million claims meant a million separate AES-GCM openings.
+ * The checkpoint (see claim-log.ts) is a single sealed snapshot of the index at
+ * a known byte offset, so a start opens one record and replays only what was
+ * appended since — 36.3s to 0.90s. It is a cache and never the authority: a
+ * checkpoint that will not authenticate, that disagrees with the log, or that
+ * points into a log it does not match is discarded and the log replayed in
+ * full.
+ *
+ * What is bounded, precisely. A checkpoint is written when the tail passes
+ * CHECKPOINT_EVERY_RECORDS, inline once it passes twice that, and
+ * unconditionally on a clean shutdown. So:
+ *
+ *   - clean shutdown            replay is empty; the checkpoint is current
+ *   - unclean stop              replay is at most CHECKPOINT_CEILING_RECORDS,
+ *                               measured at 664ms for 60k claims
+ *   - no usable checkpoint      full replay, 36.3s at a million claims. Reached
+ *                               when the checkpoint is missing, damaged, or
+ *                               describes a different log
+ *
+ * Startup is not bounded in general — only the middle case is. The last one is
+ * the honest worst case and it is proportional to everything ever claimed.
  *
  * Compaction only ever removes duplicates — a claim never expires, so there is
  * nothing else it may drop — and it decides from the record count gathered
@@ -139,6 +160,64 @@ const CLOCK_JUMP_FACTOR = 10;
  * A Bloom filter was considered and rejected: a false positive REFUSES a
  * legitimate session key and is indistinguishable from a real collision, which
  * is the one thing this check must never be ambiguous about.
+ *
+ * ════════════════════════════════════════════════════════════════════════
+ * OPEN: TRUNCATION OF THE CLAIM LOG IS NOT DETECTED
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * Each record is sealed individually, so nothing in the log can be forged or
+ * altered without detection. What is not protected is the log's *length*.
+ * Somebody with write access to the data directory can cut records off the end,
+ * or delete the file, and the claims in the removed span become claimable
+ * again. Nothing reports it: a short log is indistinguishable from a log that
+ * has not grown yet, which is exactly what an honest young log looks like.
+ * GMP_STRICT_STATE does not close this — it governs records that fail to
+ * authenticate, and a truncated log contains no such record.
+ *
+ * The checkpoint closes part of it already, as a side effect rather than by
+ * design: it records the byte offset it covers, and a log shorter than that
+ * offset is reported at ERROR (claim-log-shorter-than-checkpoint) before the
+ * checkpoint is discarded and the remaining log replayed. So truncation *below
+ * the last checkpoint* is already loud. Truncation of the tail written since
+ * the last checkpoint is still silent, and a checkpoint can itself be deleted.
+ *
+ * Two ways to close the rest. Both are designs, not code:
+ *
+ *   A. A running count in a separate sealed file. After each append, write a
+ *      small sealed record holding the log's record count and byte length.
+ *      On load, compare. Simple, and independent of the checkpoint.
+ *      Costs a second sealed write per claim — doubling the work on the
+ *      handshake path, which is the cost this whole design exists to avoid —
+ *      and introduces its own ordering problem: the counter and the log cannot
+ *      both be updated atomically, so a crash between them is indistinguishable
+ *      from truncation and would have to be tolerated, which blunts the check.
+ *
+ *   B. Extend the checkpoint to be the authority on length, and write one
+ *      unconditionally at shutdown as well as on the existing threshold. The
+ *      checkpoint already carries coveredBytes and recordCount and is already
+ *      sealed and atomic; the change is to treat a log shorter than the
+ *      checkpoint as fatal under GMP_STRICT_STATE rather than merely loud, and
+ *      to make a *missing* checkpoint suspicious once one has ever existed.
+ *      Costs nothing on the handshake path — the checkpoint is written at
+ *      startup and shutdown, never per claim — and it is the same mechanism
+ *      that already gives the startup-time improvement, so one file and one
+ *      code path close both problems.
+ *
+ * B is the better trade and the one to build: A pays a per-handshake price for
+ * a narrower guarantee, and would sit alongside the checkpoint rather than
+ * reusing it. Neither closes the residual window between the last checkpoint
+ * and a crash, in which appended records can still be cut without a record of
+ * how many there should have been; tightening that means an unconditional
+ * checkpoint at shutdown (which B includes) and accepting that a hard kill
+ * leaves the tail unverifiable.
+ *
+ * Neither is a substitute for the data directory being protected. An attacker
+ * who can write there can also delete the log, the checkpoint and the counter
+ * file together, and a node that starts with no state at all cannot tell that
+ * from a first run. Filesystem access to the data directory is outside the
+ * threat model (SECURITY.md §2, Endpoint Integrity); the value of B is making
+ * tampering *noisy* for an attacker who has partial access or who tries to be
+ * subtle, not making it impossible.
  */
 
 
@@ -234,8 +313,15 @@ export class NonceStore extends EventEmitter {
     return this.claimLog.path;
   }
 
-  /** How many session keys have been claimed. */
+  /**
+   * How many session keys have been claimed.
+   *
+   * Loads on first use, like getEntry() and claimSessionKey(). Reading it off a
+   * store nothing had touched yet used to answer zero, which reads as "no
+   * claims" rather than "not looked yet".
+   */
   get claimCount(): number {
+    if (!this._loaded) this.load();
     return this.claimLog.size;
   }
 
@@ -595,7 +681,7 @@ export class NonceStore extends EventEmitter {
     if (claims.length === 0) return;
 
     const fresh = claims.filter(c => !this.claimLog.has(c.fingerprint));
-    if (fresh.length > 0 && !this.claimLog.append(fresh)) {
+    if (fresh.length > 0 && !this.claimLog.append(fresh).ok) {
       logger.error(
         'nonce-store',
         'claim-migration-failed',
@@ -914,14 +1000,36 @@ export class NonceStore extends EventEmitter {
     // With no key configured the record is held in memory instead: link.js only
     // supplies one once the identity is derived, and the claim still has to
     // count until then. setEncryptionKey() writes them.
-    if (!this.claimLog.append([record])) {
+    const outcome = this.claimLog.append([record]);
+
+    // Conflicts are checked first, and separately from write failures. The
+    // has() above is an unlocked fast path; between it and the lock another
+    // process can claim the same fingerprint, and the log's locked re-check is
+    // what catches that. Losing the race means the key IS claimed — just not by
+    // us — so this is the ordinary reuse refusal, not a persistence problem.
+    if (outcome.conflicts.length > 0) {
+      logger.warn(
+        'nonce-store',
+        'claim-race-lost',
+        `Session key claimed concurrently by another writer; refusing this one ` +
+        `(fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        { claimsFile: this.claimLog.path, peerNodeId: peerHex.slice(0, 16) }
+      );
+      return {
+        valid: false,
+        reason: `Session key already used (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…, ` +
+                `claimed concurrently by another process)`,
+      };
+    }
+
+    if (!outcome.ok) {
       logger.error(
         'nonce-store',
         'state-claim-persist-failed',
-        `Rejecting session key claim: the claim could not be appended to ${this.claimLog.path}, and a ` +
-        `claim that is not on disk is a claim the next process will not honour ` +
-        `(fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
-        { claimsFile: this.claimLog.path, peerNodeId: peerHex.slice(0, 16) }
+        `Rejecting session key claim: the claim could not be appended to ${this.claimLog.path} ` +
+        `(${outcome.reason ?? 'failed'}), and a claim that is not on disk is a claim the next ` +
+        `process will not honour (fingerprint ${sessionKeyFingerprint.slice(0, 12)}…)`,
+        { claimsFile: this.claimLog.path, peerNodeId: peerHex.slice(0, 16), reason: outcome.reason }
       );
       return {
         valid: false,
@@ -983,5 +1091,8 @@ export class NonceStore extends EventEmitter {
     // Best effort: a failure here is already logged by _saveNow(), and there is
     // nothing left to refuse at shutdown.
     this._saveNow();
+    // Leaves a current snapshot behind, so a clean stop never costs the next
+    // start a replay of everything since the last threshold crossing.
+    this.claimLog.close();
   }
 }

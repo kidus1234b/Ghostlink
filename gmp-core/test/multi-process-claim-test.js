@@ -15,6 +15,7 @@
 import { fork } from 'child_process';
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
+import crypto from 'crypto';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -37,7 +38,18 @@ function assertEqual(actual, expected, message) {
 
 const peer = Buffer.alloc(64, 9);
 // Claims append to their own log, and that is what the lock now guards.
-const claimsOf = (stateFile) => `${stateFile}.claims.log`;
+/**
+ * The claim log is named after the key that seals it, so that two identities
+ * sharing a data directory do not write records into one file that neither can
+ * fully read. Mirrors ClaimLog._scopePathToKey; prefer `store.claimsFile` where
+ * a store is in scope.
+ */
+function claimsPathFor(stateFile, seed) {
+  const key = crypto.pbkdf2Sync(seed, 'ghostlink-nonce-store-v1', 100000, 32, 'sha256');
+  const id = crypto.createHash('sha256').update('gmp-claim-log-id').update(key).digest('hex').slice(0, 16);
+  return `${stateFile}.claims.${id}.log`;
+}
+const claimsOf = (stateFile) => claimsPathFor(stateFile, SEED);
 const lockOf = (stateFile) => `${claimsOf(stateFile)}.lock`;
 let dir;
 const freshDir = () => {

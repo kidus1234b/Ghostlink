@@ -230,11 +230,12 @@ function testPreKeyClaimReachesDisk() {
 
   const store = new NonceStore({ stateFile });
   assertEqual(store.claimSessionKey(peer1, FP).valid, true, 'Claimed before any key is configured');
-  const claimsFile = `${stateFile}.claims.log`;
-  assert(!fs.existsSync(claimsFile), 'Nothing is on disk yet — there is no key to seal it with');
+  assert(!fs.existsSync(store.claimsFile), 'Nothing is on disk yet — there is no key to seal it with');
 
   assertEqual(store.setEncryptionKey(key), true, 'setEncryptionKey reports success');
-  assert(fs.existsSync(claimsFile), 'The claim log exists the moment setEncryptionKey returns');
+  // Re-read the path: the log is named after the key that seals it, so it only
+  // has its final name once there is a key.
+  assert(fs.existsSync(store.claimsFile), 'The claim log exists the moment setEncryptionKey returns');
 
   // No close(): a crash here must not lose the claim.
   const other = new NonceStore({ stateFile, seedPhrase: SEED });

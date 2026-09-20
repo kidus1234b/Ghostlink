@@ -47,7 +47,18 @@ function assertEqual(actual, expected, message) {
 const SEED = 'durability test seed phrase';
 const statePath = path.join(__dirname, 'data', 'temp-durability-nonce.json');
 // Claims now live in their own append-only log; the state JSON holds counters.
-const claimsPath = `${statePath}.claims.log`;
+/**
+ * The claim log is named after the key that seals it, so that two identities
+ * sharing a data directory do not write records into one file that neither can
+ * fully read. Mirrors ClaimLog._scopePathToKey; prefer `store.claimsFile` where
+ * a store is in scope.
+ */
+function claimsPathFor(stateFile, seed) {
+  const key = crypto.pbkdf2Sync(seed, 'ghostlink-nonce-store-v1', 100000, 32, 'sha256');
+  const id = crypto.createHash('sha256').update('gmp-claim-log-id').update(key).digest('hex').slice(0, 16);
+  return `${stateFile}.claims.${id}.log`;
+}
+const claimsPath = claimsPathFor(statePath, SEED);
 const lockPath = `${claimsPath}.lock`;
 // Temp names carry the pid and random bytes so two writers cannot collide on
 // one file; a test can no longer block a write by planting `<path>.tmp`.
@@ -81,7 +92,16 @@ const IMPATIENT = { lockTimeoutMs: 150 };
 
 function clean() {
   const dir = path.dirname(statePath);
-  for (const p of [statePath, claimsPath, lockPath, ...tempFiles().map(f => path.join(dir, f))]) {
+  // Checkpoints and quarantined logs outlive the log itself, and a checkpoint
+  // left behind by an earlier run points into a file that no longer exists.
+  const strays = (() => {
+    try {
+      return fs.readdirSync(dir)
+        .filter(f => f.startsWith(path.basename(statePath)) && f !== path.basename(statePath))
+        .map(f => path.join(dir, f));
+    } catch { return []; }
+  })();
+  for (const p of [statePath, claimsPath, lockPath, ...strays, ...tempFiles().map(f => path.join(dir, f))]) {
     try {
       fs.rmSync(p, { recursive: true, force: true });
     } catch { /* not there */ }

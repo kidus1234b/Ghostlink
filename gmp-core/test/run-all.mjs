@@ -21,7 +21,14 @@ const suites = readdirSync(here)
 
 const results = [];
 for (const suite of suites) {
-  const r = spawnSync(process.execPath, [path.join(here, suite)], {encoding: 'utf8', timeout: 180000});
+  // NODE_ENV=test turns on the internal invariant assertions (see
+  // ASSERT_BOUNDARIES in claim-log.ts), so a suite that trips one fails loudly
+  // rather than carrying on with a broken offset.
+  const r = spawnSync(process.execPath, [path.join(here, suite)], {
+    encoding: 'utf8',
+    timeout: 180000,
+    env: {...process.env, NODE_ENV: 'test'},
+  });
   const out = (r.stdout || '') + (r.stderr || '');
   const m = out.match(/Results: (\d+) passed, (\d+) failed/) || out.match(/=== (\d+)\/(\d+) passed/);
   const skipped = /=== skipped ===/.test(out);
