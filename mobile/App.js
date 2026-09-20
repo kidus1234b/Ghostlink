@@ -13,7 +13,6 @@ import {StyleSheet, StatusBar, Platform, Linking} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
-import PushNotification from 'react-native-push-notification';
 
 import {AppProvider} from './src/context/AppContext';
 import {ThemeProvider, useTheme} from './src/context/ThemeContext';
@@ -105,7 +104,35 @@ function handleDeepLink(url) {
 //  PUSH NOTIFICATIONS — placeholder setup
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * Bring up push notifications, or carry on without them.
+ *
+ * react-native-push-notification pulls in firebase-messaging, and its
+ * configure() asks Firebase for a token. With no google-services.json in the
+ * build — which is the case today — that throws "Default FirebaseApp is not
+ * initialized in this process" out of Java, which React Native surfaces as an
+ * unhandled exception and Android reports as "GhostLink closed because this app
+ * has a bug". It happens during first render, so the app dies before it draws
+ * anything.
+ *
+ * Notifications are not load-bearing: every screen works without them, and the
+ * handlers below are still placeholders. So the module is required lazily and
+ * the whole setup is best-effort. When Firebase is configured this starts
+ * working with no further change; until then the app boots.
+ */
 function configurePushNotifications() {
+  let PushNotification;
+  try {
+    PushNotification = require('react-native-push-notification');
+    PushNotification = PushNotification.default ?? PushNotification;
+    if (!PushNotification || typeof PushNotification.configure !== 'function') {
+      throw new Error('native module unavailable');
+    }
+  } catch (err) {
+    console.warn('[Push] notifications unavailable, continuing without them:', err?.message);
+    return;
+  }
+
   PushNotification.configure({
     onRegister(token) {
       // TODO: send token to signaling server for push relay
@@ -229,7 +256,12 @@ function AppNavigator() {
 export default function App() {
   // Initialise push notifications once
   useEffect(() => {
-    configurePushNotifications();
+    try {
+      configurePushNotifications();
+    } catch (err) {
+      // Belt and braces: nothing about notifications is worth a failed launch.
+      console.warn('[Push] setup failed, continuing without notifications:', err?.message);
+    }
   }, []);
 
   return (

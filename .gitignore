@@ -70,3 +70,4 @@ assets/app-screenshot.png
 !SECURITY.md
 !docs/archive/DEPLOYMENT.md
 !gmp-core/PROTOCOL_SPEC.md
+mobile/android/app/src/main/res/drawable-*/
