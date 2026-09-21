@@ -45,6 +45,18 @@ const eKeys = await deriveSessionKeys(eve.privateKey, alice.publicKey, 'eve999',
 threw=false; try{ decryptMessage(env, eKeys.recvKey); }catch{ threw=true; }
 ok(threw, 'An unrelated peer cannot decrypt it');
 
+// A peer still on the old PBKDF2 derivation must fail at the version check,
+// not limp along producing authentication errors on every frame.
+const v1 = {...env, v: 1};
+threw=false; let msg='';
+try{ decryptMessage(v1, bKeys.recvKey); }catch(e){ threw=true; msg=e.message; }
+ok(threw && /version/i.test(msg), 'A v1 envelope is refused by version, cleanly: ' + JSON.stringify(msg));
+// It must still be RECOGNISED as an envelope. Matching on the current version
+// meant an old peer's ciphertext failed the shape test and was handed on as
+// ordinary traffic — surfacing protocol frames in the chat during a rolling
+// upgrade. Shape identifies it; decryptMessage decides if it is readable.
+ok(isEncryptedEnvelope(v1), 'A v1 envelope is still recognised as an envelope, so it stays on the encrypted path');
+
 threw=false; try{ await deriveSessionKeys(alice.privateKey, alice.publicKey, A, A); }catch{ threw=true; }
 ok(threw, 'Refuses to derive a session with ourselves');
 

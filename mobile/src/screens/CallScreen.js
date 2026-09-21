@@ -429,9 +429,8 @@ export default function CallScreen({route, navigation}) {
 
       // Use real WebRTC service if available
       const WebRTCService = require('../services/WebRTCService').default;
-      const SignalingService = require('../services/SignalingService').default;
 
-      if (WebRTCService && SignalingService && peerId) {
+      if (WebRTCService && peerId) {
         // Real WebRTC call flow
         setCallState(CALL_STATES.RINGING);
 

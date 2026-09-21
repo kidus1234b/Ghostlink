@@ -71,3 +71,10 @@ assets/app-screenshot.png
 !docs/archive/DEPLOYMENT.md
 !gmp-core/PROTOCOL_SPEC.md
 mobile/android/app/src/main/res/drawable-*/
+
+# Generated React Native bundle. Committing it makes reviewers read minified
+# output instead of source — a CodeRabbit pass produced six findings against
+# this file alone, all of which had to be traced back by hand. It is rebuilt by
+# `npx react-native bundle` and by every release build.
+mobile/android/app/src/main/assets/index.android.bundle
+mobile/android/app/src/main/res/drawable-*/

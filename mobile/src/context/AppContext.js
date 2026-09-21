@@ -7,6 +7,7 @@
  */
 
 import WebRTCService from '../services/WebRTCService';
+import {DEFAULT_SETTINGS, parseStoredState} from '../utils/settings-migration';
 import React, {
   createContext,
   useContext,
@@ -27,26 +28,6 @@ const STORAGE_KEYS = {
 };
 
 // ─── Default Settings ────────────────────────────────────────
-const DEFAULT_SETTINGS = {
-  /**
-   * Ghost Mesh bridge, e.g. ws://192.168.1.15:3002. Empty means no mesh, and
-   * the app uses direct WebRTC instead.
-   *
-   * One bridge process serves one identity (see gmp-bridge.ts), so this must
-   * point at a bridge started with THIS phone's seed — never the desktop's, or
-   * the two become the same node instead of two peers. That makes it an
-   * interop-testing facility rather than a shipping feature; see
-   * MOBILE_BUILD.md.
-   */
-  meshBridgeUrl: '',
-  theme: 'phantom',
-  fontSize: 16,
-  notifications: true,
-  sounds: true,
-  readReceipts: false,
-  encLevel: 'signal', // 'signal' | 'aes-gcm' | 'triple'
-  p2pRelay: false,
-};
 
 // ─── Initial State ───────────────────────────────────────────
 const INITIAL_STATE = {
@@ -231,11 +212,22 @@ function AppProvider({children}) {
 
   useEffect(() => {
     const url = (state.settings?.meshBridgeUrl || '').trim();
-    WebRTCService.setMeshBridge(url || null, state.identity?.seedPhrase || null);
-  }, [state.settings?.meshBridgeUrl, state.identity]);
+    // No seed is passed, and none is available to pass: SetupScreen keeps the
+    // recovery phrase out of app state on purpose, so that a plaintext copy
+    // never lands in AsyncStorage alongside the identity. This call used to
+    // read state.identity.seedPhrase, which is always undefined — so the
+    // bridge connected and then sat there, never sending the `start` frame it
+    // needs to bring a node up, with nothing saying why.
+    //
+    // Starting the mesh therefore needs an explicit unlock that supplies the
+    // phrase for the moment it is used. Until that exists the transport
+    // reports 'needs-unlock' rather than pretending to be connecting.
+    WebRTCService.setMeshBridge(url || null, null);
+  }, [state.settings?.meshBridgeUrl]);
 
   useEffect(() => {
     (async () => {
+      const raw = {};
       try {
         const [rawIdentity, rawMessages, rawSettings, rawPeers, rawGhostMesh] =
           await Promise.all([
@@ -245,33 +237,35 @@ function AppProvider({children}) {
             AsyncStorage.getItem(STORAGE_KEYS.PEERS),
             AsyncStorage.getItem(STORAGE_KEYS.GHOST_MESH),
           ]);
-
-        const restored = {};
-
-        if (rawIdentity) {
-          restored.identity = JSON.parse(rawIdentity);
-        }
-        if (rawMessages) {
-          restored.messages = objectToMap(JSON.parse(rawMessages));
-        }
-        if (rawSettings) {
-          restored.settings = {...DEFAULT_SETTINGS, ...JSON.parse(rawSettings)};
-        }
-        if (rawPeers) {
-          restored.peers = objectToMap(JSON.parse(rawPeers));
-        }
-        if (rawGhostMesh) {
-          restored.ghostMesh = JSON.parse(rawGhostMesh);
-        }
-
-        if (Object.keys(restored).length > 0) {
-          dispatch({type: Actions.RESTORE_STATE, payload: restored});
-        }
+        Object.assign(raw, {rawIdentity, rawMessages, rawSettings, rawPeers, rawGhostMesh});
       } catch (err) {
-        console.warn('[AppContext] hydration failed:', err);
-      } finally {
+        console.error('[AppContext] could not read local storage:', err);
         hydrated.current = true;
+        return;
       }
+
+      const {restored, lost} = parseStoredState(
+        {
+          identity: raw.rawIdentity,
+          messages: raw.rawMessages,
+          settings: raw.rawSettings,
+          peers: raw.rawPeers,
+          ghostMesh: raw.rawGhostMesh,
+        },
+        objectToMap,
+      );
+
+      if (lost.length > 0) {
+        console.error(
+          `[AppContext] ${lost.join(', ')} could not be read and were skipped. ` +
+          'The stored data has been left untouched.',
+        );
+      }
+
+      if (Object.keys(restored).length > 0) {
+        dispatch({type: Actions.RESTORE_STATE, payload: restored});
+      }
+      hydrated.current = true;
     })();
   }, []);
 
@@ -372,7 +366,26 @@ function AppProvider({children}) {
     dispatch({type: Actions.SET_CONNECTION_STATUS, payload: status});
   }, []);
 
+  /**
+   * Remove this identity and everything derived from it, from this device.
+   *
+   * The private key does not live in AsyncStorage — it is in the platform
+   * keystore, written by CryptoEngine.saveKeys() under the service
+   * "com.ghostlink.keys" and guarded by biometry. Clearing only the
+   * AsyncStorage keys therefore left the key material behind: a "wipe" that
+   * dropped the messages and the settings while the identity itself stayed on
+   * the device, recoverable by anything that could authenticate. CryptoEngine
+   * has always exported clearKeys(); nothing called it.
+   *
+   * Reports what it managed to remove so the caller can tell the user the
+   * truth rather than claiming a clean wipe after a partial one.
+   *
+   * @returns {Promise<{ok: boolean, cleared: string[], failed: string[]}>}
+   */
   const wipeAll = useCallback(async () => {
+    const cleared = [];
+    const failed = [];
+
     try {
       await AsyncStorage.multiRemove([
         STORAGE_KEYS.IDENTITY,
@@ -381,10 +394,27 @@ function AppProvider({children}) {
         STORAGE_KEYS.PEERS,
         STORAGE_KEYS.GHOST_MESH,
       ]);
+      cleared.push('messages', 'settings', 'peer cache', 'mesh state');
     } catch (err) {
-      console.warn('[AppContext] wipe error:', err);
+      console.warn('[AppContext] wipe: local store failed:', err);
+      failed.push('local store');
     }
+
+    // The part that actually matters.
+    try {
+      // clearKeys is a member of CryptoEngine (the default export), not a
+      // named export — destructuring it off the module gives undefined.
+      const {default: CryptoEngine} = await import('../utils/crypto');
+      const gone = await CryptoEngine.clearKeys();
+      if (gone) cleared.push('identity key');
+      else failed.push('identity key');
+    } catch (err) {
+      console.warn('[AppContext] wipe: keystore failed:', err);
+      failed.push('identity key');
+    }
+
     dispatch({type: Actions.WIPE_ALL});
+    return {ok: failed.length === 0, cleared, failed};
   }, []);
 
   const setGhostMesh = useCallback(meshData => {

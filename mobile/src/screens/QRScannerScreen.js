@@ -66,8 +66,26 @@ export function classifyScan(raw) {
   if (text.startsWith('{')) {
     try {
       const parsed = JSON.parse(text);
-      const inner = normalizeGhostAddress(parsed.ghostAddress || parsed.address || parsed.a || '');
-      if (inner) return {kind: 'ghost', address: inner, name: parsed.name || parsed.n};
+      // `c` is where the web client puts the address: its invite QR is
+      // {c: address, n: name, p: publicKeyHex, t: timestamp} (index.html,
+      // genInvite). Mobile only looked at ghostAddress/address/a, so `c` fell
+      // through to the legacy invite-code branch, failed INVITE_CODE_REGEX —
+      // which wants GL-XXXXXXXX-… and an address is GHOST-XXX-XXX-XXX — and a
+      // web invite came back 'unknown'. Scanning a web QR on a phone simply
+      // did not work.
+      const inner = normalizeGhostAddress(
+        parsed.ghostAddress || parsed.address || parsed.a || parsed.c || '',
+      );
+      if (inner) {
+        return {
+          kind: 'ghost',
+          address: inner,
+          name: parsed.name || parsed.n,
+          // The web ships the peer's public key alongside the address; keep it,
+          // it is what lets a message be sealed to them.
+          publicKeyHex: parsed.publicKeyHex || parsed.p || null,
+        };
+      }
       const code = parsed.code || parsed.c;
       if (code && INVITE_CODE_REGEX.test(String(code).toUpperCase())) {
         return {kind: 'invite', code: String(code).toUpperCase(), name: parsed.name || parsed.n};
@@ -118,7 +136,7 @@ export default function QRScannerScreen({navigation}) {
   }, []);
 
   const addPeer = useCallback(
-    async ({address, code, name}) => {
+    async ({address, code, name, publicKeyHex}) => {
       const peerId = `peer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const fingerprint = await CryptoEngine.sha256(address || code);
       dispatch({
@@ -127,6 +145,10 @@ export default function QRScannerScreen({navigation}) {
           id: peerId,
           name: name || address || `Peer ${(state.peers?.size ?? 0) + 1}`,
           ghostAddress: address || '',
+          // Carried from the invite. classifyScan reads it out of the web
+          // client's QR, and without storing it there is nothing to seal a
+          // message to that peer with.
+          publicKeyHex: publicKeyHex || '',
           inviteCode: address ? '' : code,
           fingerprint: fingerprint.slice(0, 16),
           online: false,

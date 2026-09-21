@@ -70,8 +70,8 @@ await sleep(200);
 const frames = WIRE.map(String);
 ok(!frames.some(f => f.includes(SECRET)), 'The plaintext never appears on the wire');
 ok(!frames.some(f => f.includes('__gl')), 'Even the message envelope is opaque on the wire');
-ok(frames.some(f => { try { const p = JSON.parse(f); return p.v === 1 && p.iv && p.ct; } catch { return false; } }),
-   'What crossed the wire is a versioned AES-GCM envelope');
+ok(frames.some(f => { try { const p = JSON.parse(f); return p.v === 2 && p.iv && p.ct; } catch { return false; } }),
+   'What crossed the wire is a v2 AES-GCM envelope');
 
 ok(received.length === 1, 'Bob received exactly one message');
 ok(received[0]?.data?.text === SECRET, 'Bob decrypted it to the original text');
@@ -95,6 +95,20 @@ ok(received[0]?.encrypted === false, 'and explicitly marked not encrypted');
 
 const sec = alice.getPeerSecurity(BOB);
 ok(sec.encrypted === true && sec.ready === true, 'getPeerSecurity reports the peer as end-to-end ready');
+
+// A frame from a peer on an older envelope version must be rejected, never
+// delivered as chat. This is the rolling-upgrade case.
+{
+  received.length = 0;
+  errs.length = 0;
+  const v1Frame = JSON.stringify({v: 1, iv: 'aa'.repeat(12), ct: 'bb'.repeat(40)});
+  dcB.onmessage({data: v1Frame});
+  await sleep(100);
+  ok(received.length === 0, 'A v1 envelope is NOT delivered as a message');
+  ok(errs.length === 1, 'It is reported as a message-error');
+  ok(!received.some(r => r.transport === 'webrtc-plain'),
+     'and is never mistaken for unencrypted traffic');
+}
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

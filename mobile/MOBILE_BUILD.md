@@ -10,7 +10,7 @@ wired up, so this remains a **development build**, not a shippable messenger.
 
 `app-release.apk`, 98 MB, built 2026-09-10. Verified:
 
-- `package: name='io.ghostlink.app' versionCode='1' versionName='2.0.0'`
+- `package: name='io.ghostlink.app' versionCode='5' versionName='2.0.0'`
 - `application-label: 'GhostLink'`, launcher activity `io.ghostlink.app.MainActivity`
 - `minSdkVersion 24`, `targetSdkVersion 34`
 - Signed `CN=GhostLink` (SHA-256 `803469c2…`), APK Signature Scheme v2
@@ -90,7 +90,7 @@ $ANDROID_HOME/build-tools/35.0.0/apksigner verify --print-certs \
 |---|---|
 | Package name | `io.ghostlink.app` |
 | App name | GhostLink |
-| Version | 2.0.0 (versionCode 1) |
+| Version | 2.0.0 (versionCode 5) |
 | Min SDK | 24 (Android 7.0) |
 | Target / compile SDK | 34 |
 | Architectures | armeabi-v7a, arm64-v8a, x86, x86_64 |
@@ -119,15 +119,61 @@ a TURN server, handles plaintext. So the direct path seals the payload itself
 before it goes. `sendMessage()` **refuses to send** rather than fall back to
 plaintext if a session key has not been established yet.
 
-The session key comes from an X25519 exchange over the data channel, fed to
-PBKDF2-HMAC-SHA256 at 100,000 iterations — the same primitive and wire shape as
-the web client's `KeyManager`. The salt had to change: the web derives with
-`ghostlink-send-${peerId}-${Date.now()}`, and a locally-taken timestamp means
-two peers can never arrive at the same key. Here the salt is the two peer ids
-sorted, so both ends compute the same pair without either needing to know who
-dialled whom. There is no ratchet and no forward secrecy — one key pair per
-session. It is the floor that makes the padlock honest, not a replacement for
-GMP.
+The session key comes from an X25519 exchange over the data channel, expanded
+with **HKDF-SHA256** — extract once, then expand per direction with the two peer
+ids sorted in the info field, so both ends compute the same mirrored pair
+without either needing to know who dialled whom. (It was PBKDF2 at 100k
+iterations initially, copied from the web's `KeyManager`. That is the primitive
+for stretching a low-entropy password; an X25519 shared secret is already
+uniformly random, so the iterations bought latency and nothing else.) The
+envelope carries a version, currently 2, so a peer on the old derivation is
+refused at the version check rather than failing authentication on every frame.
+
+**There is no ratchet and no forward secrecy** — one key pair per session,
+derived once. Compromise of a session key exposes that whole session. It is the
+floor that makes the padlock honest on the direct path, not a replacement for
+GMP, and a ratchet is a later milestone.
+
+## There is no signaling server, and no SDP paste
+
+`SignalingService` is gone. It dialled `ws://localhost:3001` — a server that no
+longer exists anywhere in the project, and on a handset `localhost` is the
+handset. Nothing in `mobile/` now contains a live `ws://` except the mesh
+bridge URL, which comes from settings rather than a hardcoded default.
+
+The obvious replacement — a serverless QR/paste SDP exchange — is **not
+available to copy from the web client, because the web deliberately removed
+it**. From `index.html`:
+
+> There is no SDP-paste fallback: if the mesh is not up yet we say so and keep
+> waiting, because handing the user a wall of base64 to copy was never an
+> answer.
+
+> This used to be a ladder: GMP bridge, else a Python relay, else a "WebRTC
+> serverless" connector whose only usable feature was the manual SDP paste.
+> Each rung silently changed what an invite code looked like […] The ladder is
+> gone.
+
+So the web's connection model is: **a Ghost Address, exchanged by QR or paste,
+resolved through the mesh.** The QR is serverless; the *rendezvous* is the mesh.
+
+The consequence for mobile is worth stating plainly: with no signaling server
+and no SDP paste, a direct WebRTC connection has no way to exchange an offer
+and an answer. `attachSignaling()` now throws with that explanation rather than
+letting a connection hang. **The mesh bridge is the only working transport on
+mobile today**, and it is a test harness (below). Until an embedded mesh node
+lands, the shipping app cannot establish a peer connection on its own.
+
+Two things follow that are tracked, not solved:
+
+- **Guardian recovery is affected.** `RecoveryScreen` used the same signaling
+  dial, so guardian rendezvous has been broken since those servers were
+  removed. The dial is gone rather than left looking functional.
+- **Message bodies are not wire-compatible with the web.** The web seals each
+  chat payload with ECIES to the recipient's P-256 key (`sealPayload`,
+  index.html:1139). Mobile's direct path uses a session layer applied by the
+  transport (`src/utils/session-crypto.js`). Both are end-to-end; neither reads
+  the other. Closing that means mobile adopting the ECIES seal.
 
 ## Ghost Mesh on mobile: a test harness, not the product
 
@@ -270,12 +316,6 @@ and not in the bundle:
 
 Reachable screens: Setup, ChatList, Chat, Call, Settings, Recovery.
 
-## Signalling
-
-`services/SignalingService.js` defaults to `ws://localhost:3001` — the signalling
-server that used to live in `server/` and has since been removed from the repo.
-WebRTC call setup has no signalling path in this build.
-
 ## Dependency drift that had to be pinned
 
 `package.json` used caret ranges on packages that track React Native's version
@@ -325,4 +365,9 @@ Consequently `CryptoService.js` (used only by the Ghost Mesh setup modal) has no
 crypto backend in this build and throws a clear error if called, rather than
 silently returning wrong bytes.
 
-Peer connections in this build are WebRTC with QR / pasted invites only.
+**Peer connections do not work in this build.** The QR / pasted invite carries a
+Ghost Address, and resolving one needs the mesh; the direct WebRTC path has no
+rendezvous since the signaling servers were removed, so it cannot exchange an
+offer and an answer. The mesh bridge (see above) is a test harness, not a
+shipping transport. This is the open item that gates the app being usable —
+see "There is no signaling server, and no SDP paste".

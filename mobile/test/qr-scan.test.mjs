@@ -75,5 +75,22 @@ console.log('\n[4] Anything else is refused, never guessed at');
 }
 
 fs.unlinkSync(modPath);
+
+// ── Web interop ────────────────────────────────────────────────────────────
+// The web client's invite QR, exactly as index.html genInvite() builds it.
+{
+  const webQr = JSON.stringify({
+    c: 'GHOST-ABC-DEF-GHJ',
+    n: 'Desktop User',
+    p: '04' + 'ab'.repeat(32),
+    t: Date.now(),
+  });
+  const r = classifyScan(webQr);
+  ok('A web-generated invite QR is recognised as a Ghost Address', r.kind === 'ghost');
+  ok("The address is read from the web's `c` field", r.address === 'GHOST-ABC-DEF-GHJ');
+  ok("The peer's name comes across", r.name === 'Desktop User');
+  ok('The public key comes across, so messages can be sealed to them', r.publicKeyHex === '04' + 'ab'.repeat(32));
+}
+
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);
 process.exit(fail === 0 ? 0 : 1);

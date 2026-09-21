@@ -13,23 +13,33 @@
  * So the direct path gets its own layer, and the padlock follows the path the
  * message actually took rather than the app in general.
  *
- * WHY NOT REUSE THE WEB'S KeyManager VERBATIM
+ * RELATION TO THE WEB CLIENT
  *
- * src/crypto/key-manager.js derives its session keys as
+ * The web seals each chat payload with sealPayload() — ephemeral-static ECIES
+ * to the recipient's P-256 key (index.html:1139) — applied by the caller before
+ * the transport sees it. This module is a *session* layer instead, applied by
+ * the transport, because mobile needs the direct channel itself to be safe
+ * rather than trusting every caller to remember to seal.
  *
- *     PBKDF2(masterKey, salt = `ghostlink-send-${peerId}-${Date.now()}`)
+ * That means the two are NOT wire-compatible for message bodies: a web client
+ * and a mobile client on a direct data channel would each encrypt in a form the
+ * other does not read. Closing that is a separate piece of work — mobile would
+ * adopt the ECIES seal — and is noted in MOBILE_BUILD.md.
  *
- * The timestamp is taken locally at initSession(), so two peers deriving
- * independently get different keys and can never read each other. It works
- * there because each side encrypts for storage rather than for the other side.
- * The primitive and the wire shape are reused exactly — AES-256-GCM, a fresh
- * 12-byte IV per message, PBKDF2-HMAC-SHA256 at 100,000 iterations — but the
- * salt is replaced with something both ends can compute:
+ * Note that src/crypto/key-manager.js is NOT the web's peer encryption. It
+ * derives with `PBKDF2(masterKey, salt = ...-${Date.now()})`, which two peers
+ * could never agree on; it is used only by the self-test and the licensing
+ * code, never on the messaging path.
+ *
+ * The cipher and the wire shape follow the web's — AES-256-GCM with a fresh
+ * 12-byte IV per message. The key derivation does not: the input here is an
+ * X25519 shared secret, already uniformly random, so HKDF is the right
+ * primitive and a PBKDF2 iteration count would buy nothing but latency.
  *
  *     shared  = X25519(ourPrivate, theirPublic)          // same on both sides
  *     lo, hi  = the two node ids, sorted                 // same on both sides
- *     key A→B = PBKDF2(shared, `ghostlink-v1-${lo}->${hi}`)
- *     key B→A = PBKDF2(shared, `ghostlink-v1-${hi}->${lo}`)
+ *     key A→B = HKDF-SHA256(shared, salt, info = `ghostlink-v2-${lo}->${hi}`)
+ *     key B→A = HKDF-SHA256(shared, salt, info = `ghostlink-v2-${hi}->${lo}`)
  *
  * Sorting the ids is what makes the pair symmetric without either side needing
  * to know which of them "started" — each takes the arrow pointing away from
@@ -43,16 +53,25 @@
  */
 
 import {x25519} from '@noble/curves/ed25519';
-import {pbkdf2Async} from '@noble/hashes/pbkdf2';
+import {hkdf} from '@noble/hashes/hkdf';
 import {sha256} from '@noble/hashes/sha256';
 import {gcm} from '@noble/ciphers/aes';
 
-/** Matches the web client's KeyManager.deriveKey. */
-const PBKDF2_ITERATIONS = 100000;
 /** AES-GCM standard nonce length. Also what the web client uses. */
 const IV_BYTES = 12;
-/** Bumped if the derivation or the wire shape ever changes. */
-const WIRE_VERSION = 1;
+/**
+ * Bumped when the derivation or the wire shape changes.
+ *
+ *   1 — PBKDF2-HMAC-SHA256, 100k iterations
+ *   2 — HKDF-SHA256 (current)
+ *
+ * A v1 peer and a v2 peer derive different keys, so raising this is what makes
+ * the mismatch fail cleanly at the version check instead of surfacing as an
+ * authentication error on every frame.
+ */
+const WIRE_VERSION = 2;
+/** Domain separation for the HKDF extract step. */
+const HKDF_SALT = 'ghostlink-session-v2';
 
 const encoder = new TextEncoder();
 
@@ -103,10 +122,14 @@ export async function deriveSessionKeys(ourPrivateKey, theirPublicKey, ourId, th
   const forward = `ghostlink-v${WIRE_VERSION}-${lo}->${hi}`;
   const backward = `ghostlink-v${WIRE_VERSION}-${hi}->${lo}`;
 
-  const [forwardKey, backwardKey] = await Promise.all([
-    pbkdf2Async(sha256, shared, encoder.encode(forward), {c: PBKDF2_ITERATIONS, dkLen: 32}),
-    pbkdf2Async(sha256, shared, encoder.encode(backward), {c: PBKDF2_ITERATIONS, dkLen: 32}),
-  ]);
+  // HKDF, not PBKDF2. PBKDF2's iteration count exists to make guessing a
+  // low-entropy password expensive; an X25519 shared secret has nothing to
+  // guess, so the work was pure latency on every session. HKDF is the
+  // primitive for this job: extract the secret to a uniform key, then expand
+  // it once per direction with the peer pair in the info field.
+  const salt = encoder.encode(HKDF_SALT);
+  const forwardKey = hkdf(sha256, shared, salt, encoder.encode(forward), 32);
+  const backwardKey = hkdf(sha256, shared, salt, encoder.encode(backward), 32);
 
   // We send along the arrow that points away from us.
   return ourId === lo
@@ -147,10 +170,22 @@ export function decryptMessage(envelope, recvKey) {
   return new TextDecoder().decode(plaintext);
 }
 
-/** Is this object one of our sealed envelopes? */
+/**
+ * Is this object one of our sealed envelopes — of ANY version?
+ *
+ * Deliberately shape-based, not version-based. Matching on WIRE_VERSION meant a
+ * peer still on v1 produced frames this predicate rejected, so the transport
+ * took them for ordinary traffic and emitted the ciphertext object as a chat
+ * message tagged `webrtc-plain`. A rolling upgrade would have surfaced protocol
+ * frames in the conversation instead of failing cleanly.
+ *
+ * Recognising the shape keeps every envelope on the encrypted path;
+ * decryptMessage() stays the single authority on which versions are readable.
+ */
 export function isEncryptedEnvelope(value) {
-  return !!value && typeof value === 'object' && value.v === WIRE_VERSION &&
+  return !!value && typeof value === 'object' &&
+    typeof value.v === 'number' &&
     typeof value.iv === 'string' && typeof value.ct === 'string';
 }
 
-export const WIRE = {VERSION: WIRE_VERSION, IV_BYTES, PBKDF2_ITERATIONS};
+export const WIRE = {VERSION: WIRE_VERSION, IV_BYTES, KDF: 'HKDF-SHA256'};

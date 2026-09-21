@@ -197,7 +197,7 @@ class WebRTCService extends Emitter {
      */
     this._gmpBridgeUrl = options.gmpBridgeUrl || null;
     this._gmpSeedPhrase = options.gmpSeedPhrase || null;
-    /** @type {'disabled'|'connecting'|'connected'|'failed'} */
+    /** @type {'disabled'|'connecting'|'connected'|'needs-unlock'|'failed'} */
     this._gmpStatus = 'disabled';
     if (this._gmpBridgeUrl) this._initGMPConnection();
   }
@@ -245,6 +245,16 @@ class WebRTCService extends Emitter {
           } catch (e) {
             console.warn('[Mobile GMP] could not start the node:', e && e.message);
           }
+        } else {
+          // Connected, but with nothing to start a node with. Saying so beats
+          // sitting on an open socket that will never carry a message: the
+          // bridge has no identity until it is given one.
+          this._gmpStatus = 'needs-unlock';
+          this._gmpActive = false;
+          console.warn(
+            '[Mobile GMP] bridge reachable but no recovery phrase was supplied, ' +
+            'so no node was started. Unlock the identity to start the mesh.',
+          );
         }
         this.emit('mesh-status', this.getMeshStatus());
         console.log('[Mobile GMP] Connected to GMP bridge, using Ghost Mesh transport');
@@ -335,19 +345,24 @@ class WebRTCService extends Emitter {
   }
 
   /**
-   * Attach a SignalingService instance so that offers, answers, and ICE
-   * candidates can be exchanged automatically.
+   * Rendezvous for the direct path.
    *
-   * @param {import('./SignalingService').default} signalingService
+   * There is none. GhostLink deleted its signaling servers deliberately — the
+   * connection model is a Ghost Address resolved through the mesh, and the web
+   * client removed its manual SDP-paste fallback for the same reason ("handing
+   * the user a wall of base64 to copy was never an answer", index.html).
+   *
+   * So a direct WebRTC connection currently has no way to exchange an offer
+   * and an answer, and createConnection() cannot complete on its own. The mesh
+   * bridge is the working transport; see getMeshStatus(). This method stays as
+   * a named place for that gap rather than leaving callers to discover it by
+   * watching a connection hang.
    */
-  attachSignaling(signalingService) {
-    this._signaling = signalingService;
-
-    // Listen for incoming signaling messages
-    signalingService.on('offer', (data) => this._handleOffer(data));
-    signalingService.on('answer', (data) => this._handleAnswer(data));
-    signalingService.on('ice-candidate', (data) =>
-      this._handleRemoteIceCandidate(data),
+  attachSignaling() {
+    throw new Error(
+      'GhostLink has no signaling server: a direct WebRTC connection needs a ' +
+      'rendezvous, and the supported one is the Ghost Mesh. Configure a mesh ' +
+      'bridge (Settings → Mesh bridge) or see MOBILE_BUILD.md.',
     );
   }
 
@@ -396,6 +411,8 @@ class WebRTCService extends Emitter {
 
     pc.onicecandidate = (event) => {
       if (event.candidate && this._signaling) {
+        // Unreachable while there is no rendezvous; kept so the shape of the
+        // flow survives for whatever replaces it.
         this._signaling.sendIceCandidate(peerId, event.candidate);
       }
     };

@@ -52,15 +52,18 @@ export default function RecoveryScreen({navigation}) {
   useEffect(() => {
     const initWebRTC = async () => {
       try {
-        // Its own short-lived pair, deliberately not the app-wide transport:
+        // Its own short-lived transport, deliberately not the app-wide one:
         // recovery talks to guardians over a separate connection.
+        //
+        // This used to attach a SignalingService, which dialled
+        // ws://localhost:3001 — a signaling server that no longer exists
+        // anywhere in the project, so guardian rendezvous has in fact been
+        // broken since those servers were removed. The dial is gone rather
+        // than left in place looking functional; reaching a guardian needs a
+        // serverless rendezvous, which is tracked in MOBILE_BUILD.md.
         const {WebRTCService} = await import('../services/WebRTCService');
-        const {SignalingService} = await import('../services/SignalingService');
 
-        const signaling = new SignalingService();
         const webrtc = new WebRTCService();
-        webrtc.attachSignaling(signaling);
-
         distributor.useWebRTC(webrtc);
         webrtcRef.current = webrtc;
       } catch (e) {
