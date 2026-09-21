@@ -104,11 +104,13 @@ android {
         // independently of versionName: several builds of "2.0.0" are fine, each
         // with its own versionCode.
         //
+        //   4  — 2.0.0 real transport: chat actually sends, app-layer AES-GCM
+        //        on the direct WebRTC path, honest per-message padlock.
         //   3  — 2.0.0 device test build: push notifications made non-fatal,
         //        arm64-only. See MOBILE_BUILD.md.
         //   2  — 2.0.0 (first shippable build; versionCode 1 was the unshipped
         //        pair of APKs built on 2026-09-13)
-        versionCode 3
+        versionCode 4
         versionName "2.0.0"
 
         // Opt-in ABI filtering, for producing a phone-sized APK:

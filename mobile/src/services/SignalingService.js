@@ -411,4 +411,10 @@ class SignalingService {
   }
 }
 
-export default SignalingService;
+export {SignalingService};
+
+/**
+ * The app's signaling connection. Default is the shared instance; the class is
+ * still exported for callers that need a separate one (see RecoveryScreen).
+ */
+export default new SignalingService();

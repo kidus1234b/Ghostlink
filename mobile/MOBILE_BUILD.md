@@ -103,6 +103,56 @@ Permissions requested: `INTERNET`, `ACCESS_NETWORK_STATE`, `CAMERA` (QR invites)
 `BIND_VPN_SERVICE` is deliberately **not** requested — it is only needed for the
 embedded GMP mesh, which is not in this build.
 
+## Transport, and what the padlock means
+
+A message leaves the phone one of two ways, and the UI labels each message by
+the path it actually took rather than making a blanket claim about the app.
+
+| Path | Protection | Shown as |
+|---|---|---|
+| Ghost Mesh bridge | GMP end-to-end | 🔒 |
+| Direct WebRTC | AES-256-GCM applied before the data channel (`src/utils/session-crypto.js`) | 🔒 |
+| Anything else | DTLS only — protects the hop, not the conversation | `transport-encrypted`, no padlock |
+
+WebRTC's own DTLS is not end-to-end: whatever relays the connection, including
+a TURN server, handles plaintext. So the direct path seals the payload itself
+before it goes. `sendMessage()` **refuses to send** rather than fall back to
+plaintext if a session key has not been established yet.
+
+The session key comes from an X25519 exchange over the data channel, fed to
+PBKDF2-HMAC-SHA256 at 100,000 iterations — the same primitive and wire shape as
+the web client's `KeyManager`. The salt had to change: the web derives with
+`ghostlink-send-${peerId}-${Date.now()}`, and a locally-taken timestamp means
+two peers can never arrive at the same key. Here the salt is the two peer ids
+sorted, so both ends compute the same pair without either needing to know who
+dialled whom. There is no ratchet and no forward secrecy — one key pair per
+session. It is the floor that makes the padlock honest, not a replacement for
+GMP.
+
+## Ghost Mesh on mobile: a test harness, not the product
+
+`meshBridgeUrl` in settings points the app at a Ghost Mesh bridge, and this is
+**for interop testing only**.
+
+A bridge process serves exactly one identity — `manager` in `gmp-bridge.ts` is
+per-process and the first `start` wins — so a phone must not share the
+desktop's bridge. Two clients on one bridge are the *same node*, not two peers
+that can talk to each other. Testing mobile↔desktop therefore needs a second
+bridge, started with the phone's own seed:
+
+```bash
+# On the desktop, a second bridge for the phone's identity.
+GMP_BRIDGE_PORT=3003 GMP_PORT=49501 node gmp-core/dist/gmp-bridge.js
+# Then in the app: Settings → Mesh bridge → ws://<desktop-lan-ip>:3003
+```
+
+**This is not a shipping architecture.** A real phone user has no desktop
+running their seed. For the shipping app the phone's transport is
+self-contained: direct WebRTC with QR/paste invites, carrying the app-layer
+AES-256-GCM above. Putting a real mesh node on the handset — an embedded
+runtime via nodejs-mobile — is a later milestone, and until it lands the mesh
+path on mobile should be treated as a developer facility.
+
 ## Cryptography
 
 `src/utils/crypto.js` previously contained placeholder code that looked like

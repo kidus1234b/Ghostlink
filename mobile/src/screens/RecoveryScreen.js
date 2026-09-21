@@ -52,8 +52,10 @@ export default function RecoveryScreen({navigation}) {
   useEffect(() => {
     const initWebRTC = async () => {
       try {
-        const {default: WebRTCService} = await import('../services/WebRTCService');
-        const {default: SignalingService} = await import('../services/SignalingService');
+        // Its own short-lived pair, deliberately not the app-wide transport:
+        // recovery talks to guardians over a separate connection.
+        const {WebRTCService} = await import('../services/WebRTCService');
+        const {SignalingService} = await import('../services/SignalingService');
 
         const signaling = new SignalingService();
         const webrtc = new WebRTCService();

@@ -52,6 +52,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
+import WebRTCService from '../services/WebRTCService';
 import PeerAvatar from '../components/PeerAvatar';
 
 // ─── Constants ─────────────────────────────────────────────
@@ -511,6 +512,7 @@ function MessageBubbleInline({
           )}
 
         <View style={styles.metaRow}>
+          <TransportBadge message={message} />
           <Text style={styles.timestampText}>
             {formatTime(message.timestamp)}
           </Text>
@@ -519,6 +521,34 @@ function MessageBubbleInline({
       </TouchableOpacity>
     </Animated.View>
   );
+}
+
+/**
+ * What protected THIS message, per message.
+ *
+ * A padlock is a claim, and the honest thing to claim depends on how the
+ * message actually travelled:
+ *
+ *   gmp          — through the Ghost Mesh, encrypted end to end by GMP
+ *   webrtc-e2e   — direct, but sealed with AES-256-GCM before it left (see
+ *                  utils/session-crypto.js), so also end to end
+ *   anything else — DTLS protected the hop and nothing protected the
+ *                  conversation. No padlock: a relay could read it, and
+ *                  showing a lock here would be worse than showing nothing.
+ */
+function TransportBadge({message}) {
+  if (!message) return null;
+  const endToEnd = message.encrypted === true &&
+    (message.transport === 'gmp' || message.transport === 'webrtc-e2e');
+
+  if (endToEnd) {
+    return <Text style={styles.transportBadgeSecure} accessibilityLabel="End-to-end encrypted">🔒</Text>;
+  }
+  // Explicitly unlabelled rather than reassuring.
+  if (message.transport === 'webrtc-plain') {
+    return <Text style={styles.transportBadgePlain}>transport-encrypted</Text>;
+  }
+  return null;
 }
 
 // ─── Emoji Grid Overlay ────────────────────────────────────
@@ -685,6 +715,7 @@ export default function ChatScreen({route, navigation}) {
     peers,
     messages: allMessages,
     addMessage,
+    updateMessage,
   } = useApp();
 
   // Route params
@@ -769,6 +800,51 @@ export default function ChatScreen({route, navigation}) {
 
   // ── Send Message ──
 
+  /**
+   * Inbound traffic for this conversation.
+   *
+   * Two kinds arrive: chat messages, which are rendered and acknowledged, and
+   * acks for messages we sent, which are the only thing that may move a status
+   * to DELIVERED. `encrypted` comes from the transport rather than from us, so
+   * a message is only ever shown as secured if the path it took actually
+   * secured it.
+   */
+  useEffect(() => {
+    if (!peerId) return undefined;
+    const roomId = peerId;
+
+    const onMessage = ({peerId: from, data, transport, encrypted}) => {
+      if (from !== peerId || !data || typeof data !== 'object') return;
+
+      if (data.__gl === 'ack' && data.id) {
+        updateMessage(roomId, data.id, {status: MESSAGE_STATUS.DELIVERED});
+        return;
+      }
+
+      if (data.__gl === 'chat' && data.text) {
+        addMessage(roomId, {
+          id: data.id || `rx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          sender: peer?.name || 'Peer',
+          text: data.text,
+          plainText: data.text,
+          timestamp: data.timestamp || Date.now(),
+          type: 'text',
+          status: MESSAGE_STATUS.READ,
+          replyTo: data.replyTo || null,
+          transport: transport || 'unknown',
+          encrypted: !!encrypted,
+        });
+        // Acknowledge, so their client can show a delivery it can stand behind.
+        if (data.id) {
+          WebRTCService.sendMessage(peerId, {__gl: 'ack', id: data.id});
+        }
+      }
+    };
+
+    WebRTCService.on('message', onMessage);
+    return () => WebRTCService.off('message', onMessage);
+  }, [peerId, peer, addMessage, updateMessage]);
+
   const handleSend = useCallback(() => {
     const text = inputText.trim();
     if (!text) return;
@@ -776,32 +852,56 @@ export default function ChatScreen({route, navigation}) {
     Vibration.vibrate(15);
 
     const roomId = peerId || 'general';
+    const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // How this message will actually travel decides what the UI may claim
+    // about it. Recorded per message, because a conversation can move between
+    // the mesh and a direct connection.
+    const security = peerId
+      ? WebRTCService.getPeerSecurity(peerId)
+      : {transport: 'none', encrypted: false, ready: false};
+
     const newMessage = {
-      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: messageId,
       sender: identity?.name || 'You',
       text,
       plainText: text,
       timestamp: Date.now(),
       type: 'text',
-      status: MESSAGE_STATUS.SENT,
+      status: MESSAGE_STATUS.SENDING,
       replyTo: replyTo?.id || null,
+      transport: security.transport,
+      encrypted: security.encrypted,
     };
 
     addMessage(roomId, newMessage);
+
+    // Actually send it. A status only moves because the transport said so:
+    // SENT when it went out, FAILED when it could not, and DELIVERED only
+    // later, when the peer acknowledges it.
+    if (peerId) {
+      const sent = WebRTCService.sendMessage(peerId, {
+        __gl: 'chat',
+        id: messageId,
+        text,
+        replyTo: replyTo?.id || null,
+        timestamp: newMessage.timestamp,
+      });
+      updateMessage(roomId, messageId, {
+        status: sent ? MESSAGE_STATUS.SENT : MESSAGE_STATUS.FAILED,
+      });
+    } else {
+      updateMessage(roomId, messageId, {status: MESSAGE_STATUS.FAILED});
+    }
     setInputText('');
     setReplyTo(null);
     setShowEmoji(false);
     setInputHeight(40);
 
-    // Simulate delivery
-    setTimeout(() => {
-      newMessage.status = MESSAGE_STATUS.DELIVERED;
-    }, 1500);
-
     setTimeout(() => {
       flatListRef.current?.scrollToEnd({animated: true});
     }, 100);
-  }, [inputText, peerId, identity, addMessage, replyTo]);
+  }, [inputText, peerId, identity, addMessage, updateMessage, replyTo]);
 
   // ── Long Press Context ──
 
@@ -1051,13 +1151,8 @@ export default function ChatScreen({route, navigation}) {
               <Text style={styles.emptyIcon}>👻</Text>
               <Text style={styles.emptyTitle}>No messages yet</Text>
               <Text style={styles.emptyDesc}>
-                Send an encrypted message to start the conversation.
+                Send a message to start the conversation.
               </Text>
-              <View style={styles.emptyEncBadge}>
-                <Text style={styles.emptyEncText}>
-                  🔒 End-to-end encrypted
-                </Text>
-              </View>
             </View>
           }
         />
@@ -1428,6 +1523,14 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     marginTop: 4,
     gap: 5,
+  },
+  transportBadgeSecure: {
+    fontSize: 9,
+  },
+  transportBadgePlain: {
+    color: TEXT_MUTED,
+    fontSize: 9,
+    fontStyle: 'italic',
   },
   timestampText: {
     color: TEXT_MUTED,

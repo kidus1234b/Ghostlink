@@ -16,6 +16,13 @@
  */
 
 import {
+  generateSessionKeyPair,
+  deriveSessionKeys,
+  encryptMessage,
+  decryptMessage,
+  isEncryptedEnvelope,
+} from '../utils/session-crypto';
+import {
   RTCPeerConnection,
   RTCSessionDescription,
   RTCIceCandidate,
@@ -162,14 +169,84 @@ class WebRTCService extends Emitter {
     this._meshPeers = new Map();
     this._gmpActive = false;
     this._gmpWs = null;
-    this._initGMPConnection();
+    /**
+     * Our X25519 keypair for direct-path sessions, and the derived keys per
+     * peer. WebRTC's DTLS only protects each hop, so anything relaying the
+     * connection sees plaintext; this is what makes the direct path end to end.
+     * @private
+     */
+    this._sessionKeyPair = null;
+    /** @private @type {Map<string, {sendKey: Uint8Array, recvKey: Uint8Array}>} */
+    this._sessionKeys = new Map();
+    /** @private Our own id, needed to derive symmetric keys. */
+    this._localPeerId = options.localPeerId || null;
+    /**
+     * Where the Ghost Mesh bridge lives.
+     *
+     * This used to be hardcoded to ws://localhost:3002, which cannot work on a
+     * phone: localhost is the handset, and there is no bridge running on it —
+     * embedded GMP is not in this build. The connection therefore always
+     * failed, _gmpActive stayed false, and every message silently took the
+     * direct WebRTC path instead. The web client has always been able to point
+     * at a remote bridge (`?bridge=192.168.1.15:3002`); mobile now can too.
+     *
+     * One bridge process serves one GMP identity — `manager` in gmp-bridge.ts
+     * is per-process and the first `start` wins — so a phone must not share the
+     * desktop's bridge or the two become the same node rather than two peers
+     * that can talk. Point it at a bridge started with the phone's own seed.
+     */
+    this._gmpBridgeUrl = options.gmpBridgeUrl || null;
+    this._gmpSeedPhrase = options.gmpSeedPhrase || null;
+    /** @type {'disabled'|'connecting'|'connected'|'failed'} */
+    this._gmpStatus = 'disabled';
+    if (this._gmpBridgeUrl) this._initGMPConnection();
+  }
+
+  /**
+   * How the mesh transport is doing, so the UI can say so rather than leaving
+   * the user to guess why a message went out over a different path.
+   * @returns {{status: string, url: string|null, active: boolean}}
+   */
+  getMeshStatus() {
+    return {status: this._gmpStatus, url: this._gmpBridgeUrl, active: this._gmpActive};
+  }
+
+  /**
+   * Point the mesh transport at a bridge, or at nothing.
+   * @param {string|null} url e.g. ws://192.168.1.15:3002
+   * @param {string|null} [seedPhrase] Identity for this node; the bridge starts it.
+   */
+  setMeshBridge(url, seedPhrase = null) {
+    if (this._gmpWs) {
+      try { this._gmpWs.close(); } catch (e) { /* already gone */ }
+      this._gmpWs = null;
+    }
+    this._gmpActive = false;
+    this._gmpBridgeUrl = url || null;
+    if (seedPhrase !== null) this._gmpSeedPhrase = seedPhrase;
+    this._gmpStatus = this._gmpBridgeUrl ? 'connecting' : 'disabled';
+    this.emit('mesh-status', this.getMeshStatus());
+    if (this._gmpBridgeUrl) this._initGMPConnection();
   }
 
   _initGMPConnection() {
     try {
-      this._gmpWs = new WebSocket('ws://localhost:3002');
+      this._gmpStatus = 'connecting';
+      this._gmpWs = new WebSocket(this._gmpBridgeUrl);
       this._gmpWs.onopen = () => {
         this._gmpActive = true;
+        this._gmpStatus = 'connected';
+        // The bridge does not bring a node up on its own: without a `start` it
+        // has no identity and `send` has nothing to send from. The web client's
+        // host sends this; on mobile there is no host, so we send it ourselves.
+        if (this._gmpSeedPhrase) {
+          try {
+            this._gmpWs.send(JSON.stringify({type: 'start', seedPhrase: this._gmpSeedPhrase}));
+          } catch (e) {
+            console.warn('[Mobile GMP] could not start the node:', e && e.message);
+          }
+        }
+        this.emit('mesh-status', this.getMeshStatus());
         console.log('[Mobile GMP] Connected to GMP bridge, using Ghost Mesh transport');
       };
       
@@ -181,6 +258,17 @@ class WebRTCService extends Emitter {
           return;
         }
         
+        if (msg.type === 'started') {
+          this._gmpNodeId = msg.nodeId || null;
+          this._gmpGhostAddress = msg.ghostAddress || null;
+          this.emit('mesh-status', {
+            ...this.getMeshStatus(),
+            nodeId: this._gmpNodeId,
+            ghostAddress: this._gmpGhostAddress,
+          });
+          return;
+        }
+
         if (msg.type === 'peer-connected') {
           this.emit('peer-state', { peerId: msg.nodeId, state: PeerState.CONNECTED });
           this.emit('datachannel-open', { peerId: msg.nodeId });
@@ -190,22 +278,28 @@ class WebRTCService extends Emitter {
         } else if (msg.type === 'message') {
           try {
             const parsed = JSON.parse(msg.payload);
-            this.emit('message', { peerId: msg.fromNodeId, data: parsed });
+            this.emit('message', { peerId: msg.fromNodeId, data: parsed, transport: 'gmp', encrypted: true });
           } catch (e) {
-            this.emit('message', { peerId: msg.fromNodeId, data: msg.payload });
+            this.emit('message', { peerId: msg.fromNodeId, data: msg.payload, transport: 'gmp', encrypted: true });
           }
         }
       };
       
       this._gmpWs.onerror = () => {
         this._gmpActive = false;
+        this._gmpStatus = 'failed';
+        this.emit('mesh-status', this.getMeshStatus());
       };
-      
+
       this._gmpWs.onclose = () => {
         this._gmpActive = false;
+        if (this._gmpStatus !== 'failed') this._gmpStatus = 'disabled';
+        this.emit('mesh-status', this.getMeshStatus());
       };
     } catch (e) {
       this._gmpActive = false;
+      this._gmpStatus = 'failed';
+      this.emit('mesh-status', this.getMeshStatus());
     }
   }
 
@@ -449,6 +543,19 @@ class WebRTCService extends Emitter {
     session.dataChannel = dc;
 
     dc.onopen = () => {
+      // Offer our half of the session before anything else crosses the wire.
+      // Until the peer answers there is no key, and sendMessage refuses rather
+      // than falling back to plaintext.
+      try {
+        if (!this._sessionKeyPair) this._sessionKeyPair = generateSessionKeyPair();
+        dc.send(JSON.stringify({
+          __gl: 'key-exchange',
+          peerId: this._localPeerId,
+          publicKey: this._sessionKeyPair.publicKeyHex,
+        }));
+      } catch (err) {
+        console.warn('[GhostLink:WebRTC] could not offer a session key:', err && err.message);
+      }
       this.emit('datachannel-open', { peerId: session.peerId });
     };
 
@@ -471,7 +578,42 @@ class WebRTCService extends Emitter {
       } catch (_) {
         payload = event.data;
       }
-      this.emit('message', { peerId: session.peerId, data: payload });
+
+      // The key-exchange frame is transport plumbing, not a message.
+      if (payload && payload.__gl === 'key-exchange') {
+        this._acceptSessionKey(session.peerId, payload).catch(err => {
+          console.warn('[GhostLink:WebRTC] session key exchange failed:', err && err.message);
+        });
+        return;
+      }
+
+      if (isEncryptedEnvelope(payload)) {
+        const keys = this._sessionKeys.get(session.peerId);
+        let plaintext;
+        try {
+          plaintext = decryptMessage(payload, keys && keys.recvKey);
+        } catch (err) {
+          // A frame that will not authenticate is tampered with or from a
+          // session we do not hold. Surfacing it as a message would be worse
+          // than dropping it.
+          console.warn('[GhostLink:WebRTC] dropping an unreadable frame:', err && err.message);
+          this.emit('message-error', { peerId: session.peerId, error: err });
+          return;
+        }
+        let data;
+        try {
+          data = JSON.parse(plaintext);
+        } catch (_) {
+          data = plaintext;
+        }
+        this.emit('message', { peerId: session.peerId, data, transport: 'webrtc-e2e', encrypted: true });
+        return;
+      }
+
+      // Anything else arrived without app-layer encryption. It is passed on so
+      // control traffic still works, but it is explicitly marked so the UI
+      // never shows it under a padlock.
+      this.emit('message', { peerId: session.peerId, data: payload, transport: 'webrtc-plain', encrypted: false });
     };
   }
 
@@ -482,6 +624,44 @@ class WebRTCService extends Emitter {
    * @param {object|string} data Will be JSON-stringified if an object.
    * @returns {boolean} True if sent, false if channel not ready.
    */
+  /**
+   * Take the peer's half of the session and derive the pair of keys.
+   * @private
+   */
+  async _acceptSessionKey(peerId, frame) {
+    if (!frame || typeof frame.publicKey !== 'string') throw new Error('malformed key-exchange frame');
+    if (!this._sessionKeyPair) this._sessionKeyPair = generateSessionKeyPair();
+
+    // Both sides must agree on which id is which, so fall back to the channel's
+    // peer id if we were never told our own.
+    const theirId = frame.peerId || peerId;
+    const ourId = this._localPeerId;
+    if (!ourId) throw new Error('local peer id unknown; cannot derive a session');
+
+    const keys = await deriveSessionKeys(this._sessionKeyPair.privateKey, frame.publicKey, ourId, theirId);
+    this._sessionKeys.set(peerId, keys);
+    this.emit('session-established', { peerId, transport: 'webrtc-e2e' });
+  }
+
+  /** Tell the caller whether this peer can be written to end-to-end yet. */
+  getPeerSecurity(peerId) {
+    if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
+      return { transport: 'gmp', encrypted: true, ready: true };
+    }
+    const session = this._peers.get(peerId);
+    const open = !!(session && session.dataChannel && session.dataChannel.readyState === 'open');
+    return {
+      transport: 'webrtc',
+      encrypted: this._sessionKeys.has(peerId),
+      ready: open && this._sessionKeys.has(peerId),
+    };
+  }
+
+  /** Our own id, used as one half of the session key derivation. */
+  setLocalPeerId(peerId) {
+    this._localPeerId = peerId || null;
+  }
+
   sendMessage(peerId, data) {
     if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
       const payload = typeof data === 'string' ? data : JSON.stringify(data);
@@ -499,8 +679,23 @@ class WebRTCService extends Emitter {
     const dc = session.dataChannel;
     if (dc.readyState !== 'open') return false;
 
-    const payload = typeof data === 'string' ? data : JSON.stringify(data);
-    dc.send(payload);
+    // Direct path. DTLS protects the hop, not the conversation, so the payload
+    // is sealed here or it does not go. Returning false lets the caller leave
+    // the message unsent rather than show it delivered under a padlock it
+    // never earned.
+    const keys = this._sessionKeys.get(peerId);
+    if (!keys) {
+      console.warn(`[GhostLink:WebRTC] no session with ${peerId} yet; holding the message`);
+      return false;
+    }
+
+    const plaintext = typeof data === 'string' ? data : JSON.stringify(data);
+    try {
+      dc.send(JSON.stringify(encryptMessage(plaintext, keys.sendKey)));
+    } catch (err) {
+      console.warn('[GhostLink:WebRTC] send failed:', err && err.message);
+      return false;
+    }
     return true;
   }
 
@@ -642,4 +837,19 @@ class WebRTCService extends Emitter {
   }
 }
 
-export default WebRTCService;
+export {WebRTCService};
+
+/**
+ * The app's transport.
+ *
+ * The default export used to be the class, while every caller treated it as an
+ * instance — CallScreen called WebRTCService.createConnection(), which is an
+ * instance method, so it was undefined and every call threw. Nothing ever
+ * constructed it either, so the constructor never ran and the Ghost Mesh
+ * connection it sets up never even attempted.
+ *
+ * One transport per app, so the default export is that instance. The class
+ * stays exported for RecoveryScreen, which deliberately runs a throwaway
+ * connection of its own.
+ */
+export default new WebRTCService();

@@ -6,6 +6,7 @@
  * Peers and messages use Map for O(1) lookups.
  */
 
+import WebRTCService from '../services/WebRTCService';
 import React, {
   createContext,
   useContext,
@@ -27,6 +28,17 @@ const STORAGE_KEYS = {
 
 // ─── Default Settings ────────────────────────────────────────
 const DEFAULT_SETTINGS = {
+  /**
+   * Ghost Mesh bridge, e.g. ws://192.168.1.15:3002. Empty means no mesh, and
+   * the app uses direct WebRTC instead.
+   *
+   * One bridge process serves one identity (see gmp-bridge.ts), so this must
+   * point at a bridge started with THIS phone's seed — never the desktop's, or
+   * the two become the same node instead of two peers. That makes it an
+   * interop-testing facility rather than a shipping feature; see
+   * MOBILE_BUILD.md.
+   */
+  meshBridgeUrl: '',
   theme: 'phantom',
   fontSize: 16,
   notifications: true,
@@ -58,6 +70,7 @@ const Actions = {
   UPDATE_PEER: 'UPDATE_PEER',
   REMOVE_PEER: 'REMOVE_PEER',
   ADD_MESSAGE: 'ADD_MESSAGE',
+  UPDATE_MESSAGE: 'UPDATE_MESSAGE',
   UPDATE_SETTINGS: 'UPDATE_SETTINGS',
   SET_CONNECTION_STATUS: 'SET_CONNECTION_STATUS',
   SET_GHOST_MESH: 'SET_GHOST_MESH',
@@ -124,6 +137,29 @@ function appReducer(state, action) {
       return {...state, messages: nextMessages};
     }
 
+    /**
+     * Amend a message already in the list — its delivery status, mostly.
+     *
+     * Without this a status could never change after send, which is why the
+     * old code faked DELIVERED with a timer: there was no way to record a real
+     * one. Statuses now only move because something actually happened.
+     */
+    case Actions.UPDATE_MESSAGE: {
+      const {roomId, messageId, patch} = action.payload;
+      const existing = state.messages.get(roomId);
+      if (!existing) return state;
+      let changed = false;
+      const updated = existing.map(m => {
+        if (m.id !== messageId) return m;
+        changed = true;
+        return {...m, ...patch};
+      });
+      if (!changed) return state;
+      const nextMessages = new Map(state.messages);
+      nextMessages.set(roomId, updated);
+      return {...state, messages: nextMessages};
+    }
+
     case Actions.UPDATE_SETTINGS:
       return {
         ...state,
@@ -180,6 +216,24 @@ function AppProvider({children}) {
   const hydrated = useRef(false);
 
   // ── Hydrate from AsyncStorage on mount ──
+  /**
+   * Point the transport at this device's identity and, if one is configured, a
+   * Ghost Mesh bridge.
+   *
+   * The transport needs our own id to derive session keys for the direct path —
+   * the derivation sorts the two peer ids so both ends agree — and it cannot
+   * know it on its own.
+   */
+  useEffect(() => {
+    const localId = state.identity?.fingerprint || state.identity?.publicKeyHex || null;
+    if (localId) WebRTCService.setLocalPeerId(localId);
+  }, [state.identity]);
+
+  useEffect(() => {
+    const url = (state.settings?.meshBridgeUrl || '').trim();
+    WebRTCService.setMeshBridge(url || null, state.identity?.seedPhrase || null);
+  }, [state.settings?.meshBridgeUrl, state.identity]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -303,6 +357,13 @@ function AppProvider({children}) {
     });
   }, []);
 
+  const updateMessage = useCallback((roomId, messageId, patch) => {
+    dispatch({
+      type: Actions.UPDATE_MESSAGE,
+      payload: {roomId, messageId, patch},
+    });
+  }, []);
+
   const updateSettings = useCallback(partial => {
     dispatch({type: Actions.UPDATE_SETTINGS, payload: partial});
   }, []);
@@ -357,6 +418,7 @@ function AppProvider({children}) {
     addPeer,
     removePeer,
     addMessage,
+    updateMessage,
     updateSettings,
     setConnectionStatus,
     setGhostMesh,
