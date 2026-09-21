@@ -53,6 +53,7 @@ import Animated, {
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import WebRTCService from '../services/WebRTCService';
+import {CALLS_AVAILABLE, CALLS_UNAVAILABLE_REASON} from '../utils/capabilities';
 import PeerAvatar from '../components/PeerAvatar';
 
 // ─── Constants ─────────────────────────────────────────────
@@ -801,6 +802,33 @@ export default function ChatScreen({route, navigation}) {
   // ── Send Message ──
 
   /**
+   * What the transport can currently do for this peer.
+   *
+   * Drives the header badge, so the padlock reflects a session that exists
+   * rather than an aspiration. Recomputed when a session is established or the
+   * mesh status changes; there is no polling.
+   */
+  const [peerSecurity, setPeerSecurity] = useState(() =>
+    peerId ? WebRTCService.getPeerSecurity(peerId) : {transport: 'none', encrypted: false, ready: false},
+  );
+
+  useEffect(() => {
+    if (!peerId) return undefined;
+    const refresh = () => setPeerSecurity(WebRTCService.getPeerSecurity(peerId));
+    refresh();
+    WebRTCService.on('session-established', refresh);
+    WebRTCService.on('mesh-status', refresh);
+    WebRTCService.on('datachannel-open', refresh);
+    WebRTCService.on('datachannel-close', refresh);
+    return () => {
+      WebRTCService.off('session-established', refresh);
+      WebRTCService.off('mesh-status', refresh);
+      WebRTCService.off('datachannel-open', refresh);
+      WebRTCService.off('datachannel-close', refresh);
+    };
+  }, [peerId]);
+
+  /**
    * Inbound traffic for this conversation.
    *
    * Two kinds arrive: chat messages, which are rendered and acknowledged, and
@@ -1091,13 +1119,33 @@ export default function ChatScreen({route, navigation}) {
         </View>
 
         <View style={styles.headerEncBadge}>
-          <Text style={styles.headerLockIcon}>🔒</Text>
-          <Text style={styles.headerEncText}>E2EE</Text>
+          {/*
+            Derived, not assumed. This said E2EE for every conversation
+            regardless of whether a session existed — the same unearned claim
+            as the empty-state padlock. getPeerSecurity() reports what the
+            transport can actually do for this peer right now.
+          */}
+          <Text style={styles.headerLockIcon}>{peerSecurity.encrypted ? '🔒' : '🔓'}</Text>
+          <Text style={styles.headerEncText}>
+            {peerSecurity.encrypted ? 'E2EE' : 'Not connected'}
+          </Text>
         </View>
 
+        {/*
+          Disabled rather than hidden: the control is part of what the app is
+          for, and silently removing it reads as a missing feature rather than
+          one that is not ready. Tapping it must not enter the call path — that
+          path has no rendezvous and would report a connected call that never
+          connected. See utils/capabilities.js.
+        */}
         <TouchableOpacity
-          style={styles.headerCallBtn}
+          style={[styles.headerCallBtn, !CALLS_AVAILABLE && styles.headerCallBtnDisabled]}
+          disabled={!CALLS_AVAILABLE}
+          accessibilityRole="button"
+          accessibilityState={{disabled: !CALLS_AVAILABLE}}
+          accessibilityLabel={CALLS_AVAILABLE ? 'Start voice call' : CALLS_UNAVAILABLE_REASON}
           onPress={() => {
+            if (!CALLS_AVAILABLE) return;
             Vibration.vibrate(15);
             navigation.navigate('Call', {peer: peerId, video: false});
           }}>
@@ -1105,8 +1153,13 @@ export default function ChatScreen({route, navigation}) {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.headerCallBtn}
+          style={[styles.headerCallBtn, !CALLS_AVAILABLE && styles.headerCallBtnDisabled]}
+          disabled={!CALLS_AVAILABLE}
+          accessibilityRole="button"
+          accessibilityState={{disabled: !CALLS_AVAILABLE}}
+          accessibilityLabel={CALLS_AVAILABLE ? 'Start video call' : CALLS_UNAVAILABLE_REASON}
           onPress={() => {
+            if (!CALLS_AVAILABLE) return;
             Vibration.vibrate(15);
             navigation.navigate('Call', {peer: peerId, video: true});
           }}>
@@ -1329,6 +1382,9 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+  headerCallBtnDisabled: {
+    opacity: 0.35,
   },
   headerCallBtn: {
     width: 36,

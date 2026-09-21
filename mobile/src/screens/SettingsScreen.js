@@ -12,9 +12,10 @@ import {
   Platform,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
-import {useTheme, THEMES} from '../context/ThemeContext';
+import {useTheme, FONT_SCALE} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import GhostMeshSetupModal from '../components/GhostMeshSetupModal';
+import {MESH_SETUP_AVAILABLE, MESH_SETUP_UNAVAILABLE_REASON} from '../utils/capabilities';
 
 const SECURITY_INFO = [
   {label: 'Encryption Level', value: 'AES-256-GCM'},
@@ -24,21 +25,12 @@ const SECURITY_INFO = [
 ];
 
 export default function SettingsScreen({navigation}) {
-  const {theme, themeName, setThemeName} = useTheme();
+  const {theme, fontSize, scale, setFontSize} = useTheme();
   const {identity, settings, messages, updateSettings, wipeAll, ghostMesh, setGhostMesh} = useApp();
   const [pubKeyCopied, setPubKeyCopied] = useState(false);
   const [showMeshSetup, setShowMeshSetup] = useState(false);
 
   // ── Handlers ──
-
-  const handleThemeChange = useCallback(
-    (name) => {
-      Vibration.vibrate(15);
-      setThemeName(name);
-      updateSettings({theme: name});
-    },
-    [setThemeName, updateSettings],
-  );
 
   const handleToggle = useCallback(
     (key, value) => {
@@ -130,8 +122,6 @@ export default function SettingsScreen({navigation}) {
     ? identity.publicKeyHex.slice(0, 24) + '\u2026' + identity.publicKeyHex.slice(-8)
     : 'N/A';
 
-  const fontSize = settings.fontSize || 14;
-
   return (
     <View style={[styles.container, {backgroundColor: theme.bg}]}>
       {/* ── Header ── */}
@@ -189,41 +179,48 @@ export default function SettingsScreen({navigation}) {
           </View>
         )}
 
-        {/* ── Theme Selector (2-col grid, 5 themes) ── */}
+        {/* ── Text size ── */}
         <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
-          <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>THEME</Text>
-          <View style={styles.themeGrid}>
-            {Object.entries(THEMES).map(([key, t]) => {
-              const isSelected = themeName === key;
+          <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>TEXT SIZE</Text>
+          <Text style={{color: theme.textSecondary, fontSize: scale(12), lineHeight: scale(17), marginBottom: 12}}>
+            Applies everywhere, including your conversations.
+          </Text>
+          <View style={styles.fontRow}>
+            {Object.entries(FONT_SCALE).map(([key, size]) => {
+              const isSelected = fontSize === size;
+              const label = key === 'extraLarge' ? 'Extra large' : key.charAt(0).toUpperCase() + key.slice(1);
               return (
                 <TouchableOpacity
                   key={key}
                   style={[
-                    styles.themeCard,
+                    styles.fontChip,
                     {
-                      backgroundColor: t.bg,
-                      borderColor: isSelected ? t.accent : theme.border,
-                      borderWidth: isSelected ? 2 : 1,
+                      backgroundColor: isSelected ? theme.accentDim : theme.bgTertiary,
+                      borderColor: isSelected ? theme.accent : theme.border,
                     },
                   ]}
-                  onPress={() => handleThemeChange(key)}
+                  onPress={() => setFontSize(size)}
+                  accessibilityRole="radio"
+                  accessibilityState={{selected: isSelected}}
+                  accessibilityLabel={`Text size ${label}${isSelected ? ', selected' : ''}`}
                   activeOpacity={0.7}>
-                  <View style={styles.swatchRow}>
-                    {(t.swatches || [t.accent, t.bg, t.bgSecondary]).map((c, i) => (
-                      <View key={i} style={[styles.swatch, {backgroundColor: c}]} />
-                    ))}
-                  </View>
-                  <Text style={[styles.themeName, {color: t.text}]}>{t.name}</Text>
-                  {isSelected && (
-                    <View style={[styles.selectedDot, {backgroundColor: t.accent}]} />
-                  )}
+                  <Text style={{color: isSelected ? theme.accent : theme.textSecondary, fontSize: size}}>
+                    Aa
+                  </Text>
+                  <Text
+                    style={{
+                      color: isSelected ? theme.accent : theme.textMuted,
+                      fontSize: 11,
+                      marginTop: 4,
+                    }}>
+                    {label}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
           </View>
         </View>
 
-        {/* ── Security Section ── */}
         <View style={[styles.card, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
           <Text style={[styles.sectionLabel, {color: theme.textMuted}]}>SECURITY</Text>
           {SECURITY_INFO.map((item, idx) => (
@@ -379,15 +376,46 @@ export default function SettingsScreen({navigation}) {
             </View>
           </View>
 
+          {/*
+            Disabled, not hidden. "Verify & Continue" inside this modal calls
+            CryptoService.deriveYggdrasilIdentity(), which reaches for
+            react-native-quick-crypto — absent from this build, and stood in
+            for by a Proxy that throws on any access so it cannot return wrong
+            bytes. Opening this is a crash the user can trigger from Settings.
+            See utils/capabilities.js.
+          */}
           <TouchableOpacity
-            style={[styles.actionRow, {borderTopWidth: 1, borderTopColor: theme.border, marginTop: 8}]}
-            onPress={() => setShowMeshSetup(true)}
+            style={[
+              styles.actionRow,
+              {borderTopWidth: 1, borderTopColor: theme.border, marginTop: 8},
+              !MESH_SETUP_AVAILABLE && {opacity: 0.35},
+            ]}
+            disabled={!MESH_SETUP_AVAILABLE}
+            accessibilityRole="button"
+            accessibilityState={{disabled: !MESH_SETUP_AVAILABLE}}
+            accessibilityLabel={
+              MESH_SETUP_AVAILABLE
+                ? (ghostMesh.address ? 'Reconfigure Ghost Mesh' : 'Configure Ghost Mesh')
+                : MESH_SETUP_UNAVAILABLE_REASON
+            }
+            onPress={() => {
+              if (!MESH_SETUP_AVAILABLE) return;
+              setShowMeshSetup(true);
+            }}
             activeOpacity={0.7}>
             <Text style={[styles.actionText, {color: theme.accent}]}>
               {ghostMesh.address ? 'Reconfigure' : 'Configure'}
             </Text>
             <Text style={[styles.actionArrow, {color: theme.textMuted}]}>{'\u203A'}</Text>
           </TouchableOpacity>
+
+          {!MESH_SETUP_AVAILABLE ? (
+            <Text
+              style={{fontSize: 11, color: theme.textMuted, marginTop: 6, lineHeight: 15}}
+              accessibilityRole="text">
+              {MESH_SETUP_UNAVAILABLE_REASON}.
+            </Text>
+          ) : null}
 
           <Text style={{fontSize: 9, color: theme.textMuted, marginTop: 8, lineHeight: 14}}>
             On mobile, Ghost Mesh operates in Web Client mode {String.fromCharCode(8212)} it derives
@@ -414,7 +442,7 @@ export default function SettingsScreen({navigation}) {
 
       {/* Ghost Mesh Setup Modal */}
       <GhostMeshSetupModal
-        visible={showMeshSetup}
+        visible={MESH_SETUP_AVAILABLE && showMeshSetup}
         onClose={() => setShowMeshSetup(false)}
         onComplete={({address, publicKeyHex}) => {
           setGhostMesh({
@@ -563,6 +591,19 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     borderRadius: 9,
+  },
+  fontRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  fontChip: {
+    flex: 1,
+    minHeight: 64,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
   },
   themeName: {
     fontSize: 13,
