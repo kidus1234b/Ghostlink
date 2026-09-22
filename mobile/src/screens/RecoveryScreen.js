@@ -1,17 +1,18 @@
 import React, {useState, useCallback, useMemo, useEffect, useRef} from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  TextInput,
   Vibration,
   Alert,
   Clipboard,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text, TextInput} from '../components/ScaledText';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';

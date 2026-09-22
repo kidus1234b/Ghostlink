@@ -103,9 +103,16 @@ function ThemeProvider({children}) {
     [updateSettings],
   );
 
+  /**
+   * The user's size as a multiple of the 16pt base the app was written
+   * against. Components multiply their own sizes by this rather than each
+   * screen rewriting hundreds of literals.
+   */
+  const fontScale = fontSize / DEFAULT_FONT_SIZE;
+
   const value = useMemo(
-    () => ({theme, fontSize, scale, setFontSize, FONT_SCALE}),
-    [theme, fontSize, scale, setFontSize],
+    () => ({theme, fontSize, fontScale, scale, setFontSize, FONT_SCALE}),
+    [theme, fontSize, fontScale, scale, setFontSize],
   );
 
   return (

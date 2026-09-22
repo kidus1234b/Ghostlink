@@ -15,7 +15,6 @@ import React, {
 } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   TouchableOpacity,
   Vibration,
@@ -26,6 +25,9 @@ import {
   PanResponder,
   AppState,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text} from '../components/ScaledText';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,

@@ -15,8 +15,6 @@ import React, {
 } from 'react';
 import {
   View,
-  Text,
-  TextInput,
   StyleSheet,
   FlatList,
   TouchableOpacity,
@@ -32,6 +30,9 @@ import {
   ActivityIndicator,
   PanResponder,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
   FadeIn,
   FadeOut,

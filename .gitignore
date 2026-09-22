@@ -78,3 +78,6 @@ mobile/android/app/src/main/res/drawable-*/
 # `npx react-native bundle` and by every release build.
 mobile/android/app/src/main/assets/index.android.bundle
 mobile/android/app/src/main/res/drawable-*/
+
+# Transient stub written by test/identity-derivation.test.mjs
+mobile/.crypto-under-test-*.mjs

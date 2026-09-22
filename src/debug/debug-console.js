@@ -179,6 +179,13 @@
     _renderFloatWindow(w) {
       if (!w || w.closed) return;
       const state = this.dumpFullState();
+      // Event topics, event payloads and peer/room names all originate off-device
+      // and were interpolated straight into this document, which is then written
+      // with document.write into a same-origin window that holds a reference to
+      // the live debug API. Escape every interpolated value.
+      const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;' }[c]
+      ));
       const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -207,7 +214,7 @@
   <h2>Network</h2>
   <div class="panel">
     <div class="stat"><span class="label">Signal Connected:</span><span class="value">${state.network.signalConnected}</span></div>
-    <div class="stat"><span class="label">Room:</span><span class="value">${state.network.myRoom || 'none'}</span></div>
+    <div class="stat"><span class="label">Room:</span><span class="value">${esc(state.network.myRoom || 'none')}</span></div>
     <div class="stat"><span class="label">Uptime:</span><span class="value">${Math.floor(state.uptime / 1000)}s</span></div>
   </div>
 
@@ -236,11 +243,11 @@
   <h2>Recent Events</h2>
   <table>
     <tr><th>Time</th><th>Topic</th><th>Data</th></tr>
-    ${state.eventTimeline.slice(0, 20).map(e => `<tr><td>${new Date(e.ts).toLocaleTimeString()}</td><td>${e.topic}</td><td>${JSON.stringify(e.data || {}).slice(0, 40)}...</td></tr>`).join('')}
+    ${state.eventTimeline.slice(0, 20).map(e => `<tr><td>${esc(new Date(e.ts).toLocaleTimeString())}</td><td>${esc(e.topic)}</td><td>${esc(JSON.stringify(e.data || {}).slice(0, 40))}...</td></tr>`).join('')}
   </table>
 
   <h2>Connection States</h2>
-  <pre>${JSON.stringify(state.connectionStates, null, 2)}</pre>
+  <pre>${esc(JSON.stringify(state.connectionStates, null, 2))}</pre>
 
   <script>window.debug = window.opener?.GhostLinkDebug;</script>
 </body>

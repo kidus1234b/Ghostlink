@@ -14,16 +14,17 @@
 import React, {useState, useCallback} from 'react';
 import {
   View,
-  Text,
   Modal,
   StyleSheet,
   TouchableOpacity,
-  TextInput,
   ScrollView,
   Alert,
   Vibration,
   Platform,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text, TextInput} from './ScaledText';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {useTheme} from '../context/ThemeContext';
 import CryptoService from '../services/CryptoService';

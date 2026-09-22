@@ -31,26 +31,34 @@
     'noscript', 'noframes', 'plaintext', 'xmp', 'template', 'slot', 'shadow'
   ];
 
-var HTML_ESCAPE_MAP = {
-    '&': '&',
-    '<': '<',
-    '>': '>',
-    '"': '"',
-    "'": '&apos;',
+  // Every entity here must stay written as an entity. These tables previously
+  // held their own decoded output ('&' -> '&', '<' -> '<'), which made
+  // escapeHTML a no-op for exactly the four characters that matter: a caller
+  // that escaped peer-controlled text got that text back verbatim, markup and
+  // all. Note the ampersand rule must be applied first on escape and last on
+  // unescape, or the replacement's own '&' gets rewritten.
+  var HTML_ESCAPE_MAP = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
     '/': '&#x2F;',
     '`': '&#x60;',
     '=': '&#x3D;'
   };
 
   var HTML_UNESCAPE_MAP = {
-    '&': '&',
-    '<': '<',
-    '>': '>',
-    '"': '"',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#x27;': "'",
     '&apos;': "'",
+    '&#39;': "'",
     '&#x2F;': '/',
     '&#x60;': '`',
-    '&#x3D;': '='
+    '&#x3D;': '=',
+    '&amp;': '&'
   };
 
   function isSafeURL(url) {

@@ -182,6 +182,53 @@ function deriveSharedKey(privateKeyHex, peerPublicKeyHex) {
  * Deliberately slow — 100,000 PBKDF2 iterations — so derive once at setup and
  * keep the result, rather than recomputing it to render a screen.
  */
+/**
+ * The messaging keypair for a recovery phrase.
+ *
+ * WHY THIS EXISTS
+ *
+ * generateKeyPairSync() draws a random P-256 key and stores it in the
+ * keystore. Nothing derives it from the recovery phrase — so the phrase
+ * restored a Ghost Address and nothing else. On a new device the user would
+ * come back with the same address but a brand new messaging key, and every
+ * contact holding their old public key could no longer seal anything to them.
+ * A recovery phrase that does not recover the identity is not a recovery
+ * phrase.
+ *
+ * Same phrase in, same key out, on any device. The salt is distinct from the
+ * mesh derivation's so the two keys are unrelated: knowing one must not lead
+ * to the other.
+ *
+ * Deliberately slow — 100,000 PBKDF2 iterations, matching deriveGhostIdentity
+ * — so derive once at setup or restore and keep the result.
+ *
+ * NOTE for identities created before this existed: their stored key was
+ * random, so it cannot be re-derived from their phrase. Their current device
+ * keeps working from the keystore; restoring elsewhere yields this derived key
+ * instead, which is a different identity to their contacts. See MOBILE_BUILD.md.
+ */
+async function deriveIdentityKeyPair(words) {
+  const phrase = Array.isArray(words) ? words.join(' ') : String(words);
+  const seed = await pbkdf2Async(sha512, utf8(phrase), utf8('ghostlink-identity-key-v1'), {
+    c: 100000,
+    dkLen: 32,
+  });
+
+  // p256 rejects a scalar outside [1, n-1]. Rejection-sample by re-hashing
+  // rather than reducing, which would bias the key.
+  let candidate = seed;
+  for (let i = 0; i < 64; i++) {
+    if (p256.utils.isValidPrivateKey(candidate)) {
+      return {
+        publicKeyHex: bytesToHex(p256.getPublicKey(candidate, false)),
+        privateKeyRaw: bytesToHex(candidate),
+      };
+    }
+    candidate = nobleSha256(candidate);
+  }
+  throw new Error('could not derive a valid identity key from this phrase');
+}
+
 async function deriveGhostIdentity(words) {
   const phrase = Array.isArray(words) ? words.join(' ') : String(words);
   const seed = await pbkdf2Async(sha512, utf8(phrase), utf8('ghostlink-yggdrasil-v1'), {
@@ -438,6 +485,7 @@ export const CryptoEngine = {
   storeKeyPair,
   loadKeyPair,
   clearKeys,
+  deriveIdentityKeyPair,
   hasBiometrics,
   deriveKeyFromSeed,
   deriveStorageKey,

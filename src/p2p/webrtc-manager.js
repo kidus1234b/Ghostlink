@@ -291,8 +291,17 @@ class RTCPeerManager extends EventEmitter {
     const session = new PeerSession(peerId, pc);
     this._peers.set(peerId, session);
 
-    // Derive shared encryption key via ECDH
-    await this._deriveSharedKey(session, peerPublicKeyRaw);
+    // Derive shared encryption key via ECDH. If this fails there is no session
+    // key, and a session without a key must not stay in the peer map where a
+    // later send would find it half-built — tear it down and surface the error.
+    try {
+      await this._deriveSharedKey(session, peerPublicKeyRaw);
+    } catch (err) {
+      this._peers.delete(peerId);
+      try { pc.close(); } catch (_e) {}
+      this.emit('error', { peerId, phase: 'key-exchange', error: err });
+      throw err;
+    }
 
     // Create data channels
     this._createDataChannels(session);
@@ -686,7 +695,16 @@ class RTCPeerManager extends EventEmitter {
       session = new PeerSession(from, pc);
       this._peers.set(from, session);
 
-      await this._deriveSharedKey(session, publicKey);
+      try {
+        await this._deriveSharedKey(session, publicKey);
+      } catch (err) {
+        // A peer that cannot present a usable ECDH public key does not get an
+        // unencrypted session. Drop the half-built peer and stop here.
+        this._peers.delete(from);
+        try { pc.close(); } catch (_e) {}
+        this.emit('error', { peerId: from, phase: 'key-exchange', error: err });
+        return;
+      }
 
       // Create matching data channels (negotiated)
       this._createDataChannels(session);
@@ -883,23 +901,25 @@ class RTCPeerManager extends EventEmitter {
    * @param {string} peerPublicKeyRaw  JWK JSON string of the peer's public key.
    */
   async _deriveSharedKey(session, peerPublicKeyRaw) {
-    // If no private key available (e.g. identity restored from storage), skip ECDH
+    // ECDH or nothing.
+    //
+    // This used to fall back to SHA-256(localPeerId + ':' + peerId) whenever
+    // the private key was missing or the peer's key would not parse. Both of
+    // those inputs are public identifiers — they are announced on the wire and
+    // shown in the UI — so the "encrypted" session was readable and forgeable
+    // by anyone who had seen the two peer IDs. Worse, the remote side chooses
+    // whether that path is taken: sending a public key that is not valid JWK
+    // was enough to downgrade the session, and neither peer was told it had
+    // happened. That is the same class of bug as the old "fingerprint as AES
+    // key" vault issue, and it is fixed the same way: a key that is not the
+    // product of a real ECDH is not a key, so refuse to open the session.
     const privKey = this._identity.privateKey
       || (this._identity.keyPair && this._identity.keyPair.privateKey);
     if (!privKey) {
-      console.warn('[GhostLink] No private key available for ECDH — using fallback encryption');
-      // Derive a fallback key from peer ID + local ID
-      const fallbackMaterial = new TextEncoder().encode(
-        (this._identity.peerId || '') + ':' + (session.peerId || '')
+      throw new Error(
+        '[GhostLink] Refusing to open session with ' + session.peerId +
+        ': no local ECDH private key. The identity must be unlocked before connecting.'
       );
-      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
-      session.sharedKey = await crypto.subtle.importKey(
-        'raw', hashBits,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']
-      );
-      return;
     }
 
     let peerJwk;
@@ -908,19 +928,16 @@ class RTCPeerManager extends EventEmitter {
         ? JSON.parse(peerPublicKeyRaw)
         : peerPublicKeyRaw;
     } catch (e) {
-      // peerPublicKeyRaw might be a hex string, not JWK — use fallback
-      console.warn('[GhostLink] Could not parse peer public key as JWK, using fallback key');
-      const fallbackMaterial = new TextEncoder().encode(
-        (this._identity.peerId || '') + ':' + (session.peerId || '')
+      throw new Error(
+        '[GhostLink] Refusing to open session with ' + session.peerId +
+        ': peer public key is not valid JWK (' + e.message + ').'
       );
-      const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
-      session.sharedKey = await crypto.subtle.importKey(
-        'raw', hashBits,
-        { name: 'AES-GCM', length: 256 },
-        false,
-        ['encrypt', 'decrypt']
+    }
+    if (!peerJwk || typeof peerJwk !== 'object') {
+      throw new Error(
+        '[GhostLink] Refusing to open session with ' + session.peerId +
+        ': peer public key is missing.'
       );
-      return;
     }
 
     const peerKey = await crypto.subtle.importKey(

@@ -46,10 +46,16 @@ export async function startBridge(
   const clients = new Set<BridgeClient>();
 
   const lanMode = bridgeHost === '0.0.0.0';
+  const allowNullOrigin = process.env.GMP_BRIDGE_ALLOW_NULL_ORIGIN === '1';
   const isAllowedIP = (ip: string): boolean => isLocalIP(ip) || (lanMode && isPrivateLANIP(ip));
 
   if (lanMode) {
     logger.warn('bridge', 'lan-mode-enabled', 'Bridge bound to all interfaces — only use on trusted LAN, never expose to internet', { bridgeHost });
+  }
+  if (allowNullOrigin) {
+    logger.warn('bridge', 'null-origin-allowed',
+      'GMP_BRIDGE_ALLOW_NULL_ORIGIN=1 — opaque "null" origins accepted. Any website can reach ' +
+      'the bridge from a sandboxed iframe while this is set.');
   }
 
   let tlsAvailable = false;
@@ -108,18 +114,44 @@ export async function startBridge(
         : 'Unauthorized: Only localhost connections are allowed');
       return false;
     }
+    // Origin is the only cross-site control a WebSocket has — the browser does
+    // not preflight ws:// and CORS does not apply — and the IP allowlist above
+    // does not help here, because a browser attacking 127.0.0.1 *is* connecting
+    // from 127.0.0.1.
+    //
+    // 'null' used to be on this allowlist. Any website could therefore reach
+    // the bridge from a sandboxed iframe (`<iframe sandbox="allow-scripts">`
+    // sends `Origin: null`) and then use the full command surface: `send` and
+    // `sendDirect` to post messages as the user, `getStatus` to enumerate
+    // peers, and the broadcast stream to read every message the node receives.
+    // SECURITY.md documents the policy as file://, localhost, 127.0.0.1 and
+    // ::1 — 'null' was never part of it, so it is refused.
+    //
+    // A missing Origin header is still accepted: non-browser clients (the CLI,
+    // the mobile app) send none, and they cannot be driven cross-site by a web
+    // page. It is specifically the opaque 'null' origin that is not trustworthy.
     const origin = req.headers.origin;
-    if (origin && origin !== 'file://' && origin !== 'null') {
-      try {
-        const url = new URL(origin);
-        if (!(url.hostname === 'localhost' || url.hostname === '127.0.0.1' || (lanMode && isPrivateLANIP(url.hostname)))) {
-          logger.warn('bridge', 'client-rejected-origin', `WebSocket connection from unauthorized origin: ${origin}`, { origin });
-          rejectUpgrade(socket, 403, 'Forbidden: Origin not allowed');
+    if (origin !== undefined && origin !== 'file://') {
+      if (origin === 'null' && !allowNullOrigin) {
+        logger.warn('bridge', 'client-rejected-origin',
+          'WebSocket connection with opaque "null" origin refused — this is how a sandboxed ' +
+          'iframe on any site would reach the bridge. Set GMP_BRIDGE_ALLOW_NULL_ORIGIN=1 only ' +
+          'if a trusted local client genuinely presents it.', { origin });
+        rejectUpgrade(socket, 403, 'Forbidden: Opaque origin not allowed');
+        return false;
+      }
+      if (origin !== 'null') {
+        try {
+          const url = new URL(origin);
+          if (!(url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === '::1' || (lanMode && isPrivateLANIP(url.hostname)))) {
+            logger.warn('bridge', 'client-rejected-origin', `WebSocket connection from unauthorized origin: ${origin}`, { origin });
+            rejectUpgrade(socket, 403, 'Forbidden: Origin not allowed');
+            return false;
+          }
+        } catch (_e) {
+          rejectUpgrade(socket, 400, 'Bad Request: Invalid Origin');
           return false;
         }
-      } catch (_e) {
-        rejectUpgrade(socket, 400, 'Bad Request: Invalid Origin');
-        return false;
       }
     }
     return true;

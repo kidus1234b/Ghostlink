@@ -28,8 +28,13 @@
       if (this._seen.has(nonce)) return false;
       this._seen.set(nonce, Date.now());
       if (this._seen.size > this._maxTrack) {
-        const oldest = [...this._seen.entries()].sort((a, b) => a[1] - b[1])[0];
-        this._seen.delete(oldest[0]);
+        // A Map iterates in insertion order and timestamps only ever increase,
+        // so the first key is already the oldest. This used to copy the whole
+        // map to an array and sort it on every insert past the limit, which
+        // made each additional message O(n log n) — a peer could hold the
+        // event loop just by sending traffic at the cap.
+        const oldest = this._seen.keys().next();
+        if (!oldest.done) this._seen.delete(oldest.value);
       }
       return true;
     }
@@ -223,7 +228,11 @@
      */
     destroySession(peerId) {
       this._sessionKeys.delete(peerId);
-      this._nonceTracker.clear();
+      // Deliberately does NOT clear the nonce tracker. It is shared across
+      // every peer, so clearing it here meant one peer disconnecting reset
+      // replay protection for all of them — and a peer controls when it
+      // disconnects, making that a reusable way to get previously-seen
+      // messages accepted again. Seen nonces must outlive the session.
       if (this._rotationTimers.has(peerId)) {
         clearTimeout(this._rotationTimers.get(peerId));
         this._rotationTimers.delete(peerId);

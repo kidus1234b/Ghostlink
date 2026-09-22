@@ -24,12 +24,14 @@
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 import {
   View,
-  Text,
   Image,
   TouchableOpacity,
   StyleSheet,
   Vibration,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text} from './ScaledText';
 import GhostAvatar from './GhostAvatar';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

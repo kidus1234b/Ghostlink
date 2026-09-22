@@ -1,22 +1,37 @@
 (function(exports) {
   'use strict';
 
-  var Sanitizer;
-  try {
-    Sanitizer = require('./sanitize');
-  } catch (e) {
-    Sanitizer = null;
+  // Resolve the sanitizer for both loaders.
+  //
+  // This used to be a bare require() in a try/catch. In the browser `require`
+  // is not defined, so the catch fired on every page load and Sanitizer stayed
+  // null — which silently disabled the only URL check in this file, letting
+  // `[text](javascript:...)` through as a live href. sanitize.js publishes
+  // itself on globalThis, so look there first and fall back to require() for
+  // CommonJS consumers.
+  var Sanitizer = null;
+  if (typeof globalThis !== 'undefined' && typeof globalThis.isSafeURL === 'function') {
+    Sanitizer = globalThis;
+  } else {
+    try {
+      Sanitizer = require('./sanitize');
+    } catch (e) {
+      Sanitizer = null;
+    }
   }
 
   var INLINE_TAGS = ['strong', 'em', 'code', 'del', 'a', 'br', 'span'];
   var BLOCK_TAGS = ['p', 'div', 'blockquote', 'pre', 'code', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
   var ESCAPE_CHARS = '\\`*_{}[]>#+-.!|~^';
-var HTML_ESCAPE_MAP = {
-    '&': '&',
-    '<': '<',
-    '>': '>',
-    '"': '"',
-    "'": '&apos;',
+  // As in sanitize.js: these must be entities, not their own decoded form.
+  // With identity mappings escapeHTML returned '<script>' unchanged, so the
+  // markdown pipeline handed raw peer markup straight to the renderer.
+  var HTML_ESCAPE_MAP = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
     '`': '&#x60;'
   };
 
@@ -47,15 +62,17 @@ var HTML_ESCAPE_MAP = {
     }
 
     var unescapeMap = {
-      '&': '&',
-      '<': '<',
-      '>': '>',
-      '"': '"',
+      '&amp;': '&',
+      '&lt;': '<',
+      '&gt;': '>',
+      '&quot;': '"',
+      '&#x27;': "'",
       '&apos;': "'",
+      '&#39;': "'",
       '&#x60;': '`'
     };
 
-    return text.replace(/&(?:amp|lt|gt|quot|#x60|#39);/g, function(entity) {
+    return text.replace(/&(?:amp|lt|gt|quot|apos|#x27|#x60|#39);/g, function(entity) {
       return unescapeMap[entity] || entity;
     });
   }
@@ -149,7 +166,9 @@ var HTML_ESCAPE_MAP = {
       linkText = linkText || '';
       url = url || '#';
 
-      if (Sanitizer && !Sanitizer.isSafeURL(url)) {
+      // No sanitizer means no way to vet the URL — render the label as plain
+      // text rather than emit an href nothing has checked.
+      if (!Sanitizer || !Sanitizer.isSafeURL(url)) {
         return linkText;
       }
 

@@ -15,6 +15,7 @@ const {
   globalShortcut,
   Notification,
   nativeImage,
+  safeStorage,
   session,
   shell,
 } = require('electron');
@@ -68,12 +69,89 @@ const store = new Store({
     autoLaunch: false,
     mutedNotifications: false,
   },
+  // electron-store's encryptionKey is obfuscation, not encryption: the key is
+  // a constant compiled into the app, so anyone with the binary can read the
+  // file. That is acceptable for window bounds and a tray preference, which is
+  // all this store now holds — the recovery seed moved to safeStorage below.
   encryptionKey: 'gl-desktop-cfg-v1', // light obfuscation for prefs
 });
+
+/* ─── Recovery seed at rest ─────────────────────────────────── */
+
+/**
+ * The GMP seed phrase is the master identity: every key the node uses derives
+ * from it, and it is the whole of account recovery. It used to sit in the
+ * config store above under that constant key, which meant it was recoverable
+ * from the config file by anyone who could read it — no user secret involved.
+ *
+ * safeStorage backs onto the OS keychain (Keychain on macOS, DPAPI on Windows,
+ * libsecret/kwallet on Linux), so the ciphertext is bound to the logged-in
+ * user. If the platform cannot provide that, storing the phrase in the clear
+ * is not an acceptable substitute — refuse, and let the caller surface it.
+ */
+const SEED_STORE_KEY = 'gmp_seed_phrase_enc';
+const LEGACY_SEED_STORE_KEY = 'gmp_seed_phrase';
+
+function seedStorageAvailable() {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch (_e) {
+    return false;
+  }
+}
+
+function setStoredSeed(seed) {
+  if (typeof seed !== 'string' || !seed.trim()) {
+    throw new Error('Refusing to store an empty seed phrase.');
+  }
+  if (!seedStorageAvailable()) {
+    throw new Error(
+      'OS secure storage is unavailable, so the recovery phrase cannot be ' +
+      'stored safely. On Linux this usually means no keyring (gnome-keyring ' +
+      'or kwallet) is running.'
+    );
+  }
+  store.set(SEED_STORE_KEY, safeStorage.encryptString(seed).toString('base64'));
+  // Clear any copy left by an older build that wrote it in the clear.
+  store.delete(LEGACY_SEED_STORE_KEY);
+  return true;
+}
+
+function getStoredSeed() {
+  const sealed = store.get(SEED_STORE_KEY);
+  if (sealed) {
+    if (!seedStorageAvailable()) return null;
+    try {
+      return safeStorage.decryptString(Buffer.from(sealed, 'base64'));
+    } catch (err) {
+      console.error('[Electron GMP] Stored seed could not be decrypted:', err.message);
+      return null;
+    }
+  }
+
+  // One-time migration off the plaintext key written by older builds.
+  const legacy = store.get(LEGACY_SEED_STORE_KEY);
+  if (!legacy) return null;
+  try {
+    setStoredSeed(legacy);
+    console.log('[Electron GMP] Migrated recovery phrase into OS secure storage.');
+  } catch (err) {
+    console.warn('[Electron GMP] Could not migrate seed to secure storage:', err.message);
+  }
+  return legacy;
+}
 
 /* ─── Secure store (session-only, in-memory) ─────────────────  */
 
 const secureVault = new Map();
+
+/* ─── Ghost Mesh TCP bridge state ───────────────────────────── */
+// These were referenced by every ghostmesh-* IPC handler but never declared,
+// so the first `if (ghostMeshServer)` threw a ReferenceError and the whole
+// Ghost Mesh transport was dead on arrival.
+const GHOSTMESH_PORT = 49500;
+let ghostMeshServer = null;
+const activeMeshSockets = new Map(); // connId -> net.Socket
 
 /* ─── Window tracking ───────────────────────────────────────── */
 
@@ -164,13 +242,30 @@ function createMainWindow() {
       callback({
         responseHeaders: {
           ...details.responseHeaders,
+          // The app is a local file:// bundle with no remote code. The policy
+          // said otherwise: script-src allowed https://unpkg.com, so anything
+          // that host served (or anyone who could answer for it) ran with full
+          // access to the preload bridge, and 'unsafe-eval' let injected
+          // markup reach a JS compiler. Neither is used — index.html vendors
+          // its dependencies locally and pins an import map for that reason.
           'Content-Security-Policy': [
-            "default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; " +
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; " +
+            "default-src 'self' blob: data:; " +
+            "script-src 'self' 'unsafe-inline'; " +
             "style-src 'self' 'unsafe-inline'; " +
             "img-src 'self' data: blob:; " +
-            "connect-src 'self' ws: wss: https:; " +
-            "font-src 'self' data:;",
+            "media-src 'self' blob: data:; " +
+            // Loopback only: the GMP bridge (ws 3002), the signaling socket
+            // (ws 3001) and the relay-queue fetch that offline-queue.js derives
+            // from that same origin. WebRTC/STUN is negotiated by the ICE
+            // agent and is not governed by connect-src.
+            "connect-src 'self' " +
+            "http://127.0.0.1:* http://localhost:* https://127.0.0.1:* https://localhost:* " +
+            "ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*; " +
+            "font-src 'self' data:; " +
+            "object-src 'none'; " +
+            "base-uri 'none'; " +
+            "frame-src 'none'; " +
+            "form-action 'none';",
           ],
         },
       });
@@ -214,7 +309,7 @@ function createMainWindow() {
 
   // Open external links in default browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http')) shell.openExternal(url);
+    openExternalIfSafe(url);
     return { action: 'deny' };
   });
 
@@ -271,8 +366,15 @@ function injectTitleBar(win, title) {
     path.join(__dirname, 'titlebar.js'),
     'utf-8'
   );
+  // The title reaches here from the renderer (pop-out-chat) and is derived
+  // from a conversation name, which a peer controls. Substituting it into the
+  // placeholder raw spliced that string into JavaScript source — a name
+  // containing a quote and a semicolon ran as code in the page, where the
+  // preload bridge lives. JSON.stringify emits a string literal instead, so
+  // the value can only ever be data.
+  const literal = JSON.stringify(String(title || 'GhostLink'));
   win.webContents.executeJavaScript(
-    titleBarJS.replace('__WINDOW_TITLE__', title || 'GhostLink')
+    titleBarJS.replace("'__WINDOW_TITLE__'", literal)
   );
 }
 
@@ -284,6 +386,35 @@ function injectElectronStyles(win) {
     /* Smooth scrolling for main content */
     #root { height: calc(100vh - 38px); overflow-y: auto; }
   `);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   EXTERNAL LINK SAFETY
+   ═══════════════════════════════════════════════════════════════ */
+
+/**
+ * Hand a URL to the OS only if it is plain web traffic.
+ *
+ * shell.openExternal asks the desktop to launch whatever handler is registered
+ * for the scheme. The navigation hook used to pass it every non-file: URL and
+ * the window-open hook used a `startsWith('http')` test that also matched
+ * `httpsomething:` — so a link in a message could reach the handler for
+ * smb:, ms-msdt:, vscode:, or any other locally registered protocol. Parse the
+ * URL and allow only http/https.
+ */
+function openExternalIfSafe(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (_e) {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    console.warn('[GhostLink] Blocked external open for scheme:', parsed.protocol);
+    return false;
+  }
+  shell.openExternal(parsed.toString());
+  return true;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -400,13 +531,20 @@ function setupIPC() {
   });
 
   /* ── GMP Node/Bridge IPC Handlers ───────────────────────────── */
-  ipcMain.handle('gmp-get-seed', () => store.get('gmp_seed_phrase') || null);
+  ipcMain.handle('gmp-get-seed', () => getStoredSeed());
   ipcMain.handle('gmp-set-seed', (_e, seed) => {
-    store.set('gmp_seed_phrase', seed);
-    return true;
+    try {
+      return setStoredSeed(seed);
+    } catch (err) {
+      return { error: err.message };
+    }
   });
   ipcMain.handle('gmp-start', async (_e, seed) => {
-    store.set('gmp_seed_phrase', seed);
+    try {
+      setStoredSeed(seed);
+    } catch (err) {
+      return { error: err.message };
+    }
     await startGMPNode(seed);
     return true;
   });
@@ -425,7 +563,10 @@ function setupIPC() {
         }
       }
     }
-    return { addresses, signalingPort };
+    // `signalingPort` used to be referenced here but was never declared, so
+    // this handler threw. The signaling server is gone; the mesh port is the
+    // port callers actually want.
+    return { addresses, meshPort: GHOSTMESH_PORT };
   });
 
   /* ── Auto-update trigger ────────────────────────────────────── */
@@ -482,8 +623,8 @@ function setupIPC() {
           resolve({ success: false, error: err.message });
         });
         
-        ghostMeshServer.listen({ host: '::', port: 49500 }, () => {
-          console.log('[GhostMesh] Server listening on [::]:49500');
+        ghostMeshServer.listen({ host: '::', port: GHOSTMESH_PORT }, () => {
+          console.log(`[GhostMesh] Server listening on [::]:${GHOSTMESH_PORT}`);
           resolve({ success: true });
         });
       } catch (err) {
@@ -509,7 +650,7 @@ function setupIPC() {
     });
   });
 
-  ipcMain.handle('ghostmesh-dial', async (_e, { host, port = 49500 }) => {
+  ipcMain.handle('ghostmesh-dial', async (_e, { host, port = GHOSTMESH_PORT }) => {
     return new Promise((resolve) => {
       try {
         console.log(`[GhostMesh] Dialing ${host}:${port}...`);
@@ -663,7 +804,7 @@ function generateFallbackIcon() {
 
 app.whenReady().then(async () => {
   // Auto-start GMP node on app launch if seed exists
-  const savedSeed = store.get('gmp_seed_phrase');
+  const savedSeed = getStoredSeed();
   if (savedSeed) {
     try {
       await startGMPNode(savedSeed);
@@ -671,6 +812,17 @@ app.whenReady().then(async () => {
       console.error('[Electron GMP] Failed to auto-start GMP Node:', err.message);
     }
   }
+
+  // Calls need the microphone and camera; nothing here needs geolocation, USB,
+  // MIDI, or the rest. Electron grants every permission by default, so a page
+  // flaw would otherwise be enough to turn on the mic. Deny by default.
+  const ALLOWED_PERMISSIONS = new Set(['media', 'clipboard-sanitized-write']);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(ALLOWED_PERMISSIONS.has(permission));
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) =>
+    ALLOWED_PERMISSIONS.has(permission)
+  );
 
   setupIPC();
   setupDragDrop();
@@ -724,10 +876,22 @@ app.on('window-all-closed', () => {
 /* ─── Prevent navigation to external URLs inside the app ────── */
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-navigate', (navEvent, url) => {
-    const parsed = new URL(url);
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (_e) {
+      navEvent.preventDefault();
+      return;
+    }
     if (parsed.protocol !== 'file:') {
       navEvent.preventDefault();
-      shell.openExternal(url);
+      openExternalIfSafe(url);
     }
+  });
+
+  // Nothing in this app embeds a webview, and an attached one would not
+  // inherit the window's webPreferences hardening.
+  contents.on('will-attach-webview', (attachEvent) => {
+    attachEvent.preventDefault();
   });
 });

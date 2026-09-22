@@ -1,8 +1,6 @@
 import React, {useState, useCallback, useEffect, useRef} from 'react';
 import {
   View,
-  Text,
-  TextInput,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
@@ -12,6 +10,9 @@ import {
   StatusBar,
   Platform,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
   FadeInDown,
   FadeInUp,
@@ -28,6 +29,7 @@ import Animated, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
+import {useSecureScreenWhen} from '../utils/useSecureScreen';
 import {CryptoEngine, ShamirSSS, generateBackupFragments, generateSeedPhrase} from '../utils/crypto';
 import {wrapIdentity, saveRecoveryBundle, FRAGMENTS_STORAGE_KEY} from '../utils/recovery';
 
@@ -48,6 +50,12 @@ export default function SetupScreen({navigation}) {
   const {theme} = useTheme();
   const {setIdentity} = useApp();
   const [step, setStep] = useState(STEPS.NAME);
+
+  // The recovery phrase is on screen for the SEED and CONFIRM steps, and on
+  // both it is the whole identity in plain text. FLAG_SECURE blocks the
+  // screenshot and the recents thumbnail for as long as that is true.
+  const phraseVisible = step === STEPS.SEED || step === STEPS.CONFIRM;
+  useSecureScreenWhen(phraseVisible);
   const [displayName, setDisplayName] = useState('');
   const [seedPhrase, setSeedPhrase] = useState([]);
   const [confirmWords, setConfirmWords] = useState({2: '', 6: '', 10: ''});
@@ -120,8 +128,18 @@ export default function SetupScreen({navigation}) {
     setGeneratingFragments(true);
 
     try {
-      // 1. Generate ECDH P-256 keypair
-      const keyPair = CryptoEngine.generateKeyPair();
+      // 1. The ECDH P-256 keypair, derived from the recovery phrase.
+      //
+      //    This used to be CryptoEngine.generateKeyPair(), which draws a random
+      //    key. Only the Ghost Address came from the phrase, so writing the
+      //    phrase down protected the address and nothing else: restoring on a
+      //    new device produced a different messaging key, and every contact
+      //    holding the old public key could no longer seal anything.
+      //
+      //    Deriving it means the phrase genuinely restores the identity.
+      //    Identities created before this change keep their random key — it
+      //    cannot be re-derived — see MOBILE_BUILD.md.
+      const keyPair = await CryptoEngine.deriveIdentityKeyPair(seedPhrase);
       const fingerprint = await CryptoEngine.sha256(keyPair.publicKeyHex);
 
       // 2. Wrap the private key under the phrase (AES-256-GCM envelope). The
@@ -166,6 +184,15 @@ export default function SetupScreen({navigation}) {
         name: displayName.trim(),
         ghostAddress: ghost.ghostAddress,
         meshNodeId: ghost.nodeIdHex,
+        /**
+         * How this identity's messaging key was produced.
+         *
+         * 'phrase-v1' means the recovery phrase reproduces it. Its absence
+         * means the key was drawn at random before derivation existed, and the
+         * phrase restores the address but not the key. Recorded so the app can
+         * tell the user which of the two they have rather than guessing.
+         */
+        keyDerivation: 'phrase-v1',
       };
 
       // AppContext exposes intent-named helpers, not the raw dispatcher — this
@@ -292,7 +319,31 @@ export default function SetupScreen({navigation}) {
               disabled={!displayName.trim()}
               activeOpacity={0.7}>
               <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
-                Generate Identity
+                Create new identity
+              </Text>
+            </TouchableOpacity>
+
+            {/*
+              Equal prominence, deliberately. Someone reinstalling or moving
+              phones arrives here with twelve words written down and needs to
+              see straight away that there is somewhere to put them — before
+              this existed, the only path forward created a second identity and
+              quietly orphaned the first.
+            */}
+            <View style={styles.altDivider}>
+              <View style={[styles.altRule, {backgroundColor: theme.border}]} />
+              <Text style={[styles.altDividerText, {color: theme.textMuted}]}>or</Text>
+              <View style={[styles.altRule, {backgroundColor: theme.border}]} />
+            </View>
+
+            <TouchableOpacity
+              style={[styles.secondaryBtn, {borderColor: theme.accent}]}
+              onPress={() => navigation.navigate('RestoreIdentity')}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel="I already have an identity. Restore it from your recovery phrase.">
+              <Text style={[styles.secondaryBtnText, {color: theme.accent}]}>
+                I already have an identity
               </Text>
             </TouchableOpacity>
           </Animated.View>
@@ -604,6 +655,22 @@ const styles = StyleSheet.create({
   },
 
   // Primary button
+  altDivider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 18,
+    gap: 12,
+  },
+  altRule: {flex: 1, height: 1},
+  altDividerText: {fontSize: 12},
+  secondaryBtn: {
+    minHeight: 52,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: {fontSize: 16, fontWeight: '600'},
   primaryBtn: {
     borderRadius: 12,
     paddingVertical: 16,

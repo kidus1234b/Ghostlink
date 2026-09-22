@@ -650,52 +650,122 @@
       }
     }
 
+    /**
+     * Strict hex -> bytes. Returns an empty array for anything that is not an
+     * even-length run of hex digits, so a malformed key fails ECDH import
+     * rather than silently becoming NaN bytes.
+     * @private
+     */
+    _hexToBytes(hex) {
+      if (typeof hex !== 'string') return new Uint8Array(0);
+      const clean = hex.trim().toLowerCase();
+      if (clean.length === 0 || clean.length % 2 !== 0 || !/^[0-9a-f]+$/.test(clean)) {
+        return new Uint8Array(0);
+      }
+      const out = new Uint8Array(clean.length / 2);
+      for (let i = 0; i < out.length; i++) {
+        out[i] = parseInt(clean.substr(i * 2, 2), 16);
+      }
+      return out;
+    }
+
+    /**
+     * The fingerprint a public key is entitled to claim: the first 16 hex
+     * characters of SHA-256 over the lower-cased key hex, upper-cased. This
+     * mirrors fingerprintFromPublicKey in index.html — the two must stay
+     * identical or peers compute different fingerprints for the same identity.
+     * @private
+     * @returns {Promise<string|null>} null when the key is unusable.
+     */
+    async _fingerprintFor(publicKeyHex) {
+      if (typeof publicKeyHex !== 'string' || !publicKeyHex.trim()) return null;
+      if (this._hexToBytes(publicKeyHex).length === 0) return null;
+      const bytes = new TextEncoder().encode(publicKeyHex.trim().toLowerCase());
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      return Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
+        .slice(0, 16)
+        .toUpperCase();
+    }
+
+    /**
+     * Tear down a mesh connection that failed to authenticate.
+     * @private
+     */
+    _closeMeshConn(connId) {
+      try {
+        window.ghostlink?.ghostMesh?.close(connId);
+      } catch (e) {
+        console.warn('[GhostMesh] Failed to close connection', connId, e.message);
+      }
+      for (const [pid, conn] of Object.entries(this.meshConns)) {
+        if (conn.connId === connId) delete this.meshConns[pid];
+      }
+    }
+
     async _handleMeshData(connId, data) {
       try {
         const msg = JSON.parse(data);
         if (msg.type === 'identity') {
           const peerId = msg.fingerprint;
           console.log(`[GhostMesh] Received identity from peer ${peerId} (${msg.name})`);
-          
-          let sharedKey = null;
-          const privKey = this.identity.privateKey || (this.identity.keyPair && this.identity.keyPair.privateKey);
-          
-          if (privKey && msg.publicKeyHex) {
-            try {
-              const peerKey = await crypto.subtle.importKey(
-                'raw',
-                new Uint8Array(msg.publicKeyHex.match(/.{2}/g).map(b => parseInt(b, 16))),
-                { name: 'ECDH', namedCurve: 'P-256' },
-                false,
-                []
-              );
-              const sharedBits = await crypto.subtle.deriveBits(
-                { name: 'ECDH', public: peerKey },
-                privKey,
-                256
-              );
-              sharedKey = await crypto.subtle.importKey(
-                'raw', sharedBits,
-                { name: 'AES-GCM', length: 256 },
-                false,
-                ['encrypt', 'decrypt']
-              );
-            } catch (e) {
-              console.warn('[GhostMesh] ECDH key derivation failed, using fallback key:', e.message);
-            }
+
+          // A peer identifies itself by fingerprint and announces a public key.
+          // The fingerprint is defined as a truncated SHA-256 of that key
+          // (see fingerprintFromPublicKey in index.html), so the two have to
+          // agree — otherwise anyone can announce their own key under someone
+          // else's fingerprint and the session is established with the wrong
+          // party under the right name.
+          const boundFingerprint = await this._fingerprintFor(msg.publicKeyHex);
+          if (!boundFingerprint || boundFingerprint !== String(peerId || '').trim().toUpperCase()) {
+            console.warn(
+              `[GhostMesh] Rejecting identity on ${connId}: fingerprint ${peerId} does not match its announced public key.`
+            );
+            this._closeMeshConn(connId);
+            return;
           }
-          
-          if (!sharedKey) {
-            const fallbackMaterial = new TextEncoder().encode(this.identity.fingerprint + ':' + peerId);
-            const hashBits = await crypto.subtle.digest('SHA-256', fallbackMaterial);
+
+          // ECDH or nothing.
+          //
+          // This used to fall back to SHA-256(ourFingerprint + ':' + peerId)
+          // when ECDH failed. Both fingerprints are public values, so that
+          // "key" was known to anyone who had seen them — and the remote side
+          // picked when it was used, because any unparseable publicKeyHex sent
+          // derivation down the catch. Refuse the connection instead.
+          const privKey = this.identity.privateKey || (this.identity.keyPair && this.identity.keyPair.privateKey);
+          if (!privKey) {
+            console.warn('[GhostMesh] No local ECDH private key — refusing mesh session.');
+            this._closeMeshConn(connId);
+            return;
+          }
+
+          let sharedKey = null;
+          try {
+            const peerKey = await crypto.subtle.importKey(
+              'raw',
+              this._hexToBytes(msg.publicKeyHex),
+              { name: 'ECDH', namedCurve: 'P-256' },
+              false,
+              []
+            );
+            const sharedBits = await crypto.subtle.deriveBits(
+              { name: 'ECDH', public: peerKey },
+              privKey,
+              256
+            );
             sharedKey = await crypto.subtle.importKey(
-              'raw', hashBits,
+              'raw', sharedBits,
               { name: 'AES-GCM', length: 256 },
               false,
               ['encrypt', 'decrypt']
             );
+          } catch (e) {
+            console.warn('[GhostMesh] ECDH key derivation failed — refusing mesh session:', e.message);
+            this._closeMeshConn(connId);
+            return;
           }
-          
+
           this.meshConns[peerId] = {
             connId,
             sharedKey,

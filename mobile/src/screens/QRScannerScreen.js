@@ -14,7 +14,6 @@
 import React, {useState, useCallback, useEffect, useRef} from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   TouchableOpacity,
   Vibration,
@@ -23,6 +22,9 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text} from '../components/ScaledText';
 import Animated, {
   FadeIn,
   useSharedValue,

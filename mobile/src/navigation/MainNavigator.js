@@ -14,6 +14,7 @@ import {useApp} from '../context/AppContext';
 
 // Screen imports — lazy require so navigator can be created before screens exist
 import SetupScreen from '../screens/SetupScreen';
+import RestoreIdentityScreen from '../screens/RestoreIdentityScreen';
 import ChatListScreen from '../screens/ChatListScreen';
 import ChatScreen from '../screens/ChatScreen';
 import CallScreen from '../screens/CallScreen';
@@ -40,6 +41,8 @@ function AuthNavigator() {
   return (
     <AuthStack.Navigator screenOptions={SHARED_OPTIONS}>
       <AuthStack.Screen name="Setup" component={SetupScreen} />
+      {/* Reached from Setup's "I already have an identity". */}
+      <AuthStack.Screen name="RestoreIdentity" component={RestoreIdentityScreen} />
     </AuthStack.Navigator>
   );
 }

@@ -1,8 +1,6 @@
 import React, {useState, useCallback, useMemo, useRef, useEffect} from 'react';
 import {
   View,
-  Text,
-  TextInput,
   StyleSheet,
   TouchableOpacity,
   FlatList,
@@ -14,6 +12,9 @@ import {
   Dimensions,
   Platform,
 } from 'react-native';
+// Text and TextInput come from the scaled wrappers so the user's chosen
+// size reaches every literal in this file's StyleSheet. See ScaledText.js.
+import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
   FadeIn,
   FadeInDown,
