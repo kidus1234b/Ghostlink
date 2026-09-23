@@ -58,6 +58,7 @@ const Actions = {
   CLEAR_GHOST_MESH: 'CLEAR_GHOST_MESH',
   RESTORE_STATE: 'RESTORE_STATE',
   WIPE_ALL: 'WIPE_ALL',
+  CLEAR_IDENTITY_DATA: 'CLEAR_IDENTITY_DATA',
 };
 
 // ─── Map Serialisation Helpers ───────────────────────────────
@@ -169,6 +170,16 @@ function appReducer(state, action) {
 
     case Actions.RESTORE_STATE:
       return {...state, ...action.payload};
+
+    // Everything the previous identity owned, without touching the
+    // preferences that belong to the person holding the phone.
+    case Actions.CLEAR_IDENTITY_DATA:
+      return {
+        ...state,
+        peers: new Map(),
+        messages: new Map(),
+        ghostMesh: {enabled: false, address: '', publicKeyHex: ''},
+      };
 
     case Actions.WIPE_ALL:
       return {
@@ -417,6 +428,36 @@ function AppProvider({children}) {
     return {ok: failed.length === 0, cleared, failed};
   }, []);
 
+  /**
+   * Drop everything tied to whoever was on this device before, keeping nothing
+   * but the app's own preferences.
+   *
+   * Restoring a phrase installs a different identity. Messages, the peer cache
+   * and mesh state all belong to the previous one: a conversation list left
+   * behind would be attributed to the restored identity, showing history it
+   * never had and peers it never spoke to. The restore screen already tells
+   * people their messages do not come back — this is what makes that true.
+   *
+   * Settings are deliberately kept: text size and theme are properties of the
+   * person holding the phone, not of the identity.
+   *
+   * @returns {Promise<void>}
+   */
+  const clearIdentityScopedData = useCallback(async () => {
+    try {
+      await AsyncStorage.multiRemove([
+        STORAGE_KEYS.MESSAGES,
+        STORAGE_KEYS.PEERS,
+        STORAGE_KEYS.GHOST_MESH,
+      ]);
+    } catch (err) {
+      // Non-fatal: the restore still has to complete, and leaving stale rows
+      // is better than refusing to restore the identity at all. Say so.
+      console.warn('[AppContext] could not clear prior identity data:', err);
+    }
+    dispatch({type: Actions.CLEAR_IDENTITY_DATA});
+  }, []);
+
   const setGhostMesh = useCallback(meshData => {
     dispatch({type: Actions.SET_GHOST_MESH, payload: meshData});
   }, []);
@@ -454,6 +495,7 @@ function AppProvider({children}) {
     setGhostMesh,
     clearGhostMesh,
     wipeAll,
+    clearIdentityScopedData,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

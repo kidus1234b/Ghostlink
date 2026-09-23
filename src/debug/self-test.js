@@ -3,7 +3,7 @@
   'use strict';
 
   const GL = window.GhostLink || {};
-  const { NonceTracker, KeyManager, EventBus, StateMachine, RetryQueue, Logger,
+  const { EventBus, StateMachine, RetryQueue, Logger,
           MessageRouter, RelayManager, FileTransferManager, ConnectionManager,
           RateLimiter, SessionManager, FloodProtection } = GL;
 
@@ -288,14 +288,6 @@
       const results = [];
       const t = (name, fn) => this._runTest(name, fn, results);
 
-      await t('NonceTracker replay protection', async () => {
-        if (!NonceTracker) throw new Error('NonceTracker not found');
-        const tracker = new NonceTracker();
-        const nonce = 'nonce-phase5-' + Math.random();
-        if (!tracker.isUnique(nonce)) throw new Error('first use should be unique');
-        if (tracker.isUnique(nonce)) throw new Error('second use should not be unique');
-      });
-
       await t('RateLimiter rate limiting', async () => {
         if (!RateLimiter) return true;
         const rl = new RateLimiter({ maxPerSecond: 5, windowMs: 1000 });
@@ -325,18 +317,6 @@
         sm.destroy?.('test-peer-p5');
         const after = sm.get?.('test-peer-p5');
         if (after) throw new Error('session not destroyed');
-      });
-
-      await t('KeyManager encrypt/decrypt roundtrip', async () => {
-        if (!KeyManager) return true;
-        const km = new KeyManager({ rotationIntervalMs: 60000, sessionExpiryMs: 60000 });
-        const masterKey = crypto.getRandomValues(new Uint8Array(32));
-        await km.initSession('peer-p5', masterKey);
-        const { iv, ciphertext } = await km.encrypt('hello world', 'peer-p5');
-        if (!iv || !ciphertext) throw new Error('encryption returned null');
-        const plaintext = await km.decrypt(iv, ciphertext, 'peer-p5');
-        if (plaintext !== 'hello world') throw new Error(`decryption mismatch: got "${plaintext}"`);
-        km.destroySession('peer-p5');
       });
 
       return results;

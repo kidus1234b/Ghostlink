@@ -104,6 +104,11 @@ android {
         // independently of versionName: several builds of "2.0.0" are fine, each
         // with its own versionCode.
         //
+        //   6  — 2.0.0 one recovery wordlist across web, mobile and CLI, so a
+        //        phrase written on any client restores on every other; restore
+        //        from phrase; text size reaches conversations; FLAG_SECURE on
+        //        the phrase screens; restore replaces the prior identity's
+        //        data instead of inheriting it.
         //   5  — 2.0.0 signaling removed (no server anywhere), session KDF
         //        switched to HKDF-SHA256 (envelope v2), web invite QR readable.
         //   4  — 2.0.0 real transport: chat actually sends, app-layer AES-GCM
@@ -112,7 +117,7 @@ android {
         //        arm64-only. See MOBILE_BUILD.md.
         //   2  — 2.0.0 (first shippable build; versionCode 1 was the unshipped
         //        pair of APKs built on 2026-09-13)
-        versionCode 5
+        versionCode 6
         versionName "2.0.0"
 
         // Opt-in ABI filtering, for producing a phone-sized APK:

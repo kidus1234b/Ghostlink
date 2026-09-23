@@ -267,10 +267,28 @@ const CryptoService = {
   // ─── Ghost Mesh (Yggdrasil) Key Derivation ──────────────────────────────
 
   /**
-   * Derive a complete Yggdrasil identity from a BIP-39 seed phrase.
+   * Derive the legacy Yggdrasil IPv6 address for a seed phrase.
    *
-   * Derivation flow (must produce byte-for-byte identical results to the
-   * web app's CryptoEngine.deriveYggdrasilIdentity):
+   * ⚠ MUST NOT BE USED TO DERIVE A GHOST ADDRESS OR ANY IDENTITY. ⚠
+   *
+   * This is a *routing address* for a self-hosted Yggdrasil daemon, not an
+   * identity. It exists only for the Ghost Mesh setup modal, which is gated
+   * off in this build (see MESH_SETUP_AVAILABLE in utils/capabilities.js).
+   *
+   * Its KDF disagrees with the one that produces identities:
+   *
+   *   this function   PBKDF2-HMAC-SHA256, salt "ghostlink-yggdrasil-v1"
+   *   Ghost Address   PBKDF2-HMAC-SHA512, same salt — see
+   *                   CryptoEngine.deriveGhostIdentity in utils/crypto.js
+   *
+   * Same phrase, same salt, same iterations, different PRF — so different
+   * bytes and a different address. Using this for a Ghost Address would give
+   * a user an address their own node does not answer to, and it would look
+   * like it worked.
+   *
+   * Mirrors CryptoEngine.deriveLegacyYggdrasilIP in the web app.
+   *
+   * Derivation flow:
    *   1. PBKDF2(seed_words, salt="ghostlink-yggdrasil-v1", 100k iter, SHA-256) → 32-byte seed
    *   2. X25519 keypair from the 32-byte seed (Curve25519 scalar-basepoint multiplication)
    *   3. Yggdrasil IPv6 address from SHA-512(X25519_public_key)
@@ -278,7 +296,7 @@ const CryptoService = {
    * @param {string[]} words Array of 12 or 24 seed words.
    * @returns {Promise<{ publicKeyHex: string, privateKeyHex: string, address: string }>}
    */
-  async deriveYggdrasilIdentity(words) {
+  async deriveLegacyYggdrasilIP(words) {
     // Step 1: PBKDF2 → 32-byte seed
     const seedHex = await new Promise((resolve, reject) => {
       QuickCrypto.pbkdf2(
@@ -300,7 +318,7 @@ const CryptoService = {
     const publicKeyBytes = CryptoService.curve25519PublicKeyFromSeed(rawKeyBytes);
 
     // Step 3: Yggdrasil IPv6 address from public key
-    const address = await CryptoService.deriveYggdrasilAddress(publicKeyBytes);
+    const address = await CryptoService._legacyYggdrasilIPFromKey(publicKeyBytes);
 
     const publicKeyHex = bufToHex(publicKeyBytes);
     const privateKeyHex = bufToHex(rawKeyBytes);
@@ -340,7 +358,8 @@ const CryptoService = {
    * @param {Uint8Array} publicKeyBytes 32-byte X25519 public key.
    * @returns {Promise<string>} Yggdrasil IPv6 address string.
    */
-  async deriveYggdrasilAddress(publicKeyBytes) {
+  /** Private helper of deriveLegacyYggdrasilIP — see the warning there. @private */
+  async _legacyYggdrasilIPFromKey(publicKeyBytes) {
     const {sha512} = require('@noble/hashes/sha512');
     const hash = sha512(publicKeyBytes);
 

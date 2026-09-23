@@ -380,7 +380,7 @@ export default function SettingsScreen({navigation}) {
 
           {/*
             Disabled, not hidden. "Verify & Continue" inside this modal calls
-            CryptoService.deriveYggdrasilIdentity(), which reaches for
+            CryptoService.deriveLegacyYggdrasilIP(), which reaches for
             react-native-quick-crypto — absent from this build, and stood in
             for by a Proxy that throws on any access so it cannot return wrong
             bytes. Opening this is a crash the user can trigger from Settings.

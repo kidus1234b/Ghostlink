@@ -441,13 +441,6 @@ class GhostLinkPlatform {
       connectionManager: this._managers.connection
     });
 
-    // Key Manager (depends on eventBus, logger)
-    this._managers.key = new GhostLink.KeyManager({
-      identity,
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('key') : logger
-    });
-
     // Offline Queue (depends on eventBus, logger)
     this._managers.offlineQueue = new GhostLink.OfflineQueue({
       eventBus: this._eventBus,
@@ -467,8 +460,7 @@ class GhostLinkPlatform {
     this._managers.fileTransfer = new GhostLink.FileTransferManager({
       eventBus: this._eventBus,
       logger: logger.child ? logger.child('fileTransfer') : logger,
-      connectionManager: this._managers.connection,
-      keyManager: this._managers.key
+      connectionManager: this._managers.connection
     });
 
     // Presence Manager (depends on connection)
@@ -488,8 +480,7 @@ class GhostLinkPlatform {
       messageRouter: this._managers.message,
       fileTransferManager: this._managers.fileTransfer,
       presenceManager: this._managers.presence,
-      relayManager: this._managers.relay,
-      keyManager: this._managers.key
+      relayManager: this._managers.relay
     });
 
     // Debug Console
@@ -515,7 +506,6 @@ class GhostLinkPlatform {
     if (typeof licenseNS.initLicenseSystem === 'function') {
       try {
         const licenseSystem = await licenseNS.initLicenseSystem({
-          keyManager: this._managers.key,
           eventBus: this._eventBus
         });
         Object.assign(this._managers, licenseSystem);
@@ -573,7 +563,6 @@ class GhostLinkPlatform {
   get presenceManager() {return this._managers.presence;}
   get securityManager() {return this._managers.security;}
   get relayManager() {return this._managers.relay;}
-  get keyManager() {return this._managers.key;}
   get offlineQueue() {return this._managers.offlineQueue;}
 
   // License System getters
@@ -625,7 +614,6 @@ class GhostLinkPlatform {
     this._managers.fileTransfer?.destroy();
     this._managers.message?.destroy();
     this._managers.relay?.destroy();
-    this._managers.key?.destroy();
     this._managers.security?.destroy();
     this._managers.offlineQueue?.destroy();
     this._managers.licenseManager?.destroy();
@@ -669,14 +657,83 @@ const CryptoEngine = {
     const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(d));
     return Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, "0")).join("");
   },
+  // ==================== SYMMETRIC ENCRYPTION AT REST ====================
+  //
+  // Version 1 used the key string directly as AES key material:
+  //   key.padEnd(32, "0").slice(0, 32)
+  // That is not a KDF. It truncated the key to its first 32 characters, padded
+  // anything shorter with zero bytes, and called the result AES-256 — so the
+  // real strength was however much entropy happened to sit in those 32
+  // characters. Every current caller passes a high-entropy string, so nothing
+  // was breakable in practice, but the label was a lie and the first caller to
+  // pass a passphrase would have gotten a trivially guessable key with no
+  // warning.
+  //
+  // Version 2 runs HKDF-SHA256 over the key with a random per-message salt.
+  // HKDF is the right tool here because the inputs are already high-entropy
+  // (a 256-bit vault key, an exported AES key); it extracts and expands rather
+  // than stretching, so it costs nothing per message. An input that is
+  // genuinely a passphrase needs PBKDF2 instead — deriveKeyFromSeed below is
+  // that path, and it is where a passphrase belongs.
+  //
+  // v1 ciphertext is still readable: decrypt() dispatches on the version tag,
+  // and every write produces v2, so stored data migrates as it is touched.
+  CIPHER_VERSION: 2,
+  _HKDF_INFO: "ghostlink-at-rest-v2",
+
+  _hex(bytes) {
+    return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+  },
+  _unhex(hex) {
+    return new Uint8Array(hex.match(/.{2}/g).map((b) => parseInt(b, 16)));
+  },
+
+  /** v2: HKDF-SHA256(key, salt) -> AES-GCM-256. */
+  async _deriveAtRestKey(key, salt, usage) {
+    const material = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(String(key)), "HKDF", false, ["deriveKey"]
+    );
+    return crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt,
+        info: new TextEncoder().encode(this._HKDF_INFO)
+      },
+      material,
+      { name: "AES-GCM", length: 256 },
+      false,
+      usage
+    );
+  },
+
+  /** v1: the key string used as raw AES material. Read-only — never written. */
+  async _legacyAtRestKey(key, usage) {
+    return crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(String(key).padEnd(32, "0").slice(0, 32)),
+      "AES-GCM",
+      false,
+      usage
+    );
+  },
+
   async encrypt(text, key) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ck = await crypto.subtle.importKey("raw", new TextEncoder().encode(key.padEnd(32, "0").slice(0, 32)), "AES-GCM", false, ["encrypt"]);
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const ck = await this._deriveAtRestKey(key, salt, ["encrypt"]);
     const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, ck, new TextEncoder().encode(text));
     return {
-      iv: Array.from(iv).map((b) => b.toString(16).padStart(2, "0")).join(""),
-      ciphertext: Array.from(new Uint8Array(ct)).map((b) => b.toString(16).padStart(2, "0")).join("")
+      v: this.CIPHER_VERSION,
+      salt: this._hex(salt),
+      iv: this._hex(iv),
+      ciphertext: this._hex(new Uint8Array(ct))
     };
+  },
+
+  /** True if this blob predates the KDF and should be rewritten when convenient. */
+  isLegacyCiphertext(encObj) {
+    return !!encObj && typeof encObj === "object" && !encObj.v;
   },
   genInvite() {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -736,9 +793,18 @@ const CryptoEngine = {
     return crypto.subtle.unwrapKey("pkcs8", data, wrapKey, { name: "AES-GCM", iv }, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
   },
   async decrypt(encObj, key) {
-    const ck = await crypto.subtle.importKey("raw", new TextEncoder().encode(key.padEnd(32, "0").slice(0, 32)), "AES-GCM", false, ["decrypt"]);
-    const iv = new Uint8Array(encObj.iv.match(/.{2}/g).map((b) => parseInt(b, 16)));
-    const ct = new Uint8Array(encObj.ciphertext.match(/.{2}/g).map((b) => parseInt(b, 16)));
+    if (!encObj || typeof encObj !== "object" || !encObj.iv || !encObj.ciphertext) {
+      throw new Error("decrypt: not an encrypted block");
+    }
+    const iv = this._unhex(encObj.iv);
+    const ct = this._unhex(encObj.ciphertext);
+
+    // An untagged blob is v1, from before the KDF existed. Read it with the
+    // old scheme so history survives; writes always produce v2.
+    const ck = encObj.v === 2 && encObj.salt
+      ? await this._deriveAtRestKey(key, this._unhex(encObj.salt), ["decrypt"])
+      : await this._legacyAtRestKey(key, ["decrypt"]);
+
     const dec = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, ck, ct);
     return new TextDecoder().decode(dec);
   },
@@ -811,7 +877,33 @@ const CryptoEngine = {
     );
     return new TextDecoder().decode(decryptedBytes);
   },
-  async deriveYggdrasilIdentity(words) {
+  /**
+   * Derive the legacy Yggdrasil IPv6 address for a seed phrase.
+   *
+   * ⚠ MUST NOT BE USED TO DERIVE A GHOST ADDRESS OR ANY IDENTITY. ⚠
+   *
+   * This returns a *routing address* for a self-hosted Yggdrasil daemon — the
+   * thing a user pastes into /etc/yggdrasil.conf — and nothing here identifies
+   * a GhostLink user. It is kept only for the manual Ghost Mesh setup panel in
+   * Settings, which verifies a phrase against an address the user already has.
+   *
+   * It is deliberately named so it cannot be mistaken for identity derivation,
+   * because its KDF disagrees with the one that produces identities:
+   *
+   *   this function        PBKDF2-HMAC-SHA256, salt "ghostlink-yggdrasil-v1"
+   *   Ghost Address        PBKDF2-HMAC-SHA512, salt "ghostlink-yggdrasil-v1"
+   *                        (gmp-core/src/identity.ts, mobile/src/utils/crypto.js)
+   *
+   * Same phrase, same salt, same iteration count — different PRF, so different
+   * bytes and a different key. Wiring this into a Ghost Address would hand
+   * every user an address their own node does not answer to, and it would look
+   * like it worked. test/ghost-address-kdf.test.mjs fails if any Ghost Address
+   * path reaches for SHA-256.
+   *
+   * @param {string[]} words the recovery phrase
+   * @returns {Promise<{publicKeyHex: string, address: string, privateKeyHex: string}>}
+   */
+  async deriveLegacyYggdrasilIP(words) {
     const enc = new TextEncoder();
     const baseKey = await crypto.subtle.importKey(
       "raw",
@@ -833,7 +925,7 @@ const CryptoEngine = {
     const rawKeyBytes = new Uint8Array(derivedBits);
 
     const publicKeyBytes = await this.curve25519PublicKeyFromSeed(rawKeyBytes);
-    const address = await this.deriveYggdrasilAddress(publicKeyBytes);
+    const address = await this._legacyYggdrasilIPFromKey(publicKeyBytes);
     const publicKeyHex = Array.from(publicKeyBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
     const privateKeyHex = Array.from(rawKeyBytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 
@@ -893,7 +985,12 @@ const CryptoEngine = {
     throw new Error('[CryptoEngine] No X25519 implementation available. ' +
     'Ensure tweetnacl (nacl-fast.min.js) is loaded, or use a browser with Web Crypto X25519 support.');
   },
-  async deriveYggdrasilAddress(publicKeyBytes) {
+  /**
+   * The IPv6 address Yggdrasil's scheme assigns to a public key.
+   * Private helper of deriveLegacyYggdrasilIP — see the warning there.
+   * @private
+   */
+  async _legacyYggdrasilIPFromKey(publicKeyBytes) {
     const hashBuffer = await crypto.subtle.digest("SHA-512", publicKeyBytes);
     const hash = new Uint8Array(hashBuffer);
 
@@ -2934,8 +3031,6 @@ function GhostLinkApp() {
   const [localStream, setLocalStream] = useState(null);
 
   // Signal Protocol
-  const [sessionManager, setSessionManager] = useState(null);
-  const [groupKeyManager, setGroupKeyManager] = useState(null);
 
   // File Transfer
   const [fileTransferManager, setFileTransferManager] = useState(null);
@@ -2975,9 +3070,7 @@ function GhostLinkApp() {
   const quickDcsRef = useRef(null);
 
   // Signal Protocol Double Ratchet UI state
-  const [signalProtocolStatus, setSignalProtocolStatus] = useState('uninitialized'); // uninitialized | initializing | active | failed
   const [showCipherDetails, setShowCipherDetails] = useState(false);
-  const [activeSessions, setActiveSessions] = useState([]);
 
   // Group Key Agreement
   const [groupChatMode, setGroupChatMode] = useState(false);
@@ -3481,17 +3574,38 @@ function GhostLinkApp() {
     const decryptAll = async () => {
       const key = activeWorkspace.workspaceKey;
       const decrypted = {};
+      let upgraded = 0;
 
       for (const block of activeWorkspace.chain) {
         if (block.encrypted) {
           try {
             const plaintext = await CryptoEngine.decrypt(block.encrypted, key);
             decrypted[block.ts || block.index] = plaintext;
+
+            // Opportunistic migration off the pre-KDF format. Reading a chain
+            // is the only moment we hold both the key and the plaintext, so
+            // this is where v1 blocks get rewritten under HKDF. It does not
+            // change the block hash — only the sealed representation of
+            // content that is already part of the chain.
+            if (CryptoEngine.isLegacyCiphertext(block.encrypted)) {
+              block.encrypted = await CryptoEngine.encrypt(plaintext, key);
+              upgraded++;
+            }
           } catch (e) {
             decrypted[block.ts || block.index] = "[Decryption Failed - Key Rotated]";
           }
         } else {
           decrypted[block.ts || block.index] = block.content;
+        }
+      }
+
+      if (upgraded > 0) {
+        try {
+          await window.GLLicenseRuntime?.workspaceManager?.persist?.();
+          console.log(`[CryptoEngine] Re-sealed ${upgraded} legacy block(s) under HKDF.`);
+        } catch (e) {
+          // The in-memory blocks are upgraded either way; the next write persists them.
+          console.warn('[CryptoEngine] Could not persist re-sealed blocks:', e.message);
         }
       }
 
@@ -3721,27 +3835,6 @@ function GhostLinkApp() {
     let ownedConnector = null;
 
     // Signaling server removed — Ghost Mesh (GMP) is the only transport
-
-    // Initialize Signal Protocol session manager
-    const initSignalProtocol = async () => {
-      if (typeof GhostLinkSignal !== 'undefined') {
-        const sm = new GhostLinkSignal.SessionManager();
-        try {
-          const preKeyBundle = await sm.init(20);
-          console.log('[GhostLink] Signal Protocol initialized, pre-key bundle ready');
-          setSessionManager(sm);
-          const gk = new GhostLinkSignal.GroupKeyAgreement(sm);
-          setGroupKeyManager(gk);
-        } catch (e) {
-          console.warn('[GhostLink] Signal Protocol init failed, falling back to AES encryption:', e);
-          // Still set the session manager (un-initialized) so the app knows it exists
-          // but encryption will fall back to base CryptoEngine AES
-          setSessionManager(null);
-          setGroupKeyManager(null);
-          addToast('Signal Protocol unavailable — using AES-256 encryption', 'info');
-        }
-      }
-    };
 
     // Registers all bridge/peer/message listeners on a connector. Synchronous and
     // side-effect free w.r.t. the transport, so callers can (and must) run it
@@ -4458,7 +4551,6 @@ function GhostLinkApp() {
       }
     };
 
-    initSignalProtocol();
     initP2P();
     initQR();
 
@@ -6155,19 +6247,6 @@ function GhostLinkApp() {
   // ═══════════════════════════════════════════════════════════════
   // PLANNED FEATURE IMPLEMENTATIONS
   // ═══════════════════════════════════════════════════════════════
-
-  // ---- Signal Protocol Double Ratchet UI ----
-  useEffect(() => {
-    if (sessionManager) {
-      setSignalProtocolStatus('active');
-      const sessions = sessionManager.getAllSessions ? sessionManager.getAllSessions() : [];
-      setActiveSessions(sessions);
-    } else if (typeof GhostLinkSignal !== 'undefined') {
-      setSignalProtocolStatus('initializing');
-    } else {
-      setSignalProtocolStatus('uninitialized');
-    }
-  }, [sessionManager]);
 
   // ---- TURN Server Config ----
   // A TURN username/credential is a reusable capability to relay traffic through
@@ -8403,35 +8482,6 @@ inviteTab === "create" ? html`<>
                   </div>
 
                   
-                  <div style=${{ marginBottom: 22 }}>
-                    <div style=${{ fontSize: 10, color: th.textSecondary, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Signal Protocol</div>
-                    <div style=${{ background: th.bg3, borderRadius: 10, padding: 12 }}>
-                      <div style=${{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                        <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <${I} t="shield" s=${14} c=${signalProtocolStatus === 'active' ? PALETTE.spectral : signalProtocolStatus === 'initializing' ? th.accent2 : 'th.textSecondary'} />
-                          <span style=${{ fontSize: 12, color: PALETTE.mist }}>Double Ratchet</span>
-                        </div>
-                        <${Tag} color=${signalProtocolStatus === 'active' ? PALETTE.spectral : signalProtocolStatus === 'initializing' ? th.accent2 : 'th.textSecondary'}>
-                          ${signalProtocolStatus === 'active' ? 'ACTIVE' : signalProtocolStatus === 'initializing' ? 'INITIALIZING' : 'STANDBY'}
-                        <//>
-                      </div>
-                      <div style=${{ fontSize: 9, color: th.textSecondary, lineHeight: 1.5 }}>
-                        ${signalProtocolStatus === 'active' ?
-  `Forward secrecy active. ${activeSessions.length} session(s) established.` :
-  signalProtocolStatus === 'initializing' ?
-  'Generating pre-key bundle...' :
-  'Signal Protocol ready but not yet initialized. Will auto-activate on first encrypted session.'}
-                      </div>
-                      ${activeSessions.length > 0 && html`<div style=${
-  { marginTop: 8 }}>
-                          ${activeSessions.map((sess, i) => html`<div key=${
-  i} style=${{ fontSize: 9, color: th.textSecondary, fontFamily: "monospace", padding: "2px 0" }}>
-                              Session ${i + 1}: ${sess.peerId?.slice(0, 16)}...
-                            </div>`
-  )}
-                        </div>`}
-                    </div>
-                  </div>
 
                   
                   <div style=${
@@ -9576,7 +9626,7 @@ inviteTab === "create" ? html`<>
       return;
     }
     try {
-      const derived = await CryptoEngine.deriveYggdrasilIdentity(words);
+      const derived = await CryptoEngine.deriveLegacyYggdrasilIP(words);
 
       // Normalizer
       const normalizeIPv6 = (ip) => {

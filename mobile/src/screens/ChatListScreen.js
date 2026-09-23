@@ -83,7 +83,18 @@ function formatTimestamp(ts) {
 }
 
 // ==================== SWIPEABLE CHAT ITEM ====================
-function ChatItem({item, theme, onPress, onPin, onMute, onDelete}) {
+/**
+ * One row.
+ *
+ * Memoised, and deliberately so: each row owns two shared values, a gesture
+ * detector and an animated style, and it was being rebuilt on every render of
+ * the list. Typing in the search box, a refresh, or a single inbound message
+ * re-ran that setup for every visible row. The props are primitives and
+ * stable callbacks, so a shallow compare is enough — except `item`, which the
+ * comparator below checks field by field, because the chat objects are rebuilt
+ * from state on each pass and never compare equal by reference.
+ */
+function ChatItemImpl({item, theme, onPress, onPin, onMute, onDelete}) {
   const translateX = useSharedValue(0);
   const rowHeight = useSharedValue(CHAT_ITEM_HEIGHT);
   const isSwipeOpen = useRef(false);
@@ -227,6 +238,28 @@ function ChatItem({item, theme, onPress, onPin, onMute, onDelete}) {
     </View>
   );
 }
+
+const ChatItem = React.memo(ChatItemImpl, (prev, next) => {
+  const a = prev.item;
+  const b = next.item;
+  return (
+    prev.theme === next.theme &&
+    prev.onPress === next.onPress &&
+    prev.onPin === next.onPin &&
+    prev.onMute === next.onMute &&
+    prev.onDelete === next.onDelete &&
+    // Exactly the fields the row renders. Anything added to the row must be
+    // added here too, or it will not repaint when it changes.
+    a.id === b.id &&
+    a.name === b.name &&
+    a.lastMessage === b.lastMessage &&
+    a.lastMessageTime === b.lastMessageTime &&
+    a.unread === b.unread &&
+    a.pinned === b.pinned &&
+    a.muted === b.muted &&
+    a.online === b.online
+  );
+});
 
 // ==================== MAIN CHAT LIST SCREEN ====================
 export default function ChatListScreen({navigation}) {

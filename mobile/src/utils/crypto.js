@@ -277,6 +277,19 @@ function genInvite() {
   return `GL-${c.slice(0, 8)}-${c.slice(8, 16)}-${c.slice(16, 24)}-${c.slice(24, 32)}`.toUpperCase();
 }
 
+/**
+ * Write the identity keypair to the platform keystore.
+ *
+ * Throws on failure rather than returning false. Every caller awaited this
+ * without checking the result, so a failed write — a locked keystore, a
+ * cancelled biometric prompt, a device with no secure hardware — looked
+ * exactly like success: setup and restore both went on to announce the
+ * identity and store it in app state, and it was gone on next launch with
+ * nothing to explain why. That is the failure this whole flow exists to
+ * prevent, so it has to be loud.
+ *
+ * @throws {Error} if the keypair could not be persisted
+ */
 async function storeKeyPair(publicKeyHex, privateKeyRaw) {
   try {
     await Keychain.setGenericPassword('ghostlink_keypair', JSON.stringify({publicKeyHex, privateKeyRaw}), {
@@ -285,8 +298,10 @@ async function storeKeyPair(publicKeyHex, privateKeyRaw) {
       accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
     return true;
-  } catch (_e) {
-    return false;
+  } catch (e) {
+    throw new Error(
+      `Could not save the identity key to this device's secure storage: ${e.message || e}`,
+    );
   }
 }
 

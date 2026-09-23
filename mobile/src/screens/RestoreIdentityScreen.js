@@ -47,7 +47,7 @@ import {useSecureScreen} from '../utils/useSecureScreen';
 
 export default function RestoreIdentityScreen({navigation}) {
   const {theme, scale} = useTheme();
-  const {setIdentity} = useApp();
+  const {setIdentity, clearIdentityScopedData} = useApp();
 
   // Blocks screenshots and the recents thumbnail while a phrase is on screen.
   useSecureScreen();
@@ -120,7 +120,18 @@ export default function RestoreIdentityScreen({navigation}) {
     if (!preview || busy) return;
     setBusy(true);
     try {
+      // The key first: if the keystore refuses, nothing else should have
+      // happened yet. storeKeyPair throws on failure — it used to return false
+      // and be ignored, which let a restore report success while writing
+      // nothing.
       await CryptoEngine.storeKeyPair(preview.keyPair.publicKeyHex, preview.keyPair.privateKeyRaw);
+
+      // Then drop whatever the previous identity left here. Messages, peers
+      // and mesh state belong to whoever was on this device before; carrying
+      // them into a restored identity would show it history it never had.
+      // This screen already promises messages do not come back.
+      await clearIdentityScopedData();
+
       setIdentity({
         publicKeyHex: preview.keyPair.publicKeyHex,
         fingerprint: preview.fingerprint,
@@ -136,14 +147,17 @@ export default function RestoreIdentityScreen({navigation}) {
     } catch (err) {
       Alert.alert(
         "Couldn't finish restoring",
-        'Your identity could not be saved to this device. Nothing has been changed — please try again.',
+        (err && err.message) ||
+          'Your identity could not be saved to this device. Nothing has been changed — please try again.',
       );
     } finally {
       setBusy(false);
     }
-  }, [busy, displayName, preview, setIdentity]);
+  }, [busy, displayName, preview, setIdentity, clearIdentityScopedData]);
 
-  const s = styles(theme, scale);
+  // StyleSheet.create on every render was rebuilding the whole sheet on each
+  // keystroke across twelve inputs. Theme and scale are the only inputs.
+  const s = useMemo(() => styles(theme, scale), [theme, scale]);
 
   if (preview) {
     return (
@@ -276,6 +290,17 @@ export default function RestoreIdentityScreen({navigation}) {
         ) : validation.missing > 0 ? (
           <Text style={s.hint}>
             {validation.missing} more {validation.missing === 1 ? 'word' : 'words'} to go.
+          </Text>
+        ) : validation.legacy.length > 0 ? (
+          /*
+           * The phrase contains a word this app no longer generates. It is
+           * still a valid identity and restores normally — say so, because a
+           * word that autocomplete refuses to offer otherwise reads like a
+           * mistake at exactly the moment someone is worried about losing an
+           * account.
+           */
+          <Text style={s.hint}>
+            Recognised — this phrase is from an earlier version of GhostLink. It still works.
           </Text>
         ) : null}
 

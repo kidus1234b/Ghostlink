@@ -8,7 +8,6 @@
   const ConnectionManager = G && G.ConnectionManager ? G.ConnectionManager : null;
   const SignalManager = G && G.SignalManager ? G.SignalManager : null;
   const RelayManager = G && G.RelayManager ? G.RelayManager : null;
-  const KeyManager = G && G.KeyManager ? G.KeyManager : null;
   const MessageRouter = G && G.MessageRouter ? G.MessageRouter : null;
   const FileTransferManager = G && G.FileTransferManager ? G.FileTransferManager : null;
   const PresenceManager = G && G.PresenceManager ? G.PresenceManager : null;
@@ -30,7 +29,7 @@
   }
 
   class PeerManager {
-    constructor({ identity, eventBus, logger, connectionManager, signalManager, messageRouter, fileTransferManager, presenceManager, relayManager, keyManager }) {
+    constructor({ identity, eventBus, logger, connectionManager, signalManager, messageRouter, fileTransferManager, presenceManager, relayManager }) {
       if (!identity) throw new Error('PeerManager: identity required');
       this.identity = identity;
       this.eventBus = eventBus || null;
@@ -42,10 +41,8 @@
       this._fileTransfer = fileTransferManager || null;
       this._presence = presenceManager || null;
       this._relay = relayManager || null;
-      this._keyManager = keyManager || null;
 
       this._peers = new Map();
-      this._keyExchange = new Map();
       this._retryQueues = new Map();
       this._unbinds = [];
       this._isDestroyed = false;
@@ -123,10 +120,6 @@
 
       this._peers.set(peerId, peer);
 
-      if (this._keyManager) {
-        this._keyExchange.set(peerId, { publicKeySent: false, sessionKeyReceived: false, handshakeComplete: false });
-      }
-
       if (this._relay) {
         this._retryQueues.set(peerId, []);
       }
@@ -146,12 +139,11 @@
 
       if (this._conn) this._conn.disconnect(peerId, reason);
       this._peers.delete(peerId);
-      this._keyExchange.delete(peerId);
 
       this._emit('peer:remove', { peerId, reason });
     }
 
-    setSubManagers({ connectionManager, signalManager, messageRouter, fileTransferManager, presenceManager, relayManager, keyManager } = {}) {
+    setSubManagers({ connectionManager, signalManager, messageRouter, fileTransferManager, presenceManager, relayManager } = {}) {
       if (this._isDestroyed) return;
       let changed = false;
       if (connectionManager && connectionManager !== this._conn) { this._conn = connectionManager; changed = true; }
@@ -160,7 +152,6 @@
       if (fileTransferManager && fileTransferManager !== this._fileTransfer) { this._fileTransfer = fileTransferManager; changed = true; }
       if (presenceManager && presenceManager !== this._presence) { this._presence = presenceManager; changed = true; }
       if (relayManager && relayManager !== this._relay) { this._relay = relayManager; changed = true; }
-      if (keyManager && keyManager !== this._keyManager) { this._keyManager = keyManager; changed = true; }
       if (changed) this._wireSubManagers();
     }
 
@@ -178,7 +169,6 @@
       this._wireFileTransfer();
       this._wirePresence();
       this._wireRelay();
-      this._wireKeyManager();
 
       this._qualityInterval = setInterval(() => {
         this._updatePeerQuality();
@@ -321,11 +311,6 @@
       this._relay._signalManager = this._signal;
     }
 
-    _wireKeyManager() {
-      if (!this._keyManager) return;
-      // KeyManager handles key exchange and session key derivation
-    }
-
     _onSignalConnected() {
       this._emit('signal:connected', {});
     }
@@ -438,7 +423,6 @@
       peer.retryCount = 0;
       peer.lastSeen = Date.now();
       this._emit('peer:connected', { peerId, mode: mode || peer.mode });
-      this._beginKeyExchange(peerId);
     }
 
     _handlePeerDisconnected(peerId) {
@@ -486,8 +470,7 @@
       const peer = this._getPeer(peerId);
       if (!peer) return;
       if (label === 'messages' && !peer.metadata.encrypted) {
-        this._beginKeyExchange(peerId);
-      }
+        }
       this._emit('dc:open', { peerId, label });
     }
 
@@ -499,10 +482,6 @@
 
     _handleDataChannelMessage(peerId, label, payload) {
       if (!payload || !label) return;
-      if (label === 'messages' && payload.type === 'key-exchange') {
-        this._handleKeyExchangeMessage(peerId, payload);
-        return;
-      }
       if (label === 'messages' && payload.type === 'ack') {
         this._handleAckReceived(peerId, payload.msgId);
         return;
@@ -517,47 +496,6 @@
       if (!peer) return;
       peer.quality = quality;
       this._emit('peer:quality', { peerId, quality });
-    }
-
-    _beginKeyExchange(peerId) {
-      if (!this._keyManager && !this._conn) return;
-      const peer = this._getPeer(peerId);
-      if (!peer) return;
-
-      const ke = this._keyExchange.get(peerId) || { publicKeySent: false, sessionKeyReceived: false, handshakeComplete: false };
-      this._keyExchange.set(peerId, ke);
-      ke.publicKeySent = true;
-
-      if (this._keyManager && this._keyManager.getPublicKey) {
-        const pubKey = this._keyManager.getPublicKey();
-        if (this._conn) {
-          this._conn.sendMessage(peerId, {
-            type: 'key-exchange',
-            publicKey: pubKey,
-            fingerprint: this.identity.fingerprint,
-          });
-        }
-      }
-    }
-
-    _handleKeyExchangeMessage(peerId, payload) {
-      const peer = this._getPeer(peerId);
-      if (!peer) return;
-      const ke = this._keyExchange.get(peerId);
-      if (!ke) return;
-
-      if (payload.publicKey) {
-        ke.sessionKeyReceived = true;
-        if (this._keyManager && this._keyManager.deriveSessionKey) {
-          this._keyManager.deriveSessionKey(peerId, payload.publicKey);
-        }
-      }
-
-      if (ke.publicKeySent && ke.sessionKeyReceived) {
-        ke.handshakeComplete = true;
-        peer.metadata.encrypted = true;
-        this._emit('peer:encrypted', { peerId });
-      }
     }
 
     _handleAckReceived(peerId, msgId) {
@@ -739,7 +677,6 @@
       if (this._signal) this._signal.disconnect();
       if (this._conn) this._conn.destroy();
       this._peers.clear();
-      this._keyExchange.clear();
     }
   }
 

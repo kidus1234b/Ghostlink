@@ -84,5 +84,42 @@ ok(/visible-password/.test(restore),
 ok(/Past messages, files and contacts stay on your old device/.test(restore),
    'The screen says plainly that messages do not come back');
 
+// ── Committing a restore must not half-succeed ─────────────────────────────
+// storeKeyPair used to return false on failure and every caller awaited it
+// without looking, so a keystore that refused the write still produced a
+// screen saying the identity was restored — and it was gone on next launch.
+const cryptoSrc = read('src/utils/crypto.js');
+ok(/throw new Error\(\s*`Could not save the identity key/.test(cryptoSrc),
+   'storeKeyPair reports a failed write instead of returning false');
+ok(!/return false;\s*\n\s*}\s*\n}\s*\n\s*async function loadKeyPair/.test(cryptoSrc),
+   'storeKeyPair no longer swallows the error');
+
+// The key is written before anything else changes, so a refusal leaves the
+// device as it was.
+const keyIdx = restore.indexOf('storeKeyPair');
+const clearIdx = restore.indexOf('clearIdentityScopedData()');
+const setIdx = restore.indexOf('setIdentity({');
+ok(keyIdx !== -1 && clearIdx !== -1 && setIdx !== -1 && keyIdx < clearIdx && clearIdx < setIdx,
+   'Restore stores the key, then clears the old identity, then installs the new one');
+
+// ── A restored identity must not inherit someone else's history ────────────
+const appCtx = read('src/context/AppContext.js');
+ok(/CLEAR_IDENTITY_DATA/.test(appCtx),
+   'There is a reset scoped to one identity, separate from a full wipe');
+ok(/clearIdentityScopedData/.test(appCtx) && /clearIdentityScopedData/.test(restore),
+   'Restore clears the previous identity\'s messages, peers and mesh state');
+const clearCase = appCtx.slice(appCtx.indexOf('case Actions.CLEAR_IDENTITY_DATA:'),
+                               appCtx.indexOf('case Actions.WIPE_ALL:'));
+ok(!/settings/.test(clearCase),
+   'Clearing identity data leaves the phone-level preferences alone');
+ok(/messages: new Map\(\)/.test(clearCase) && /peers: new Map\(\)/.test(clearCase),
+   'Clearing identity data drops messages and peers');
+
+// ── A phrase from an older build must still be recognised, and said so ─────
+ok(/validation\.legacy/.test(restore),
+   'The screen distinguishes an older-but-valid phrase from an invalid one');
+ok(/earlier version of GhostLink/.test(restore),
+   'It tells the user an older phrase still works rather than leaving it unexplained');
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1071,6 +1071,39 @@ export default function ChatScreen({route, navigation}) {
 
   const keyExtractor = useCallback(item => item.id, []);
 
+  // These three were inline JSX on the FlatList. A new element each render
+  // means React remounts the header and footer whenever anything in this
+  // screen changes — including on every keystroke in the composer, which is
+  // when the list can least afford the work.
+  const listHeader = useMemo(
+    () =>
+      loadingOlder ? (
+        <View style={styles.loadingOlder}>
+          <ActivityIndicator color={ACCENT} size="small" />
+          <Text style={styles.loadingOlderText}>Loading older messages...</Text>
+        </View>
+      ) : null,
+    [loadingOlder],
+  );
+
+  const listFooter = useMemo(
+    () => (peerTyping ? <TypingIndicator /> : null),
+    [peerTyping],
+  );
+
+  const listEmpty = useMemo(
+    () => (
+      <View style={styles.emptyState}>
+        <Text style={styles.emptyIcon}>👻</Text>
+        <Text style={styles.emptyTitle}>No messages yet</Text>
+        <Text style={styles.emptyDesc}>
+          Send a message to start the conversation.
+        </Text>
+      </View>
+    ),
+    [],
+  );
+
   // ── Input height handler ──
 
   const handleContentSizeChange = useCallback(e => {
@@ -1185,30 +1218,17 @@ export default function ChatScreen({route, navigation}) {
           showsVerticalScrollIndicator={false}
           onStartReached={handleLoadOlder}
           onStartReachedThreshold={0.1}
+          initialNumToRender={15}
           maxToRenderPerBatch={15}
           windowSize={11}
-          ListHeaderComponent={
-            loadingOlder ? (
-              <View style={styles.loadingOlder}>
-                <ActivityIndicator color={ACCENT} size="small" />
-                <Text style={styles.loadingOlderText}>
-                  Loading older messages...
-                </Text>
-              </View>
-            ) : null
-          }
-          ListFooterComponent={
-            peerTyping ? <TypingIndicator /> : null
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>👻</Text>
-              <Text style={styles.emptyTitle}>No messages yet</Text>
-              <Text style={styles.emptyDesc}>
-                Send a message to start the conversation.
-              </Text>
-            </View>
-          }
+          // Android keeps every rendered row in the view hierarchy otherwise,
+          // so a long conversation stays expensive to scroll long after those
+          // rows leave the screen. Not enabled on iOS, where it has caused
+          // blank cells in inverted-style lists.
+          removeClippedSubviews={Platform.OS === 'android'}
+          ListHeaderComponent={listHeader}
+          ListFooterComponent={listFooter}
+          ListEmptyComponent={listEmpty}
         />
 
         {/* ── Reply Bar ── */}

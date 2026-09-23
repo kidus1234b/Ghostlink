@@ -4,8 +4,7 @@
 // Initialize the global namespace
 globalThis.GhostLink = globalThis.GhostLink || {};
 
-// Signal protocol & WebRTC
-import './src/crypto/signal-protocol.js';
+// WebRTC transport
 import './src/p2p/webrtc-manager.js';
 import './src/utils/qr-invite.js';
 import './src/p2p/p2p-connector.js';
@@ -17,7 +16,6 @@ import './src/core/state-machine.js';
 import './src/core/retry-queue.js';
 import './src/core/types.js';
 import './src/core/signal-bus.js';
-import './src/crypto/key-manager.js';
 import './src/network/connection-manager.js';
 import './src/network/peer-manager.js';
 import './src/message/message-router.js';

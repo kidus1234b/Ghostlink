@@ -37,7 +37,7 @@ export const CALLS_UNAVAILABLE_REASON =
 /**
  * The Ghost Mesh setup modal.
  *
- * Its "Verify & Continue" calls `CryptoService.deriveYggdrasilIdentity()`,
+ * Its "Verify & Continue" calls `CryptoService.deriveLegacyYggdrasilIP()`,
  * which reaches for `react-native-quick-crypto`. That package is not in this
  * build, and CryptoService stands a Proxy in its place that throws on any
  * property access — deliberately, so it cannot silently return wrong bytes.

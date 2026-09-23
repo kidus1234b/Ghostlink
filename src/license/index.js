@@ -13,14 +13,11 @@
    */
   async function initLicenseSystem(options = {}) {
     const {
-      keyManager = null,
       eventBus = null
     } = options;
 
     // Initialize DeviceFingerprintManager
-    const deviceFP = new exports.GhostLink.DeviceFingerprintManager({
-      keyManager: keyManager
-    });
+    const deviceFP = new exports.GhostLink.DeviceFingerprintManager();
 
     // Initialize LicenseValidator
     const validator = new exports.GhostLink.LicenseValidator({
@@ -41,7 +38,6 @@
 
     // Initialize WorkspaceManager
     const workspaceManager = new exports.GhostLink.WorkspaceManager({
-      keyManager: keyManager,
       licenseManager: licenseManager,
       featureGate: featureGate
     });

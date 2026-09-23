@@ -33,13 +33,10 @@
     /**
      * Creates a new WorkspaceManager
      * @param {Object} [options={}] - Configuration options
-     * @param {Object} [options.keyManager] - KeyManager for crypto operations
      * @param {Object} [options.licenseManager] - LicenseManager for access control
      * @param {Object} [options.featureGate] - FeatureGateManager for workspace gating
      */
     constructor(options = {}) {
-      /** @type {Object} KeyManager instance */
-      this._keyManager = options.keyManager || null;
       /** @type {Object} LicenseManager instance */
       this._licenseManager = options.licenseManager || null;
       /** @type {Object} FeatureGateManager instance */
@@ -705,6 +702,18 @@
           // Ignore
         }
       }
+    }
+
+    /**
+     * Persists the current workspaces to storage.
+     *
+     * Public counterpart to _saveWorkspaces, for callers that mutate a chain
+     * in place and need the result written back — the at-rest re-sealing pass
+     * that upgrades pre-KDF blocks is the current one.
+     * @returns {Promise<void>}
+     */
+    async persist() {
+      return this._saveWorkspaces();
     }
 
     /**

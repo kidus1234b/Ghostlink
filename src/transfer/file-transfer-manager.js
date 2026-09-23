@@ -32,6 +32,14 @@
   };
 
   class FileTransferManager {
+    /**
+     * @param {Object} deps
+     * @param {Object} deps.keyManager  Must supply getEncryptionKey(peerId).
+     *   The old GhostLink.KeyManager never had that method, so every transfer
+     *   through here failed at the first chunk; it has since been deleted.
+     *   Chunks are not sent unencrypted, so a missing provider is fatal by
+     *   design — see _requireKeyManager.
+     */
     constructor({ eventBus, logger, connectionManager, keyManager }) {
       this.eventBus = eventBus;
       this.logger = logger;
@@ -47,6 +55,25 @@
 
       this.channel = null;
       this._setupChannel();
+    }
+
+    /**
+     * The key provider, or a clear failure.
+     *
+     * File chunks are never sent in the clear, so there is no degraded mode
+     * here: without a provider the transfer must stop with a message that says
+     * why, rather than a TypeError on an undefined method.
+     * @returns {Object} the key manager
+     * @private
+     */
+    _requireKeyManager() {
+      if (!this.keyManager || typeof this.keyManager.getEncryptionKey !== 'function') {
+        throw new Error(
+          'FileTransferManager: no key provider supplying getEncryptionKey(peerId); ' +
+          'refusing to transfer file chunks unencrypted.'
+        );
+      }
+      return this.keyManager;
     }
 
     _setupChannel() {
@@ -146,7 +173,7 @@
 
         let encryptedChunk;
         try {
-          const key = await this.keyManager.getEncryptionKey(peerId);
+          const key = await this._requireKeyManager().getEncryptionKey(peerId);
           encryptedChunk = await this._encryptChunk(chunkData, key, iv);
         } catch (err) {
           this.logger.error(`Encryption failed for chunk ${chunkIndex}:`, err);
@@ -238,7 +265,7 @@
       }
 
       try {
-        const key = await this.keyManager.getEncryptionKey(senderPeerId);
+        const key = await this._requireKeyManager().getEncryptionKey(senderPeerId);
         const decrypted = await this._decryptChunk(new Uint8Array(encryptedData), key, iv);
 
         const chunkBuffer = this.chunkBuffers.get(transferId);

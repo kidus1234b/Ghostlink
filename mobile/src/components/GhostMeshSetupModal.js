@@ -91,7 +91,7 @@ export default function GhostMeshSetupModal({visible, onClose, onComplete}) {
 
     setVerifying(true);
     try {
-      const derived = await CryptoService.deriveYggdrasilIdentity(words);
+      const derived = await CryptoService.deriveLegacyYggdrasilIP(words);
 
       const normPasted = normalizeIPv6(addressInput);
       const normDerived = normalizeIPv6(derived.address);

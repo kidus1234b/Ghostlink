@@ -46,63 +46,30 @@
     /**
      * Creates a new DeviceFingerprintManager
      * @param {Object} [options={}] - Configuration options
-     * @param {Object} [options.keyManager] - KeyManager instance for pubKey access
      */
     constructor(options = {}) {
       /** @type {Object|null} Cached fingerprint */
       this._cachedFingerprint = null;
       /** @type {Object|null} Cached public key hex */
       this._cachedPubKeyHex = null;
-      /** @type {Object} KeyManager instance */
-      this._keyManager = options.keyManager || null;
     }
 
     /**
-     * Gets the public key hex from KeyManager or generates a mock one
+     * Gets the public key hex used to identify this device.
+     *
+     * This used to try a KeyManager first, reading a `_identityKey` property
+     * that KeyManager never had — so the branch always threw, always fell
+     * through, and the fallback below was the only path that ever ran.
+     * KeyManager has since been deleted; the fallback is now simply the
+     * implementation.
      * @returns {Promise<string>} Public key as hex string
      */
     async getPubKeyHex() {
       if (this._cachedPubKeyHex) {
         return this._cachedPubKeyHex;
       }
-
-      let pubKeyHex = null;
-
-      // Try to get from KeyManager
-      if (this._keyManager) {
-        try {
-          // KeyManager stores identity key pair, try to get public key
-          const pubKey = await this._getPublicKeyFromKeyManager();
-          if (pubKey) {
-            pubKeyHex = this._pubKeyToHex(pubKey);
-          }
-        } catch (e) {
-          // Fall through to alternative methods
-        }
-      }
-
-      // Fallback: generate deterministic key from available sources
-      if (!pubKeyHex) {
-        pubKeyHex = await this._generateFallbackPubKey();
-      }
-
-      this._cachedPubKeyHex = pubKeyHex;
-      return pubKeyHex;
-    }
-
-    /**
-     * Gets public key from KeyManager if available
-     * @returns {Promise<CryptoKey|null>}
-     * @private
-     */
-    async _getPublicKeyFromKeyManager() {
-      // KeyManager doesn't directly expose pubKey, but we can derive from stored keys
-      // Look for identity key in key manager storage
-      if (this._keyManager._identityKey) {
-        const exported = await crypto.subtle.exportKey('spki', this._keyManager._identityKey);
-        return new Uint8Array(exported);
-      }
-      return null;
+      this._cachedPubKeyHex = await this._generateFallbackPubKey();
+      return this._cachedPubKeyHex;
     }
 
     /**
