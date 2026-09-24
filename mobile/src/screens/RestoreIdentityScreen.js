@@ -97,6 +97,8 @@ export default function RestoreIdentityScreen({navigation}) {
     Vibration.vibrate(15);
     setBusy(true);
     try {
+      // Let the busy state paint before the derivations start.
+      await new Promise(r => setTimeout(r, 0));
       const phrase = words.map(w => w.trim().toLowerCase());
       const [ghost, keyPair] = await Promise.all([
         CryptoEngine.deriveGhostIdentity(phrase),
@@ -311,7 +313,14 @@ export default function RestoreIdentityScreen({navigation}) {
           accessibilityRole="button"
           accessibilityState={{disabled: !validation.ok || busy}}
           accessibilityLabel="Continue and show the identity these words produce">
-          {busy ? <ActivityIndicator color={theme.bg} /> : <Text style={s.primaryBtnText}>Continue</Text>}
+          {busy ? (
+            <View style={s.btnBusy}>
+              <ActivityIndicator color={theme.bg} />
+              <Text style={s.primaryBtnText}>Working out your identity…</Text>
+            </View>
+          ) : (
+            <Text style={s.primaryBtnText}>Continue</Text>
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -368,7 +377,12 @@ const styles = (theme, scale) =>
       alignItems: 'center',
       justifyContent: 'center',
     },
-    primaryBtnText: {color: theme.bg, fontSize: 16, fontWeight: '700'},
+    btnBusy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  primaryBtnText: {color: theme.bg, fontSize: 16, fontWeight: '700'},
     btnDisabled: {opacity: 0.4},
     secondaryBtn: {marginTop: 12, minHeight: 48, alignItems: 'center', justifyContent: 'center'},
     secondaryBtnText: {color: theme.textSecondary, fontSize: 14},

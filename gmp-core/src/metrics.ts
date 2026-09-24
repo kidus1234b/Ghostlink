@@ -15,6 +15,7 @@ interface Registry {
   'routing.droppedNoRoute': number;
   'routing.droppedTTL': number;
   'routing.announcements': number;
+  'routing.announcementsRejected': number;
   'network.bytesSent': number;
   'network.bytesReceived': number;
   'network.messagesReceived': number;
@@ -145,6 +146,7 @@ class MetricsTracker {
       'routing.droppedNoRoute': 0,
       'routing.droppedTTL': 0,
       'routing.announcements': 0,
+      'routing.announcementsRejected': 0,
       'network.bytesSent': 0,
       'network.bytesReceived': 0,
       'network.messagesReceived': 0,
@@ -194,6 +196,51 @@ class MetricsTracker {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Access forbidden: localhost only' }));
         return;
+      }
+
+      // The loopback bind stops a *remote* host, but a browser on this machine
+      // connects from 127.0.0.1 too, so isLocal alone does not stop a web page.
+      // This server exposes POST /rotate-key, which replaces the node's whole
+      // identity with a caller-supplied seed phrase and writes it to disk — so
+      // a page the user merely visits could take over their mesh identity with
+      // a seed the attacker knows. Two browser-only signals close that:
+      //
+      //   Host — a page resolving evil.com -> 127.0.0.1 (DNS rebinding) still
+      //     sends `Host: evil.com`. Requiring a loopback Host rejects it. The
+      //     CLI's http client sends `Host: 127.0.0.1:<port>`, so it is fine.
+      //
+      //   Origin — a browser attaches an Origin to any cross-origin fetch (and
+      //     Chrome to same-origin POSTs). A non-browser client sends none, so
+      //     the presence of Origin here means a page is calling: refuse it.
+      //
+      // Mutating endpoints additionally require Content-Type: application/json,
+      // which forces a cross-origin browser request to preflight (OPTIONS) —
+      // unanswered here — instead of slipping through as a CORS "simple"
+      // text/plain POST that JSON.parse would still read.
+      const hostHeader = (req.headers.host || '').toLowerCase();
+      const hostName = hostHeader.replace(/:\d+$/, '');
+      const hostAllowed = hostName === '127.0.0.1' || hostName === 'localhost' ||
+                          hostName === '[::1]' || hostName === '::1';
+      if (!hostAllowed) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Access forbidden: unexpected Host header' }));
+        return;
+      }
+
+      if (req.headers.origin !== undefined) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Access forbidden: cross-origin requests are not allowed' }));
+        return;
+      }
+
+      const isMutating = req.method === 'POST';
+      if (isMutating) {
+        const ct = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (ct !== 'application/json') {
+          res.writeHead(415, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unsupported Media Type: application/json required' }));
+          return;
+        }
       }
 
       if (req.method === 'GET' && req.url === '/metrics') {

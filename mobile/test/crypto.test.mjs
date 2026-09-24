@@ -33,6 +33,8 @@ const throws = async (name, fn) => {
 // ── The module under test, with its RN-only import stubbed ───────────────────
 const src = (await import('fs')).readFileSync(new URL('../src/utils/crypto.js', import.meta.url), 'utf8')
   .replace("import * as Keychain from 'react-native-keychain';", 'const Keychain = {};')
+  // No native PBKDF2 under Node, so this exercises the @noble fallback path.
+  .replace("import {NativeModules} from 'react-native';", 'const NativeModules = {};')
   // The copy lives in test/, so its relative import of the wordlist has to be
   // repointed at src/utils/. Node also needs the explicit .js that Metro infers.
   .replace("from './wordlist'", "from '../src/utils/wordlist.js'")

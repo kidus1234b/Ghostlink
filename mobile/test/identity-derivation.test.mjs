@@ -19,6 +19,8 @@ const real = path.join(here, '..', 'src', 'utils', 'crypto.js');
 const stubbed = fs.readFileSync(real, 'utf8')
   .replace(/import \* as Keychain from 'react-native-keychain';/,
            'const Keychain = {setGenericPassword: async () => true, getGenericPassword: async () => false, resetGenericPassword: async () => true, getSupportedBiometryType: async () => null, ACCESS_CONTROL: {BIOMETRY_ANY_OR_DEVICE_PASSCODE: 0}};')
+  .replace(/import \{NativeModules\} from 'react-native';/,
+           'const NativeModules = {};')  // no native PBKDF2 under Node: exercises the JS fallback
   .replace(/from '\.\/wordlist'/, `from '${path.join(here, '..', 'src', 'utils', 'wordlist.js')}'`)
   .replace(/from '\.\/ghost-address'/, `from '${path.join(here, '..', 'src', 'utils', 'ghost-address.js')}'`);
 

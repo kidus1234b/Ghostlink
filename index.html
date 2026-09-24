@@ -2871,12 +2871,16 @@ function GhostLinkApp() {
   const [showExpiryModal, setShowExpiryModal] = useState(false);
   const [expiryDismissed, setExpiryDismissed] = useState(false);
   const [licenseDaysLeft, setLicenseDaysLeft] = useState(null);
-  const [securityLog, setSecurityLog] = useState([]);
 
   // Ghost Mesh (Yggdrasil) state
   const [yggdrasilEnabled, setYggdrasilEnabled] = useState(localStorage.getItem('gl_yggdrasil_enabled') === 'true');
   const [yggdrasilAddress, setYggdrasilAddress] = useState(localStorage.getItem('gl_yggdrasil_address') || '');
   const [meshPeers, setMeshPeers] = useState(loadPersisted('gl_mesh_peers', {}));
+  // Disabled in this build — see src/utils/capabilities.js for why. Read
+  // through a default so a bundle that somehow lacks the module fails closed.
+  const meshSetupAvailable = window.GhostLink?.Capabilities?.MESH_SETUP_AVAILABLE === true;
+  const meshSetupReason = window.GhostLink?.Capabilities?.MESH_SETUP_UNAVAILABLE_REASON
+    || 'Yggdrasil setup is unavailable in this build.';
   const [showMeshSetup, setShowMeshSetup] = useState(false);
   const [meshSetupStep, setMeshSetupStep] = useState('intro'); // intro, seed, result
   const [meshSeedInput, setMeshSeedInput] = useState('');
@@ -3045,8 +3049,6 @@ function GhostLinkApp() {
   const [incomingCall, setIncomingCall] = useState(null);
 
   // Offline Queue
-  const [offlineQueue, setOfflineQueue] = useState(null);
-  const [pendingMessages, setPendingMessages] = useState({});
   const [pendingFileTransfers, setPendingFileTransfers] = useState({});
 
   // QR Invite
@@ -3938,12 +3940,6 @@ function GhostLinkApp() {
             });
           }
         } catch (e) {console.warn('Key announce failed:', e);}
-
-        // FLUSH OFFLINE QUEUES
-        if (offlineQueue) {
-          const dc = conn.dcs?.[peerId]?.messages;
-          if (dc) await offlineQueue.flushQueue(peerId, dc);
-        }
 
         // TRIGGER PENDING FILE TRANSFERS
         setPendingFileTransfers((prev) => {
@@ -4960,54 +4956,59 @@ function GhostLinkApp() {
       // Nothing is transmitted unless it can be sealed to the recipient's public
       // key — the body never goes on the wire in plaintext, and never alongside a
       // blob keyed by public data such as a fingerprint.
-      const willTransmit = conn && dcConnected || !!offlineQueue;
-      let sealed = null;
-      if (willTransmit) {
-        const peerPubKey = getPeerPublicKey(peerId);
-        if (peerPubKey) {
-          try {
-            sealed = await sealPayload({
-              type: 'chat', content: content.trim(), msgType: type, meta,
-              sender: identity.name, ts: Date.now()
-            }, peerPubKey);
-          } catch (e) {
-            console.error('Failed to seal message for peer:', peerId, e);
-          }
-        }
-        if (!sealed) {
-          addToast('Not sent: no usable public key for this peer — reconnect or re-scan their invite', 'error');
-          // The block is on the chain, but nothing left this device. Mark the
-          // rendered message so it can never be mistaken for a delivered one —
-          // a toast the user scrolls past is not a delivery receipt.
-          setMessages((prev) => ({
-            ...prev,
-            [convoKey]: (prev[convoKey] || []).map((m) =>
-            m.hash === block.hash ? { ...m, sendFailed: true } : m
-            )
-          }));
-          return;
-        }
+      // Writing the block to the chain is not sending it. Every path out of
+      // here either transmits or marks the message failed — there is no third
+      // outcome, because a message that is neither is one the user believes
+      // they sent.
+      //
+      // There used to be a fourth: an `else if (offlineQueue)` branch holding
+      // the only handling for a disconnected peer. `offlineQueue` is state
+      // that nothing ever sets, so the branch was dead and there was no else —
+      // a message to an offline peer vanished after the user had already been
+      // shown "Block #N attached to chain and verified". The queue is gone;
+      // failure is now stated.
+      const markSendFailed = (reason) => {
+        addToast(reason, 'error');
+        setMessages((prev) => ({
+          ...prev,
+          [convoKey]: (prev[convoKey] || []).map((m) =>
+          m.hash === block.hash ? { ...m, sendFailed: true, sendFailedReason: reason } : m
+          )
+        }));
+      };
+
+      if (!conn || !dcConnected) {
+        markSendFailed('Not sent: this peer is offline. The message is saved on your chain and must be sent again once they reconnect.');
+        return;
       }
 
-      if (conn && dcConnected) {
+      let sealed = null;
+      const peerPubKey = getPeerPublicKey(peerId);
+      if (peerPubKey) {
         try {
-          conn.sendMessage(peerId, {
-            type: 'chat', sender: identity.name, sealed, blockHash: block.hash
-          });
-          conn.sendPresence(peerId, { type: 'typing', sender: identity.name });
+          sealed = await sealPayload({
+            type: 'chat', content: content.trim(), msgType: type, meta,
+            sender: identity.name, ts: Date.now()
+          }, peerPubKey);
         } catch (e) {
-          console.error('DC send failed:', e);
+          console.error('Failed to seal message for peer:', peerId, e);
         }
-      } else if (offlineQueue) {
-        // RELIABLE OFFLINE QUEUE — the relay only ever sees the sealed bundle.
-        try {
-          await offlineQueue.queueMessage(peerId, sealed);
-          addToast('Peer offline — message queued for relay', 'info');
-          setPendingMessages((prev) => ({
-            ...prev,
-            [peerId]: [...(prev[peerId] || []), { id: block.hash, encrypted: sealed }]
-          }));
-        } catch (e) {console.error('Offline queue failed:', e);}
+      }
+      if (!sealed) {
+        markSendFailed('Not sent: no usable public key for this peer — reconnect or re-scan their invite');
+        return;
+      }
+
+      try {
+        conn.sendMessage(peerId, {
+          type: 'chat', sender: identity.name, sealed, blockHash: block.hash
+        });
+        conn.sendPresence(peerId, { type: 'typing', sender: identity.name });
+      } catch (e) {
+        // This was a bare console.error. A throw here means the data channel
+        // refused the write, which is exactly a failed send.
+        console.error('DC send failed:', e);
+        markSendFailed('Not sent: the connection to this peer dropped mid-send.');
       }
     } catch (e) {console.error('sendMessage error:', e);addToast(e.message || 'Failed to send message', 'error');} finally
     {
@@ -6498,20 +6499,10 @@ function GhostLinkApp() {
                 });
               }
             } catch (e) {console.error('Voice send failed:', e);addToast('Voice send failed', 'error');}
-          } else if (offlineQueue) {
-            // QUEUE VOICE OFFLINE — sealed to the recipient, so the relay that
-            // stores it cannot read the audio.
-            try {
-              const peerPubKey = getPeerPublicKey(peerId);
-              if (!peerPubKey) {
-                addToast('Not queued: no usable public key for this peer', 'error');
-              } else {
-                const sealed = await sealPayload(payload, peerPubKey);
-                await offlineQueue.queueMessage(peerId, sealed);
-                addToast('Peer offline — voice queued for relay', 'info');
-              }
-            } catch (e) {console.error('Voice queue failed:', e);}
           } else {
+            // No offline queue exists, so this is the whole of the offline
+            // story: the recording is kept locally and the user is told it
+            // did not go anywhere.
             addToast('Not connected — voice message saved locally only', 'info');
           }
         }
@@ -6638,24 +6629,14 @@ function GhostLinkApp() {
     }
   }, []);
 
-  // ---- Security Audit Log ----
-  const addSecurityLog = (event, details = '') => {
-    setSecurityLog((prev) => [{
-      id: Date.now(),
-      event,
-      details,
-      ts: Date.now()
-    }, ...prev].slice(0, 100));
-  };
-
-  // Log security events
-  useEffect(() => {
-    if (callActive) addSecurityLog('CALL_STARTED', `${callType} call`);
-  }, [callActive]);
-
-  useEffect(() => {
-    if (incomingCall) addSecurityLog('INCOMING_CALL', `From ${incomingCall.peerId}`);
-  }, [incomingCall]);
+  // The "security audit log" that used to live here kept the last 100 events
+  // in React state. Nothing rendered it, nothing persisted it, and it was
+  // discarded on reload — so it was a record no one could read. Every event it
+  // captured is already surfaced where it happens: a rejected recovery
+  // fragment warns to the console and raises a toast, and call start/answer
+  // are visible in the call UI. Removed rather than left looking like an
+  // audit trail. If one is wanted, it needs somewhere to be read and somewhere
+  // to be stored, which is a feature, not a variable.
 
   // ---- Fragment Distribution via P2P ----
   const sendFragmentToPeer = async (fragment, peerId) => {
@@ -6729,13 +6710,11 @@ function GhostLinkApp() {
           // fragment has already been exposed to whatever carried it.
           console.warn('[fragment] rejected unsealed recovery fragment from', peerId);
           addToast('Rejected an unencrypted recovery fragment — ask the sender to update', 'warning');
-          addSecurityLog('FRAGMENT_REJECTED', `Unsealed fragment from ${peerId}`);
           return;
         }
         if (parsed.type === 'fragment-sealed') {
           const frag = await unsealPayload(parsed.sealed, identityRef.current || identity);
           addToast(`Received fragment ${frag.fragmentId} from ${frag.sender || peerId}`, 'info');
-          addSecurityLog('FRAGMENT_RECEIVED', `Fragment ${frag.fragmentId} from ${frag.sender || peerId}`);
         }
       } catch (e) {
         console.error('Fragment receive failed:', e);
@@ -7588,8 +7567,18 @@ function GhostLinkApp() {
   { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }}>
                   <div style=${{ opacity: 0.15 }}><${I} t="ghost" s=${64} c=${th.accent} /></div>
                   <div style=${{ fontSize: 18, fontWeight: 700, color: PALETTE.mist, letterSpacing: 2 }}>SELECT A PEER</div>
-                  <div style=${{ fontSize: 11, color: PALETTE.mist }}>All channels are end-to-end encrypted and P2P direct</div>
-                  <div style=${{ display: "flex", gap: 8, marginTop: 8 }}>
+                  ${/*
+                    No conversation is open here, so nothing on this splash can
+                    describe a session — these are capabilities of the app.
+                    They used to sit under "All channels are end-to-end
+                    encrypted and P2P direct", present tense, which reads as a
+                    live status for a connection that does not exist yet. The
+                    heading below makes what they are explicit; the per-session
+                    state is shown in the conversation header instead.
+                  */ ''}
+                  <div style=${{ fontSize: 11, color: PALETTE.mist }}>Messages are sealed to the recipient's key before they leave your device.</div>
+                  <div style=${{ fontSize: 9, color: th.textSecondary, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 10 }}>What GhostLink uses</div>
+                  <div style=${{ display: "flex", gap: 8, marginTop: 4 }}>
                     <${Tag} color=${th.accent} icon="shield">AES-256<//>
                     <${Tag} color=${th.accent2} icon="chain">BLOCKCHAIN<//>
                     <${Tag} color=${th.accent3} icon="lock">ZERO TRUST<//>
@@ -7787,7 +7776,7 @@ function GhostLinkApp() {
                               <span style=${{ color: th.accent, fontSize: 4 }}>●</span>
                               <span>#${msg.index}</span>
                               <span style=${{ color: th.accent, fontSize: 8, fontFamily: "monospace" }}>${msg.hash?.slice(0, 8)}</span>
-                              ${msg.sendFailed && html`<span style=${{ color: PALETTE.crimson, fontWeight: 600 }} title="This message was written to your chain but never transmitted — no usable public key for this peer.">not sent</span>`}
+                              ${msg.sendFailed && html`<span style=${{ color: PALETTE.crimson, fontWeight: 600 }} title=${msg.sendFailedReason || 'This message was written to your chain but never transmitted.'}>not sent</span>`}
                               ${msg.meta?.selfDestruct && html`<${I} t="timer" s=${9} c=PALETTE.amber />`}
                               ${pinnedMsgs.find((m) => m.index === msg.index) && html`<${I} t="pin" s=${9} c=${th.accent2} />`}
                               
@@ -8129,8 +8118,21 @@ function GhostLinkApp() {
                         <${I} t="check" s=${28} c=${th.accent} />
                       </div>
                       <div style=${{ fontSize: 15, fontWeight: 700, color: th.accent, marginBottom: 6 }}>Connected ✓</div>
-                      <div style=${{ fontSize: 12, color: PALETTE.mist, marginBottom: 4 }}>Peer connected via Signaling Relay</div>
-                      <${Tag} color=${th.accent3} icon="link">P2P DIRECT ENCRYPTED<//>
+                      ${/*
+                        This card used to read "Peer connected via Signaling
+                        Relay" and then tag the session "P2P DIRECT ENCRYPTED"
+                        immediately underneath — two claims that read as a
+                        contradiction, one of which nothing checked. The relay
+                        carries the WebRTC handshake only; whether the media
+                        path that follows is direct or goes through TURN is not
+                        something this screen knows, so it no longer says.
+                        What is actually established here: the handshake
+                        completed, and every message is sealed to this peer's
+                        public key before it leaves the device — sendMessage
+                        refuses to transmit otherwise.
+                      */ ''}
+                      <div style=${{ fontSize: 12, color: PALETTE.mist, marginBottom: 4 }}>Handshake completed — the relay carried the introduction only.</div>
+                      <${Tag} color=${th.accent} icon="lock">E2E ENCRYPTED<//>
                       <div style=${{ marginTop: 16 }}>
                         <${Btn} accent style=${{ width: "100%" }} onClick=${() => {setShowInvite(false);closeQuickConnect();}}>
                           <${I} t="chat" s=${14} c=PALETTE.obsidian /> START CHATTING
@@ -8519,7 +8521,8 @@ inviteTab === "create" ? html`<>
                           <span style=${{ fontSize: 12, color: yggdrasilEnabled ? PALETTE.mist : PALETTE.fade }}>Ghost Mesh (Yggdrasil)</span>
                         </div>
                         <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
-                          ${!yggdrasilAddress ? html`<${Tag} color=th.textSecondary>NOT CONFIGURED<//>` :
+                          ${!meshSetupAvailable ? html`<${Tag} color=th.textSecondary>UNAVAILABLE<//>` :
+  !yggdrasilAddress ? html`<${Tag} color=th.textSecondary>NOT CONFIGURED<//>` :
 
   !yggdrasilEnabled ? html`<${Tag} color=PALETTE.amber>CONFIGURED<//>` : html`<${Tag} color=PALETTE.spectral>ACTIVE<//>`}
                           <button onClick=${
@@ -8527,6 +8530,10 @@ inviteTab === "create" ? html`<>
 
 
   async () => {
+    if (!meshSetupAvailable) {
+      addToast(meshSetupReason, 'info');
+      return;
+    }
     if (!yggdrasilAddress) {
       setShowMeshSetup(true);
       setMeshSetupStep('intro');
@@ -8565,9 +8572,13 @@ inviteTab === "create" ? html`<>
                         <span style=${{ wordBreak: "break-all", paddingRight: 8 }}>
                           ${yggdrasilAddress ? `Address: ${yggdrasilAddress}` : "Direct peer-to-peer transport routing over Yggdrasil mesh network."}
                         </span>
-                        <span onClick=${() => {setShowMeshSetup(true);setMeshSetupStep('intro');}} style=${{ color: th.accent, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>
+                        ${meshSetupAvailable
+  ? html`<span onClick=${() => {setShowMeshSetup(true);setMeshSetupStep('intro');}} style=${{ color: th.accent, cursor: "pointer", textDecoration: "underline", flexShrink: 0 }}>
                           ${yggdrasilAddress ? "Reconfigure" : "Configure"}
-                        </span>
+                        </span>`
+  : html`<span title=${meshSetupReason} style=${{ color: th.textSecondary, opacity: 0.6, flexShrink: 0, cursor: "not-allowed" }}>
+                          Unavailable
+                        </span>`}
                       </div>
                       ${!window.ghostlink?.isElectron && html`<div style=${
   { fontSize: 9, color: PALETTE.amber, background: PALETTE.amberGlow, border: `1px solid ${PALETTE.amberGlow}`, borderRadius: 6, padding: "6px 8px", marginTop: 8 }}>
@@ -9528,7 +9539,7 @@ inviteTab === "create" ? html`<>
   th} />
 
             ${
-  showMeshSetup && html`<div style=${
+  showMeshSetup && meshSetupAvailable && html`<div style=${
   { position: "fixed", inset: 0, background: PALETTE.scrim, WebkitBackdropFilter: "blur(10px)", backdropFilter: "blur(10px)", display: "flex", alignItems: isMobile ? "flex-end" : "center", justifyContent: "center", zIndex: 110, padding: isMobile ? 0 : 16 }} onClick=${() => {setShowMeshSetup(false);setMeshSeedInput('');setMeshPubKeyInput('');}}>
                 <div style=${{ background: PALETTE.obsidian, border: `1px solid ${th.accent}30`, borderRadius: 14, width: "100%", maxWidth: 500, padding: 24, boxSizing: "border-box", display: "flex", flexDirection: "column", maxHeight: isMobile ? "90vh" : "95vh", overflowY: "auto", position: "relative", animation: "fadeInScale 0.2s cubic-bezier(0.16, 1, 0.3, 1)" }} onClick=${(e) => e.stopPropagation()}>
                   

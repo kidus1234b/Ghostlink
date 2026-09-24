@@ -29,6 +29,7 @@ const prep = (rel, out, reps = []) => {
 const gaPath = prep('../src/utils/ghost-address.js', './.ga.mjs');
 const cryptoPath = prep('../src/utils/crypto.js', './.ga-crypto.mjs', [
   ["import * as Keychain from 'react-native-keychain';", 'const Keychain = {};'],
+  ["import {NativeModules} from 'react-native';", 'const NativeModules = {};'],
   ["from './wordlist'", "from '../src/utils/wordlist.js'"],
   ["from './ghost-address'", "from './.ga.mjs'"],
 ]);

@@ -8,6 +8,8 @@ import type {
 } from './types.js';
 import config from './config.js';
 import metrics from './metrics.js';
+import { signMessage, verifySignature, sha512, bytesToHex, hexToBytes, stringToBytes } from './identity.js';
+import logger from './logger.js';
 
 function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
   if (typeof nodeId === 'string') return nodeId;
@@ -52,6 +54,33 @@ interface AnnouncementEntry extends TopologyAnnouncePayload {
   timestamp: number;
   withdrawn: boolean;
   ttl: number;
+  // Origin authentication. A topology announce is flooded across the whole
+  // mesh, so the session key on the last hop only proves who relayed it, not
+  // who originated it. Without these, any peer that completes a handshake can
+  // inject an announce claiming any announcerNodeId and poison every node's
+  // routing table (redirect, blackhole, or partition arbitrary nodes). These
+  // make the announce self-authenticating, exactly as HELLO already is: the
+  // pubkeys are carried, bound to announcerNodeId by hash, and the fields are
+  // signed. Added to the JSON body, which is extensible.
+  announcerStaticPubKey?: string;
+  announcerSigningPubKey?: string;
+  signature?: string;
+}
+
+/**
+ * The exact bytes covered by an announce signature: every semantically
+ * meaningful field except ttl (which every hop decrements) and the signature
+ * itself. Both signer and verifier must build this identically.
+ */
+function announceSigningBytes(a: AnnouncementEntry): Uint8Array {
+  return stringToBytes(
+    'ghost-mesh-topology-announce-v1' +
+    a.announcerNodeId + '|' +
+    a.connectedToNodeId + '|' +
+    a.sequenceNumber + '|' +
+    a.timestamp + '|' +
+    (a.withdrawn ? '1' : '0')
+  );
 }
 
 export class TopologyManager extends EventEmitter {
@@ -95,8 +124,9 @@ export class TopologyManager extends EventEmitter {
       ttl
     };
 
-    this.flood(announce, peerHex);
-    this.updateLSDB(announce);
+    const signedAnnounce = this.signOwnAnnounce(announce);
+    this.flood(signedAnnounce, peerHex);
+    this.updateLSDB(signedAnnounce);
 
     for (const link of this.node.connections.values()) {
       if (link.state === 'connected' && link.remoteNodeId && !link.isVirtual) {
@@ -114,7 +144,7 @@ export class TopologyManager extends EventEmitter {
           const targetLink = this.node.getLinkByNodeId(peerHex);
           if (targetLink && targetLink.state === 'connected') {
             try {
-              targetLink.sendTopologyAnnounce(otherAnnounce);
+              targetLink.sendTopologyAnnounce(this.signOwnAnnounce(otherAnnounce));
             } catch (e) {
               // Ignore
             }
@@ -138,8 +168,9 @@ export class TopologyManager extends EventEmitter {
       ttl
     };
 
-    this.flood(announce, peerHex);
-    this.updateLSDB(announce);
+    const signedAnnounce = this.signOwnAnnounce(announce);
+    this.flood(signedAnnounce, peerHex);
+    this.updateLSDB(signedAnnounce);
   }
 
   flood(announce: AnnouncementEntry, excludePeerHex: string | null): void {
@@ -178,9 +209,61 @@ export class TopologyManager extends EventEmitter {
         // sender to split-horizon against and every peer should receive them.
         // The argument was simply missing, which passed undefined and behaved
         // the same way; this states it.
-        this.flood(announce, null);
-        this.updateLSDB(announce);
+        const signedAnnounce = this.signOwnAnnounce(announce);
+        this.flood(signedAnnounce, null);
+        this.updateLSDB(signedAnnounce);
       }
+    }
+  }
+
+  /**
+   * Attach this node's identity keys and a signature to an announce it
+   * originates. Called on every announce we create before it is flooded.
+   */
+  private signOwnAnnounce(announce: AnnouncementEntry): AnnouncementEntry {
+    const id = this.node.identity;
+    if (!id || !id.signingPrivKey || !id.signingPubKey || !id.staticPubKey) {
+      // Without keys we cannot sign; leave it unsigned and let verifiers drop
+      // it rather than silently flooding a forgeable announce.
+      return announce;
+    }
+    const withKeys: AnnouncementEntry = {
+      ...announce,
+      announcerStaticPubKey: bytesToHex(id.staticPubKey),
+      announcerSigningPubKey: bytesToHex(id.signingPubKey),
+    };
+    const sig = signMessage(id.signingPrivKey, announceSigningBytes(withKeys));
+    withKeys.signature = bytesToHex(sig);
+    return withKeys;
+  }
+
+  /**
+   * Whether an announce genuinely came from the node it names.
+   *
+   * Mirrors the HELLO handshake's binding: the carried pubkeys must hash to
+   * announcerNodeId (so the keys cannot be swapped for another identity's),
+   * and the Ed25519 signature must verify under the carried signing key (so
+   * the fields cannot be forged). An announce that fails either is a forgery
+   * and must not touch the routing table or be re-flooded.
+   */
+  private isAnnounceAuthentic(a: AnnouncementEntry): boolean {
+    if (!a.announcerStaticPubKey || !a.announcerSigningPubKey || !a.signature) {
+      return false;
+    }
+    try {
+      const staticPub = hexToBytes(a.announcerStaticPubKey);
+      const signingPub = hexToBytes(a.announcerSigningPubKey);
+      const nodeIdHex = String(a.announcerNodeId).toLowerCase();
+      // Bind the keys to the claimed NodeID. Accept either hash, matching the
+      // handshake's support for static- and signing-key-derived NodeIDs.
+      const staticHashHex = bytesToHex(sha512(staticPub)).toLowerCase();
+      const signingHashHex = bytesToHex(sha512(signingPub)).toLowerCase();
+      if (nodeIdHex !== staticHashHex && nodeIdHex !== signingHashHex) {
+        return false;
+      }
+      return verifySignature(signingPub, announceSigningBytes(a), hexToBytes(a.signature));
+    } catch {
+      return false;
     }
   }
 
@@ -188,6 +271,19 @@ export class TopologyManager extends EventEmitter {
     metrics.increment('routing.announcements');
 
     if (announce.ttl <= 0) return;
+
+    // Origin authentication before anything else. The session key on the link
+    // this arrived over only authenticates the relaying hop; a flooded announce
+    // originates elsewhere, so its claimed announcer must prove itself.
+    if (!this.isAnnounceAuthentic(announce)) {
+      metrics.increment('routing.announcementsRejected');
+      logger.warn('topology', 'unsigned-or-forged-announce',
+        `Rejected topology announce for ${String(announce.announcerNodeId).slice(0, 16)}: missing or invalid signature`);
+      if (incomingLink && typeof (incomingLink as { _penalizeUntrusted?: (r: string) => void })._penalizeUntrusted === 'function') {
+        (incomingLink as { _penalizeUntrusted: (r: string) => void })._penalizeUntrusted('Forged topology announce');
+      }
+      return;
+    }
 
     const cacheKey = `${announce.announcerNodeId}:${announce.sequenceNumber}`;
     if (this.seenSequenceNumbers.has(cacheKey)) {

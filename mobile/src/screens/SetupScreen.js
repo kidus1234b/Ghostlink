@@ -9,6 +9,7 @@ import {
   Vibration,
   StatusBar,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 // Text and TextInput come from the scaled wrappers so the user's chosen
 // size reaches every literal in this file's StyleSheet. See ScaledText.js.
@@ -44,6 +45,20 @@ const STEPS = {
 };
 
 // Verification word positions (0-indexed): words 3, 7, 11
+/**
+ * The steps of identity creation, in order, as the user sees them.
+ *
+ * Each one is a real unit of work, not decoration: three of them are PBKDF2
+ * derivations. Naming them means a slow device shows which step it is on
+ * rather than one unchanging spinner.
+ */
+const SETUP_STAGES = [
+  'Deriving your identity key…',
+  'Deriving your Ghost Address…',
+  'Sealing your recovery bundle…',
+  'Splitting into recovery fragments…',
+];
+
 const VERIFY_INDICES = [2, 6, 10];
 
 export default function SetupScreen({navigation}) {
@@ -61,6 +76,17 @@ export default function SetupScreen({navigation}) {
   const [confirmWords, setConfirmWords] = useState({2: '', 6: '', 10: ''});
   const [loading, setLoading] = useState(false);
   const [generatingFragments, setGeneratingFragments] = useState(false);
+  /**
+   * Which step of identity creation is running.
+   *
+   * The old progress box listed all three lines at once, statically. It also
+   * never actually appeared: identity derivation ran three 100k-iteration
+   * PBKDF2 passes on the JS thread, so nothing repainted for the minutes it
+   * took and the screen looked crashed. PBKDF2 is native now, but the steps
+   * are still reported one at a time — on a device without the native module
+   * this is the difference between "working" and "frozen".
+   */
+  const [stage, setStage] = useState(0);
 
   // Refs for confirm inputs
   const confirmRef7 = useRef(null);
@@ -126,8 +152,11 @@ export default function SetupScreen({navigation}) {
     Vibration.vibrate(30);
     setLoading(true);
     setGeneratingFragments(true);
+    setStage(1);
 
     try {
+      // Let the stage render before the first derivation starts.
+      await new Promise(r => setTimeout(r, 0));
       // 1. The ECDH P-256 keypair, derived from the recovery phrase.
       //
       //    This used to be CryptoEngine.generateKeyPair(), which draws a random
@@ -148,8 +177,10 @@ export default function SetupScreen({navigation}) {
       // The Ghost Mesh identity for this phrase. Derived here, once, and kept
       // on the identity: it is what other people use to reach you, and the same
       // phrase produces the same address on desktop and the web app.
+      setStage(2);
       const ghost = await CryptoEngine.deriveGhostIdentity(seedPhrase);
 
+      setStage(3);
       const bundle = await wrapIdentity(
         {
           privateKeyRaw: keyPair.privateKeyRaw,
@@ -164,6 +195,7 @@ export default function SetupScreen({navigation}) {
       await CryptoEngine.storeKeyPair(keyPair.publicKeyHex, keyPair.privateKeyRaw);
 
       // 4. Generate Shamir fragments (7 shares, threshold 3) of that bundle
+      setStage(4);
       const fragments = generateBackupFragments(JSON.stringify(bundle));
 
       // 5. Store fragments and the bundle
@@ -225,6 +257,7 @@ export default function SetupScreen({navigation}) {
     } finally {
       setLoading(false);
       setGeneratingFragments(false);
+      setStage(0);
     }
   }, [confirmWords, seedPhrase, displayName, setIdentity]);
 
@@ -504,15 +537,33 @@ export default function SetupScreen({navigation}) {
               <Animated.View
                 entering={FadeInDown.duration(300)}
                 style={[styles.progressBox, {backgroundColor: theme.bgSecondary, borderColor: theme.border}]}>
-                <Text style={[styles.progressText, {color: theme.textSecondary}]}>
-                  Generating ECDH P-256 keypair...
-                </Text>
-                <Text style={[styles.progressText, {color: theme.textSecondary}]}>
-                  Deriving PBKDF2 wrapping key from seed...
-                </Text>
-                <Text style={[styles.progressText, {color: theme.textSecondary}]}>
-                  Splitting into 7 Shamir fragments (threshold 3)...
-                </Text>
+                {SETUP_STAGES.map((label, i) => {
+                  const n = i + 1;
+                  const done = stage > n;
+                  const active = stage === n;
+                  return (
+                    <View key={label} style={styles.progressRow}>
+                      {active ? (
+                        <ActivityIndicator size="small" color={theme.accent} style={styles.progressSpinner} />
+                      ) : (
+                        <Text
+                          style={[
+                            styles.progressMark,
+                            {color: done ? theme.accent : theme.textSecondary},
+                          ]}>
+                          {done ? '✓' : '·'}
+                        </Text>
+                      )}
+                      <Text
+                        style={[
+                          styles.progressText,
+                          {color: active ? theme.text : theme.textSecondary},
+                        ]}>
+                        {label}
+                      </Text>
+                    </View>
+                  );
+                })}
               </Animated.View>
             )}
 
@@ -526,7 +577,9 @@ export default function SetupScreen({navigation}) {
               disabled={loading}
               activeOpacity={0.7}>
               <Text style={[styles.primaryBtnText, {color: theme.bg}]}>
-                {loading ? 'Generating Keys & Fragments...' : 'Verify & Create Identity'}
+                {loading
+                  ? SETUP_STAGES[Math.max(0, stage - 1)] || 'Creating your identity…'
+                  : 'Verify & Create Identity'}
               </Text>
             </TouchableOpacity>
 
@@ -782,6 +835,21 @@ const styles = StyleSheet.create({
     padding: 14,
     marginTop: 12,
     marginBottom: 4,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  progressSpinner: {
+    width: 16,
+    marginRight: 6,
+  },
+  progressMark: {
+    width: 16,
+    marginRight: 6,
+    textAlign: 'center',
+    fontSize: 12,
   },
   progressText: {
     fontSize: 12,

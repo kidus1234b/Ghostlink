@@ -74,10 +74,22 @@ test("mobile's Ghost identity derivation uses SHA-512 only", () => {
   const src = read('mobile/src/utils/crypto.js');
   const fn = src.slice(src.indexOf('async function deriveGhostIdentity'));
   const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.ok(/pbkdf2Async\(sha512/.test(body),
-    'deriveGhostIdentity must use sha512');
+  // PBKDF2 moved behind a wrapper so it can run natively; the PRF is now an
+  // argument rather than an imported function, but the guarantee is unchanged.
+  assert.ok(/pbkdf2\(phrase, 'ghostlink-yggdrasil-v1', 'sha512', 100000, 32\)/.test(body),
+    'deriveGhostIdentity must derive with sha512, c=100000, dkLen=32');
   assert.ok(!/sha256/.test(body),
     'deriveGhostIdentity must not touch sha256');
+});
+
+test('the PBKDF2 wrapper cannot silently change a PRF', () => {
+  const src = read('mobile/src/utils/crypto.js');
+  // Exactly one place picks a PRF, and it maps the name through verbatim.
+  assert.ok(/const prf = hash === 'sha512' \? sha512 : nobleSha256;/.test(src),
+    'the wrapper must map the requested hash directly to its PRF');
+  // The native side must be handed the same name, not a default.
+  assert.ok(/NativePbkdf2\.derive\(phrase, salt, iterations, dkLen, hash\)/.test(src),
+    'the native call must pass the caller-requested hash through');
 });
 
 test('the SHA-256 derivation is confined to the legacy Yggdrasil function', () => {

@@ -1,3 +1,4 @@
+import {NativeModules} from 'react-native';
 import * as Keychain from 'react-native-keychain';
 import {sha256 as nobleSha256} from '@noble/hashes/sha256';
 import {hmac as nobleHmac} from '@noble/hashes/hmac';
@@ -182,6 +183,68 @@ function deriveSharedKey(privateKeyHex, peerPublicKeyHex) {
  * Deliberately slow — 100,000 PBKDF2 iterations — so derive once at setup and
  * keep the result, rather than recomputing it to render a screen.
  */
+/* ─── PBKDF2: native when available, JS otherwise ─────────────────────────── */
+
+/**
+ * Identity derivation runs several 100,000-iteration PBKDF2 passes (two of
+ * them HMAC-SHA512, plus a 200,000-iteration one for storage). In pure JS that
+ * is ~2.5s on desktop V8 and minutes under Hermes on a real handset — JS has
+ * no 64-bit integers, so every SHA-512 round is emulated in 32-bit pairs.
+ * @noble's async PBKDF2 yields every 10ms, which keeps Android's watchdog
+ * quiet but still pins the JS thread for the whole run: the setup screen sat
+ * frozen for four to five minutes on a Galaxy S10+.
+ *
+ * Pbkdf2Module runs the same computation in Kotlin on a background thread.
+ * The parameters are unchanged and the output is byte-identical — it has to
+ * be, because these bytes are an identity, and they must match what the web
+ * app and gmp-core derive from the same phrase.
+ *
+ * If the module is missing (older build, iOS, a JS-only test harness) this
+ * falls back to @noble. Correct either way; only the speed differs.
+ */
+const NativePbkdf2 = NativeModules.Pbkdf2 || null;
+
+/** Cleared after a native failure, so one failure does not cost every call a retry. */
+let nativePbkdf2Usable = !!NativePbkdf2;
+
+/** Which implementation served the last derivation — read by diagnostics and tests. */
+let lastPbkdf2Impl = null;
+function getLastPbkdf2Impl() {
+  return lastPbkdf2Impl;
+}
+
+/**
+ * PBKDF2 over the UTF-8 bytes of `phrase` and `salt`.
+ *
+ * @param {'sha256'|'sha512'} hash
+ * @returns {Promise<Uint8Array>} the derived key
+ */
+async function pbkdf2(phrase, salt, hash, iterations, dkLen) {
+  if (nativePbkdf2Usable) {
+    try {
+      const hex = await NativePbkdf2.derive(phrase, salt, iterations, dkLen, hash);
+      const out = hexToBytes(hex);
+      if (out.length !== dkLen) {
+        throw new Error(`native PBKDF2 returned ${out.length} bytes, expected ${dkLen}`);
+      }
+      lastPbkdf2Impl = 'native';
+      return out;
+    } catch (e) {
+      // Never silently produce a different key: fall through to the JS
+      // implementation, which is the definition of correct here.
+      console.warn(
+        '[GhostLink:crypto] native PBKDF2 unavailable, falling back to JS (slow):',
+        e && e.message ? e.message : e,
+      );
+      nativePbkdf2Usable = false;
+    }
+  }
+  const prf = hash === 'sha512' ? sha512 : nobleSha256;
+  const out = await pbkdf2Async(prf, utf8(phrase), utf8(salt), {c: iterations, dkLen});
+  lastPbkdf2Impl = 'js';
+  return out;
+}
+
 /**
  * The messaging keypair for a recovery phrase.
  *
@@ -209,10 +272,7 @@ function deriveSharedKey(privateKeyHex, peerPublicKeyHex) {
  */
 async function deriveIdentityKeyPair(words) {
   const phrase = Array.isArray(words) ? words.join(' ') : String(words);
-  const seed = await pbkdf2Async(sha512, utf8(phrase), utf8('ghostlink-identity-key-v1'), {
-    c: 100000,
-    dkLen: 32,
-  });
+  const seed = await pbkdf2(phrase, 'ghostlink-identity-key-v1', 'sha512', 100000, 32);
 
   // p256 rejects a scalar outside [1, n-1]. Rejection-sample by re-hashing
   // rather than reducing, which would bias the key.
@@ -231,10 +291,7 @@ async function deriveIdentityKeyPair(words) {
 
 async function deriveGhostIdentity(words) {
   const phrase = Array.isArray(words) ? words.join(' ') : String(words);
-  const seed = await pbkdf2Async(sha512, utf8(phrase), utf8('ghostlink-yggdrasil-v1'), {
-    c: 100000,
-    dkLen: 32,
-  });
+  const seed = await pbkdf2(phrase, 'ghostlink-yggdrasil-v1', 'sha512', 100000, 32);
   const staticPubKey = x25519.getPublicKey(seed);
   const nodeId = sha512(staticPubKey);
   const nodeIdHex = bytesToHex(nodeId);
@@ -346,16 +403,13 @@ async function hasBiometrics() {
  * This replaces a single unsalted pass of a non-SHA-256 hash, which offered no
  * work factor at all: a phrase guess cost one cheap hash to test.
  *
- * pbkdf2Async yields between blocks so 100k iterations of pure-JS PBKDF2 do not
- * freeze the UI thread. It is deliberately slow — that is the entire point of
- * a KDF — so call it once at setup or unlock and keep the result in memory.
+ * Runs through the native PBKDF2 module when present, and @noble otherwise.
+ * It is deliberately slow — that is the entire point of a KDF — so call it
+ * once at setup or unlock and keep the result in memory.
  */
 async function deriveKeyFromSeed(words) {
   const phrase = Array.isArray(words) ? words.join(' ') : String(words);
-  const bits = await pbkdf2Async(nobleSha256, utf8(phrase), utf8('ghostlink-v2-salt'), {
-    c: 100000,
-    dkLen: 32,
-  });
+  const bits = await pbkdf2(phrase, 'ghostlink-v2-salt', 'sha256', 100000, 32);
   return bytesToHex(bits);
 }
 
@@ -367,10 +421,7 @@ async function deriveKeyFromSeed(words) {
  */
 async function deriveStorageKey(words) {
   const phrase = Array.isArray(words) ? words.join(' ') : String(words);
-  const bits = await pbkdf2Async(nobleSha256, utf8(phrase), utf8('ghostlink-storage-v1'), {
-    c: 200000,
-    dkLen: 32,
-  });
+  const bits = await pbkdf2(phrase, 'ghostlink-storage-v1', 'sha256', 200000, 32);
   return bytesToHex(bits);
 }
 
@@ -498,6 +549,7 @@ export const CryptoEngine = {
   generateSeedPhrase,
   genInvite,
   storeKeyPair,
+  getLastPbkdf2Impl,
   loadKeyPair,
   clearKeys,
   deriveIdentityKeyPair,

@@ -29,6 +29,9 @@ const phraseEntry = await import(path.join(root, 'mobile/src/utils/phrase-entry.
 // ── mobile's crypto, with the keystore stubbed (it cannot load outside the app)
 const mobileSrc = path.join(root, 'mobile/src/utils/crypto.js');
 const stubbed = fs.readFileSync(mobileSrc, 'utf8')
+  // Node cannot parse react-native's Flow source; the native PBKDF2 module is
+  // absent here anyway, so this exercises the @noble fallback.
+  .replace("import {NativeModules} from 'react-native';", 'const NativeModules = {};')
   .replace(/import \* as Keychain from 'react-native-keychain';/,
     'const Keychain = {setGenericPassword: async () => true, getGenericPassword: async () => false, ' +
     'resetGenericPassword: async () => true, getSupportedBiometryType: async () => null, ' +

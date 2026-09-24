@@ -6,6 +6,7 @@ globalThis.GhostLink = globalThis.GhostLink || {};
 
 // WebRTC transport
 import './src/p2p/webrtc-manager.js';
+import './src/utils/capabilities.js';
 import './src/utils/qr-invite.js';
 import './src/p2p/p2p-connector.js';
 

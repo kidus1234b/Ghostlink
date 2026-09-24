@@ -1,0 +1,117 @@
+/**
+ * The metrics/control server must not be drivable by a web page.
+ *
+ * It binds to 127.0.0.1 and rejects non-loopback peers — but a browser on the
+ * same machine also connects from 127.0.0.1, so that check alone does not stop
+ * a page the user merely visits. The server exposes POST /rotate-key, which
+ * replaces the node's whole identity with a caller-supplied seed phrase and
+ * writes it to config.json. Without a CSRF/DNS-rebinding guard, any website
+ * could rotate the victim's mesh identity to a seed the attacker knows —
+ * a full identity takeover from a drive-by page.
+ *
+ * These tests drive the real server and assert:
+ *   - a browser-style request (Origin present) is refused
+ *   - a DNS-rebinding request (foreign Host) is refused
+ *   - a CORS "simple" POST (text/plain, no preflight) is refused
+ *   - the legitimate CLI shape (application/json, loopback Host, no Origin)
+ *     still reaches the handler
+ *
+ * Run with: node test/metrics-csrf-test.js
+ */
+import assert from 'assert';
+import http from 'http';
+
+let failures = 0;
+const tests = [];
+const test = (name, fn) => tests.push([name, fn]);
+
+async function main() {
+  const metrics = (await import('../dist/metrics.js')).default;
+
+  // Start the server on an ephemeral-ish port. No node is registered, so
+  // /rotate-key reaches the handler and returns 503 "Node not running" — which
+  // is exactly what we want: it proves the request passed the guard. A blocked
+  // request returns 403/415 *before* the handler.
+  const PORT = 19099;
+  metrics.startServer(PORT);
+  await new Promise((r) => setTimeout(r, 150));
+
+  function request({method = 'POST', path = '/rotate-key', headers = {}, body = ''}) {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {hostname: '127.0.0.1', port: PORT, path, method, headers},
+        (res) => {
+          let data = '';
+          res.on('data', (c) => (data += c));
+          res.on('end', () => resolve({status: res.statusCode, body: data}));
+        },
+      );
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  }
+
+  const ATTACK_BODY = JSON.stringify({newSeedPhrase: 'attacker chosen twelve word seed phrase goes right here now'});
+
+  test('a browser CSRF (Origin header present) is refused before the handler', async () => {
+    const res = await request({
+      headers: {'Content-Type': 'application/json', 'Origin': 'https://evil.example', 'Content-Length': Buffer.byteLength(ATTACK_BODY)},
+      body: ATTACK_BODY,
+    });
+    assert.strictEqual(res.status, 403, `expected 403, got ${res.status}: ${res.body}`);
+    assert.ok(/cross-origin/i.test(res.body), `should name the reason: ${res.body}`);
+  });
+
+  test('a DNS-rebinding request (foreign Host header) is refused', async () => {
+    const res = await request({
+      headers: {'Content-Type': 'application/json', 'Host': 'evil.example', 'Content-Length': Buffer.byteLength(ATTACK_BODY)},
+      body: ATTACK_BODY,
+    });
+    assert.strictEqual(res.status, 403, `expected 403, got ${res.status}: ${res.body}`);
+    assert.ok(/host/i.test(res.body), `should name the reason: ${res.body}`);
+  });
+
+  test('a CORS-simple POST (text/plain, no preflight) is refused', async () => {
+    // This is the request that slips past a naive server: a string body sent
+    // by fetch() defaults to text/plain, which is a CORS "simple" request and
+    // needs no preflight, yet JSON.parse would still read it.
+    const res = await request({
+      headers: {'Content-Type': 'text/plain;charset=UTF-8', 'Content-Length': Buffer.byteLength(ATTACK_BODY)},
+      body: ATTACK_BODY,
+    });
+    assert.strictEqual(res.status, 415, `expected 415, got ${res.status}: ${res.body}`);
+  });
+
+  test('the legitimate CLI request shape reaches the handler', async () => {
+    // application/json, loopback Host (default), no Origin — exactly what
+    // cli.ts postJson sends. It must pass the guard. With no node registered
+    // the handler answers 503, which proves it was reached, not blocked.
+    const res = await request({
+      headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(ATTACK_BODY)},
+      body: ATTACK_BODY,
+    });
+    assert.strictEqual(res.status, 503, `expected 503 (reached handler, no node), got ${res.status}: ${res.body}`);
+    assert.ok(/not running/i.test(res.body), `should be the handler's own error: ${res.body}`);
+  });
+
+  test('GET /metrics from a browser (Origin present) is refused too', async () => {
+    const res = await request({method: 'GET', path: '/metrics', headers: {'Origin': 'https://evil.example'}});
+    assert.strictEqual(res.status, 403, `expected 403, got ${res.status}`);
+  });
+
+  test('GET /metrics from the CLI shape still works', async () => {
+    const res = await request({method: 'GET', path: '/metrics', headers: {}});
+    assert.strictEqual(res.status, 200, `expected 200, got ${res.status}: ${res.body}`);
+  });
+
+  for (const [name, fn] of tests) {
+    try { await fn(); console.log(`  ok  ${name}`); }
+    catch (err) { failures++; console.error(`  FAIL  ${name}\n        ${err.message}`); }
+  }
+  metrics.stopServer();
+  if (failures) { console.error(`\n${failures} metrics-csrf test(s) failed`); process.exit(1); }
+  console.log('\nAll metrics-csrf tests passed');
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

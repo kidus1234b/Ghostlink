@@ -53,6 +53,7 @@ const cryptoPath = prep('../src/utils/crypto.js', 'rec-crypto.mjs', [
     getSupportedBiometryType: async () => null,
     ACCESS_CONTROL: {BIOMETRY_ANY_OR_DEVICE_PASSCODE: 1}, ACCESSIBLE: {WHEN_UNLOCKED_THIS_DEVICE_ONLY: 1},
   };`],
+  ["import {NativeModules} from 'react-native';", 'const NativeModules = {};'],
   ["from './wordlist'", "from '../src/utils/wordlist.js'"],
   ["from './ghost-address'", "from '../src/utils/ghost-address.js'"],
 ]);
