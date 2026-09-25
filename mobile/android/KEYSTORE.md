@@ -44,6 +44,9 @@ $ANDROID_HOME/build-tools/35.0.0/apksigner verify --print-certs \
   android/app/build/outputs/apk/release/app-release.apk
 ```
 
-The certificate must read `CN=GhostLink`. If it says `CN=Android Debug`, the build
-fell back to the debug key because `keystore.properties` was missing — do not
-distribute that APK.
+The certificate must read `CN=GhostLink` with SHA-256
+`80:34:69:C2:35:EA:F9:5F:19:70:C2:4C:08:7A:AA:DE:B4:34:1C:57:1F:D8:2B:9F:16:ED:C8:51:9A:A3:64:D5`.
+A release build no longer falls back to the debug key: if `keystore.properties`
+is missing, incomplete, or points at a keystore that does not exist, every
+release task fails with "Release build refused". If you ever see
+`CN=Android Debug` on a release APK, do not distribute it.

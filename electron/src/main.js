@@ -163,7 +163,10 @@ function getStoredSeed() {
 // These were referenced by every ghostmesh-* IPC handler but never declared,
 // so the first `if (ghostMeshServer)` threw a ReferenceError and the whole
 // Ghost Mesh transport was dead on arrival.
-const GHOSTMESH_PORT = 49500;
+// Must differ from the GMP node's port (config.GMP_PORT, default 49500): both
+// run in this process and bind [::], so sharing a port made whichever started
+// second fail with EADDRINUSE. The renderer dials without a port and gets this.
+const GHOSTMESH_PORT = 49600;
 let ghostMeshServer = null;
 const activeMeshSockets = new Map(); // connId -> net.Socket
 

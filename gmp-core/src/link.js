@@ -1636,6 +1636,9 @@ class GMPNode extends EventEmitter {
       this.server.on('error', reject);
       const bindHost = this.isPublicPeer ? '0.0.0.0' : '::';
       this.server.listen({ host: bindHost, port: this.port }, () => {
+        // port 0 asks the OS for a free port; record the one actually bound so
+        // announces, LAN beacons and callers see the real port, not 0.
+        this.port = this.server.address().port;
         this.bootstrap.start();
         if (this.lanDiscoveryEnabled && !this.lanDiscovery) {
           this.lanDiscovery = new LanDiscovery(this, this.lanDiscoveryOptions);

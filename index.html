@@ -6544,7 +6544,17 @@ function GhostLinkApp() {
   // to be stored, which is a feature, not a variable.
 
   // ---- Fragment Distribution via P2P ----
+  const guardianRecoveryAvailable = window.GhostLink?.Capabilities?.GUARDIAN_RECOVERY_AVAILABLE === true;
+  const guardianRecoveryReason = window.GhostLink?.Capabilities?.GUARDIAN_RECOVERY_UNAVAILABLE_REASON ||
+  'Sending recovery fragments to peers is disabled';
+
   const sendFragmentToPeer = async (fragment, peerId) => {
+    // No peer stores a received fragment yet, so a "sent" fragment would be
+    // counted toward a backup nobody holds.
+    if (!guardianRecoveryAvailable) {
+      addToast(guardianRecoveryReason, 'error');
+      return;
+    }
     if (!peerManager) return;
     const peer = peers.find((p) => p.id === peerId || p.fingerprint === peerId);
 
@@ -6618,8 +6628,10 @@ function GhostLinkApp() {
           return;
         }
         if (parsed.type === 'fragment-sealed') {
-          const frag = await unsealPayload(parsed.sealed, identityRef.current || identity);
-          addToast(`Received fragment ${frag.fragmentId} from ${frag.sender || peerId}`, 'info');
+          // This build does not store fragments for others, so do not open it
+          // or tell anyone it arrived: the sender must not believe it is held.
+          console.warn('[fragment] ignored recovery fragment from', peerId, '— guardian recovery is disabled');
+          addToast('A contact tried to send you a recovery fragment. This version cannot hold fragments — it was not kept.', 'warning');
         }
       } catch (e) {
         console.error('Fragment receive failed:', e);
@@ -8892,16 +8904,16 @@ inviteTab === "create" ? html`<>
                         <${Btn} small ghost onClick=${() => {generateSeedPhrase().then(setSeedPhrase);}} style=${{ flex: 1 }}><${I} t="recover" s=${13} /> Regenerate<//>
                       </div>
                       <div style=${{ marginTop: 16, fontSize: 10, color: th.textSecondary, lineHeight: 1.6 }}>
-                        <strong style=${{ color: th.textSecondary }}>Layer 2 — Shamir's Secret Sharing:</strong> Your wrapped key is split into 7 fragments (3-of-7 threshold). Distribute fragments to trusted peers — no single peer can reconstruct your key.
+                        <strong style=${{ color: th.textSecondary }}>Layer 2 — Shamir's Secret Sharing:</strong> Your wrapped key is split into 7 fragments (3-of-7 threshold). Copy each fragment and hand it to a different trusted person yourself — no single person can reconstruct your key. Sending fragments through GhostLink is not available yet.
                       </div>
                       ${shamirFragments ? (() => {
     const status = getFragmentStatus();
     // Only offer recipients that sendFragmentToPeer will actually accept:
     // online, safety-number verified, and not already holding a share.
     const fragmentHolders = new Set(shamirFragments.filter((f) => f.distributed && f.peerId).map((f) => f.peerId));
-    const eligiblePeers = peers.filter((p) =>
+    const eligiblePeers = guardianRecoveryAvailable ? peers.filter((p) =>
     p.status === 'online' && isPeerVerified(p) && !fragmentHolders.has(p.fingerprint || p.id)
-    );
+    ) : [];
     return html`<div style=${
     { marginTop: 14 }}>
                             <div style=${{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
@@ -8944,7 +8956,7 @@ inviteTab === "create" ? html`<>
                               </div>`
 
     )}
-                            <div style=${{ fontSize: 9, color: th.textSecondary, marginTop: 6 }}>Any 3 fragments reconstruct your key, so each peer may hold only one. Only verified contacts are offered here — verify a contact's safety number to send them a fragment.</div>
+                            <div style=${{ fontSize: 9, color: th.textSecondary, marginTop: 6 }}>Any 3 fragments reconstruct your key, so give each person only one. Use GIVE to note who you handed a fragment to — GhostLink cannot confirm they kept it.</div>
                           </div>`;
 
   })() : html`<div style=${

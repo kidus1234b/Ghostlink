@@ -9,6 +9,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RecoveryTransport from './RecoveryTransport';
 import {CryptoEngine} from '../utils/crypto';
+import {
+  GUARDIAN_RECOVERY_AVAILABLE,
+  GUARDIAN_RECOVERY_UNAVAILABLE_REASON,
+} from '../utils/capabilities';
 
 const STORAGE_KEY = '@ghostlink/recovery-fragments';
 const DEFAULT_TIMEOUT = 6000;
@@ -123,6 +127,11 @@ class MobileDistributor {
 
     switch (msg.type) {
       case MSG.STORE: {
+        // Never acknowledge holding a fragment this build does not keep for
+        // guardian recovery: the sender would count it as a safe backup.
+        if (!GUARDIAN_RECOVERY_AVAILABLE) {
+          return {type: MSG.STORE_ACK, id: msg.id, payload: {ok: false}};
+        }
         const {tag, fragment, ttl} = msg.payload;
         this._store.store(tag, fragment, ttl);
         return {type: MSG.STORE_ACK, id: msg.id, payload: {ok: true}};
@@ -155,6 +164,9 @@ class MobileDistributor {
   }
 
   async distribute(encryptedBlob, peers, opts = {}) {
+    if (!GUARDIAN_RECOVERY_AVAILABLE) {
+      throw new Error(GUARDIAN_RECOVERY_UNAVAILABLE_REASON);
+    }
     if (!this._transport) {
       throw new Error('WebRTC not configured. Call useWebRTC() first.');
     }
@@ -174,11 +186,15 @@ class MobileDistributor {
     const results = await Promise.allSettled(
       chosen.map(async (peer, i) => {
         const encoded = this._encodeFragment(fragments[i]);
-        await this._transport.request(
+        const ack = await this._transport.request(
           peer.id,
           {type: MSG.STORE, id: this._generateMsgId(), payload: {tag, fragment: encoded, ttl}},
           timeout,
         );
+        // A reply is not a store: only an explicit ok counts as held.
+        if (ack?.type !== MSG.STORE_ACK || ack.payload?.ok !== true) {
+          throw new Error('peer did not store the fragment');
+        }
         return peer.id;
       }),
     );
@@ -201,6 +217,9 @@ class MobileDistributor {
   }
 
   async recover(tag, peers, opts = {}) {
+    if (!GUARDIAN_RECOVERY_AVAILABLE) {
+      throw new Error(GUARDIAN_RECOVERY_UNAVAILABLE_REASON);
+    }
     if (!this._transport) {
       throw new Error('WebRTC not configured. Call useWebRTC() first.');
     }

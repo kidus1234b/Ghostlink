@@ -141,10 +141,11 @@ android {
         }
     }
     // Release credentials come from android/keystore.properties, which is not in
-    // version control. Without it the release build falls back to the debug key
-    // so the build still runs, but such an APK must never be distributed — it is
-    // signed with the publicly known Android debug key.
-    def keystorePropsFile = rootProject.file("keystore.properties")
+    // version control. A release build without them fails (see the taskGraph
+    // check below) rather than falling back to the debug key: the debug key is
+    // public, so a debug-signed release would let anyone ship an "update" that
+    // installs over GhostLink. Debug builds do not need the file.
+    def keystorePropsFile = rootProject.file(project.findProperty("ghostlinkKeystoreProps") ?: "keystore.properties")
     def keystoreProps = new Properties()
     if (keystorePropsFile.exists()) {
         keystoreProps.load(new FileInputStream(keystorePropsFile))
@@ -171,10 +172,35 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig keystorePropsFile.exists() ? signingConfigs.release : signingConfigs.debug
+            if (keystorePropsFile.exists()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
+    }
+}
+
+// Refuse any release task when the release key is not configured. Checked when
+// the task graph is known, so debug builds and IDE sync still work without
+// keystore.properties.
+gradle.taskGraph.whenReady { graph ->
+    def wantsRelease = graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }
+    if (!wantsRelease) return
+    def propsFile = rootProject.file(project.findProperty("ghostlinkKeystoreProps") ?: "keystore.properties")
+    if (!propsFile.exists()) {
+        throw new GradleException("Release build refused: android/keystore.properties is missing. " +
+            "A release must be signed with the GhostLink release key, never the public debug key. See android/KEYSTORE.md.")
+    }
+    def props = new Properties()
+    propsFile.withInputStream { props.load(it) }
+    ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].each { k ->
+        if (!props[k]) {
+            throw new GradleException("Release build refused: '${k}' is not set in android/keystore.properties.")
+        }
+    }
+    if (!file(props['storeFile']).exists()) {
+        throw new GradleException("Release build refused: release keystore '${props['storeFile']}' not found in android/app/.")
     }
 }
 
