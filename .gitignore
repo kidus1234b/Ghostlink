@@ -4,9 +4,12 @@ license-test.html
 test-license.html
 gmp-core/data/*
 !gmp-core/data/public-peers.example.json
-*.md
-*.txt
-!**/requirements.txt
+
+# Only the archived design/audit reports stay out of the tree. The previous
+# blanket *.md/*.txt rule silently swallowed every new doc (CONTRIBUTING.md,
+# CHANGELOG.md, docs/*.md) at `git add` time. Scope the ignore instead.
+docs/archive/*.md
+docs/archive/*.txt
 
 # TLS certs / keys (mkcert + self-signed) — never commit private keys
 *.pem
@@ -65,11 +68,8 @@ assets/app-screenshot.png
 *.apk
 *.aab
 
-# Track key docs despite the blanket *.md rule
-!README.md
-!SECURITY.md
+# One archived doc is referenced by the deployment guide and stays tracked.
 !docs/archive/DEPLOYMENT.md
-!gmp-core/PROTOCOL_SPEC.md
 mobile/android/app/src/main/res/drawable-*/
 
 # Generated React Native bundle. Committing it makes reviewers read minified

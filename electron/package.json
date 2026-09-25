@@ -1,6 +1,6 @@
 {
   "name": "ghostlink-desktop",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "GhostLink — Zero Trust, Zero Trace, Zero Servers",
   "main": "src/main.js",
   "scripts": {
