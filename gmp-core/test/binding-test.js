@@ -1,3 +1,4 @@
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode, SessionKeyLRUSet } from '../dist/link.js';
 import { RateLimiter } from '../dist/rate-limiter.js';
 import { queryPublicAddress } from '../dist/public-peer-list.js';

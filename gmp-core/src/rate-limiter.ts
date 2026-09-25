@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import config from './config.js';
-import logger from './logger.js';
 
 interface RateLimitEntry {
   ip: string;

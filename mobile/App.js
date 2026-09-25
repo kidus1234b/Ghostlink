@@ -2,14 +2,14 @@
  * GhostLink Mobile — Root App Entry Point
  *
  * React Navigation native stack with conditional auth flow.
- * Deep link handling for ghostlink:// URLs (invite codes, room joins).
+ * ghostlink:// URLs open screens through React Navigation's linking config.
  * Global state via AppContext. Theme system matching the web app
  * (phantom / neon / blood / ocean / cyber). Push notification setup.
  * Dark StatusBar styling.
  */
 
 import React, {useEffect, useMemo} from 'react';
-import {StyleSheet, StatusBar, Platform, Linking} from 'react-native';
+import {StyleSheet, StatusBar, Platform} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import {GestureHandlerRootView} from 'react-native-gesture-handler';
@@ -22,6 +22,14 @@ import RootNavigator from './src/navigation/MainNavigator';
 //  DEEP LINKING — ghostlink:// URL scheme
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * Any web page or app can fire a ghostlink:// URL, and React Navigation passes
+ * its query string through as route params. So nothing reachable from here may
+ * act on its own: `call/:peerId` used to be mapped, and
+ * ghostlink://call/x?peer=y&video=true opened the Call screen, which turned on
+ * the camera and microphone and showed a connected call. Calls are started
+ * from inside a conversation only.
+ */
 const DEEP_LINK_CONFIG = {
   prefixes: ['ghostlink://', 'https://ghostlink.app'],
   config: {
@@ -34,71 +42,11 @@ const DEEP_LINK_CONFIG = {
           roomId: String,
         },
       },
-      Call: {
-        path: 'call/:peerId',
-        parse: {
-          peerId: String,
-        },
-      },
       Settings: 'settings',
       Recovery: 'recovery',
     },
   },
 };
-
-/**
- * Parse and handle a ghostlink:// deep link.
- *
- * Supported formats:
- *   ghostlink://invite/<code>
- *   ghostlink://join/<roomId>
- *   ghostlink://call/<peerId>
- *   ghostlink://recovery
- */
-function handleDeepLink(url) {
-  if (!url) {
-    return;
-  }
-
-  try {
-    // Normalise custom scheme to a parseable URL
-    const normalised = url.replace('ghostlink://', 'https://ghostlink.app/');
-    const parsed = new URL(normalised);
-    const segments = parsed.pathname.split('/').filter(Boolean);
-
-    if (segments.length === 0) {
-      return;
-    }
-
-    const action = segments[0];
-    const param = segments[1] || null;
-
-    switch (action) {
-      case 'invite':
-        if (param) {
-          console.log('[DeepLink] invite code:', param);
-        }
-        break;
-      case 'join':
-        if (param) {
-          console.log('[DeepLink] room join:', param);
-        }
-        break;
-      case 'call':
-        if (param) {
-          console.log('[DeepLink] incoming call:', param);
-        }
-        break;
-      case 'recovery':
-        console.log('[DeepLink] recovery flow');
-        break;
-      default:
-        console.log('[DeepLink] unhandled:', url);
-    }
-  } catch (err) {
-    console.warn('[DeepLink] parse error:', err);
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════
 //  PUSH NOTIFICATIONS — placeholder setup
@@ -217,22 +165,6 @@ function AppNavigator() {
     }),
     [theme],
   );
-
-  // Deep link listener for URLs arriving while the app is open
-  useEffect(() => {
-    const subscription = Linking.addEventListener('url', ({url}) => {
-      handleDeepLink(url);
-    });
-
-    // Check for a cold-start deep link
-    Linking.getInitialURL().then(url => {
-      if (url) {
-        handleDeepLink(url);
-      }
-    });
-
-    return () => subscription.remove();
-  }, []);
 
   return (
     <NavigationContainer

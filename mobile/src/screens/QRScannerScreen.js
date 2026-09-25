@@ -45,6 +45,7 @@ import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import {CryptoEngine} from '../utils/crypto';
 import {normalizeGhostAddress} from '../utils/ghost-address';
+import {cleanDisplayName, cleanPublicKeyHex} from '../utils/untrusted';
 
 const INVITE_CODE_REGEX = /^GL-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}-[A-F0-9]{8}$/;
 const {width: SCREEN_WIDTH} = Dimensions.get('window');
@@ -79,18 +80,21 @@ export function classifyScan(raw) {
         parsed.ghostAddress || parsed.address || parsed.a || parsed.c || '',
       );
       if (inner) {
+        // name and key are whatever the QR's author wrote. A non-string name
+        // was saved with the peer and crashed the chat list on every launch
+        // after — see utils/untrusted.js.
         return {
           kind: 'ghost',
           address: inner,
-          name: parsed.name || parsed.n,
+          name: cleanDisplayName(parsed.name ?? parsed.n),
           // The web ships the peer's public key alongside the address; keep it,
           // it is what lets a message be sealed to them.
-          publicKeyHex: parsed.publicKeyHex || parsed.p || null,
+          publicKeyHex: cleanPublicKeyHex(parsed.publicKeyHex ?? parsed.p),
         };
       }
       const code = parsed.code || parsed.c;
       if (code && INVITE_CODE_REGEX.test(String(code).toUpperCase())) {
-        return {kind: 'invite', code: String(code).toUpperCase(), name: parsed.name || parsed.n};
+        return {kind: 'invite', code: String(code).toUpperCase(), name: cleanDisplayName(parsed.name ?? parsed.n)};
       }
     } catch (_) {
       // fall through to the unknown case

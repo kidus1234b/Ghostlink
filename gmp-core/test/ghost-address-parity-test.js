@@ -10,6 +10,7 @@
  * of random NodeIDs and mangled user input, and fails on the first divergence.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { resolve, dirname } from 'path';

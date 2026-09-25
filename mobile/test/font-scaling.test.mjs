@@ -40,7 +40,7 @@ ok(scaleStyle(identity, 1) === identity, 'At ratio 1 the original object is retu
 const screens = [
   'src/screens/ChatScreen.js', 'src/screens/ChatListScreen.js', 'src/screens/SettingsScreen.js',
   'src/screens/SetupScreen.js', 'src/screens/QRScannerScreen.js', 'src/screens/RecoveryScreen.js',
-  'src/screens/CallScreen.js', 'src/components/MessageBubble.js', 'src/components/GhostMeshSetupModal.js',
+  'src/screens/CallScreen.js', 'src/screens/RestoreIdentityScreen.js', 'src/components/GhostMeshSetupModal.js',
 ];
 for (const f of screens) {
   const src = read(f);

@@ -94,7 +94,7 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 
 |Module       |Purpose                                                           |
 |-------------|------------------------------------------------------------------|
-|`main.js`    |Window management, IPC, embedded signaling server, deep links, CSP|
+|`main.js`    |Window management, IPC, GMP node, deep links, CSP                 |
 |`preload.js` |Secure contextBridge API (`window.ghostlink`)                     |
 |`titlebar.js`|Custom frameless title bar (38px, draggable)                      |
 |`tray.js`    |System tray icon, badge count, flash on messages                  |
@@ -469,41 +469,39 @@ server {
 
 ```
 Ghostlink/
-├── index.html              # Web app (single file, no build step)
-├── README.md
-├── LICENSE                  # GPL-3.0
+├── index.html              # Web app UI (inline React + htm)
+├── index-entry.js          # esbuild entry → app.bundle.js
+├── src/                    # Browser modules bundled into app.bundle.js
+│   ├── core/               # event bus, logger
+│   ├── license/            # licensing, feature gates, workspaces
+│   ├── markdown/           # parser + sanitizer
+│   ├── notifications/      # in-app alerts, sounds
+│   ├── p2p/                # encrypted file transfer
+│   └── utils/              # BIP-39, QR invites, capability flags
+├── shared/wordlist.js      # BIP-39 wordlist shared by web and mobile
+├── gmp-core/               # Ghost Mesh Protocol node + local bridge (TypeScript)
 │
-├── desktop/                 # Electron app
-│   ├── main.js             # Window management, IPC, signaling
-│   ├── preload.js          # Secure contextBridge
-│   ├── titlebar.js         # Custom frameless title bar
-│   ├── tray.js             # System tray + badge
-│   ├── updater.js          # Auto-update via GitHub Releases
-│   └── package.json
+├── electron/               # Desktop app
+│   ├── package.json
+│   └── src/
+│       ├── main.js         # Window management, IPC, GMP node, deep links, CSP
+│       ├── preload.js      # Secure contextBridge (window.ghostlink)
+│       ├── titlebar.js     # Custom frameless title bar
+│       ├── tray.js         # System tray
+│       └── updater.js      # Auto-update
 │
-├── mobile/                  # React Native app
-│   ├── screens/
-│   │   ├── SetupScreen.js
-│   │   ├── ChatListScreen.js
-│   │   ├── ChatScreen.js
-│   │   ├── CallScreen.js
-│   │   ├── SettingsScreen.js
-│   │   └── RecoveryScreen.js
-│   ├── services/
-│   │   ├── CryptoService.js
-│   │   ├── WebRTCService.js
-│   │   ├── SignalingService.js
-│   │   └── StorageService.js
-│   ├── components/
-│   │   ├── GhostAvatar.js
-│   │   ├── MessageBubble.js
-│   │   └── EncryptionBadge.js
+├── mobile/                 # React Native app
 │   ├── App.js
-│   └── package.json
+│   └── src/
+│       ├── screens/        # Setup, RestoreIdentity, ChatList, Chat, Call,
+│       │                   # Settings, Recovery, QRScanner
+│       ├── services/       # CryptoService, WebRTCService,
+│       │                   # RecoveryTransport, MobileDistributor
+│       ├── components/     # PeerAvatar, ScaledText, GhostMeshSetupModal
+│       ├── context/        # AppContext, ThemeContext
+│       └── utils/
 │
-└── server/                  # Signaling relay
-    ├── signaling-core.js   # WebSocket relay
-    └── index.js            # Entry point
+└── test/                   # Root test suite (npm test)
 ```
 
 -----

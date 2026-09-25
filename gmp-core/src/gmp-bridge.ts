@@ -33,17 +33,13 @@ function isPrivateLANIP(ip: string): boolean {
   return false;
 }
 
-interface BridgeClient extends WebSocket {
-  isAlive: boolean;
-}
-
 export async function startBridge(
   managerInstance: GMPNodeManager | null = null,
   bridgePort: number = DEFAULT_BRIDGE_PORT,
   bridgeHost: string = DEFAULT_BRIDGE_HOST
 ): Promise<{ wss: WebSocketServer; manager: GMPNodeManager | null }> {
   let manager = managerInstance;
-  const clients = new Set<BridgeClient>();
+  const clients = new Set<WebSocket>();
 
   const lanMode = bridgeHost === '0.0.0.0';
   const allowNullOrigin = process.env.GMP_BRIDGE_ALLOW_NULL_ORIGIN === '1';
@@ -250,9 +246,7 @@ export async function startBridge(
   }
 
   wss.on('connection', (ws: WebSocket) => {
-    const client = ws as BridgeClient;
-    client.isAlive = true;
-
+    const client = ws;
     clients.add(client);
 
     if (manager && manager.node) {
@@ -270,6 +264,10 @@ export async function startBridge(
       let msg: BridgeMessage;
       try {
         msg = JSON.parse(data.toString('utf8')) as BridgeMessage;
+        // Valid JSON is not necessarily an object: `null` made `msg.type` below
+        // throw inside this async handler, an unhandled rejection that killed
+        // the bridge process.
+        if (!msg || typeof msg !== 'object') throw new Error('not an object');
       } catch (_e) {
         try {
           ws.send(JSON.stringify({ type: 'error', code: 'INVALID_JSON', message: 'Failed to parse JSON' }));
@@ -452,10 +450,6 @@ export async function startBridge(
 
     ws.on('error', () => {
       clients.delete(client);
-    });
-
-    ws.on('pong', () => {
-      client.isAlive = true;
     });
   });
 

@@ -8,6 +8,7 @@
  * migration out of the old in-JSON claims map.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { NonceStore } from '../dist/nonce-store.js';
 import config from '../dist/config.js';
 import fs from 'fs';

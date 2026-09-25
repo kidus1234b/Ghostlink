@@ -22,7 +22,8 @@ const body = src.slice(start, end)
   .replace(/const QR_SIZE[\s\S]*?;\n/, '');
 const modPath = new URL('./.qr-scan.mjs', import.meta.url);
 fs.writeFileSync(modPath,
-  `import {normalizeGhostAddress} from '../src/utils/ghost-address.js';\n${body}\nexport {classifyScan};\n`);
+  `import {normalizeGhostAddress} from '../src/utils/ghost-address.js';\n` +
+  `import {cleanDisplayName, cleanPublicKeyHex} from '../src/utils/untrusted.js';\n${body}\nexport {classifyScan};\n`);
 const {classifyScan} = await import(modPath.href);
 
 console.log('\n[1] Ghost Addresses');
@@ -90,6 +91,25 @@ fs.unlinkSync(modPath);
   ok("The address is read from the web's `c` field", r.address === 'GHOST-ABC-DEF-GHJ');
   ok("The peer's name comes across", r.name === 'Desktop User');
   ok('The public key comes across, so messages can be sealed to them', r.publicKeyHex === '04' + 'ab'.repeat(32));
+}
+
+// ── Hostile invites ────────────────────────────────────────────────────────
+// A name or key that is not a string was saved with the peer and then crashed
+// the chat list (Text child is an object; PeerAvatar calls name.charAt) on
+// every launch. Whatever the QR says, only strings come out.
+{
+  const addr = 'GHOST-ABC-DEF-GHJ';
+  for (const n of [{}, [], 42, true, {toString: 'x'}]) {
+    const r = classifyScan(JSON.stringify({c: addr, n, p: {evil: 1}}));
+    ok(`name ${JSON.stringify(n)} is dropped, not stored`, r.kind === 'ghost' && r.name === undefined);
+    ok(`non-string key alongside it is dropped`, r.publicKeyHex === null);
+  }
+  const long = classifyScan(JSON.stringify({c: addr, n: 'x'.repeat(10000)}));
+  ok('an oversized name is cut to a displayable length', long.name.length === 64);
+  ok('a key that is not hex is dropped',
+     classifyScan(JSON.stringify({c: addr, p: '<script>'})).publicKeyHex === null);
+  const inv = classifyScan(JSON.stringify({code: 'GL-A1B2C3D4-E5F6A7B8-C9D0E1F2-A3B4C5D6', n: {}}));
+  ok('a legacy invite with an object name keeps no name', inv.kind === 'invite' && inv.name === undefined);
 }
 
 console.log(`\n=== ${pass} passed, ${fail} failed ===`);

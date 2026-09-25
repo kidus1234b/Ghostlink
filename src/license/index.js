@@ -42,16 +42,6 @@
       featureGate: featureGate
     });
 
-    // Initialize ProThemesManager
-    const proThemes = new exports.GhostLink.ProThemesManager({
-      featureGate: featureGate
-    });
-
-    // Initialize DataExportManager
-    const dataExport = new exports.GhostLink.DataExportManager({
-      featureGate: featureGate
-    });
-
     // Start managers
     await licenseManager.init();
     try {
@@ -60,33 +50,15 @@
       console.warn('[GhostLink] WorkspaceManager init skipped:', err.message);
     }
 
-    // Initialize SecurityHardening
-    const hardening = new exports.GhostLink.SecurityHardening();
-
-    // Initialize LicenseActivationUI
-    const activationUI = new exports.GhostLink.LicenseActivationUI({
-      licenseManager: licenseManager,
-      featureGate: featureGate,
-      onClose: () => {
-        // Cleanup callback
-      }
-    });
-
     // Wire up dependencies
     featureGate.setLicenseManager(licenseManager);
-    proThemes.setFeatureGate(featureGate);
-    dataExport.setFeatureGate(featureGate);
 
     return {
       deviceFingerprint: deviceFP,
       validator: validator,
       licenseManager: licenseManager,
       featureGate: featureGate,
-      workspaceManager: workspaceManager,
-      proThemes: proThemes,
-      dataExport: dataExport,
-      hardening: hardening,
-      activationUI: activationUI
+      workspaceManager: workspaceManager
     };
   }
 
@@ -123,7 +95,5 @@
     ADMIN: 'admin',
     MEMBER: 'member'
   };
-  exports.GhostLink.EXPORT_VERSION = 1;
-  exports.GhostLink.FREE_EXPORT_LIMIT = 500;
 
 })(typeof globalThis !== 'undefined' ? globalThis : this);

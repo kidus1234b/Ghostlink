@@ -5,6 +5,7 @@
  * global (V5), plus the version policy that used to drop state in silence (V4).
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { NonceStore } from '../dist/nonce-store.js';
 import config from '../dist/config.js';
 import fs from 'fs';

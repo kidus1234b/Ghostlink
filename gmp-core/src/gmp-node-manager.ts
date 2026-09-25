@@ -175,12 +175,23 @@ export class GMPNodeManager extends EventEmitter {
       this.emit('routing-degraded', data);
     });
 
-    await this._node.loadIdentity(seedPhrase);
+    try {
+      await this._node.loadIdentity(seedPhrase);
 
-    metrics.registerNode(this._node, this);
-    metrics.startServer(this.config.GMP_METRICS_PORT);
+      metrics.registerNode(this._node, this);
+      metrics.startServer(this.config.GMP_METRICS_PORT);
 
-    await this._node.listen();
+      await this._node.listen();
+    } catch (err) {
+      // Leave no half-started node behind. _node used to stay set after a
+      // failure here (port in use, bad seed), so every later start() threw
+      // "already started" and the bridge reported a node with no identity.
+      metrics.stopServer();
+      try { this._node.close(); } catch { }
+      this._node = null;
+      this.connToNodeId.clear();
+      throw err;
+    }
 
     return {
       nodeId: this._node.identity.nodeIdHex,

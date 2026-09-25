@@ -2,6 +2,7 @@
  * GMP Encryption-At-Rest Test Suite — Phase 5
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { PeerCache } from '../dist/peer-cache.js';
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
@@ -147,6 +148,9 @@ function testNoPlaintextOnDisk() {
   const raw = fs.readFileSync(tempCachePath, 'utf8');
   assert(!raw.includes('192.168.1.100'), "Plaintext IP address is not visible on disk");
   assert(!raw.includes('node_id_1234567890123456789012345678901234567890123456789012345678901234'), "Plaintext NodeID is not visible on disk");
+  if (process.platform !== 'win32') {
+    assertEqual((fs.statSync(tempCachePath).mode & 0o777).toString(8), '600', "State file is written owner-only (0600)");
+  }
 }
 
 runTests();

@@ -8,6 +8,7 @@
  * at-most-once — the property the whole subsystem exists for — is gone.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { fork } from 'child_process';
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';

@@ -6,8 +6,6 @@ import type {
   PeerResponsePayload,
   GMPNodeLike,
   GMPLinkLike,
-  BootstrapLike,
-  PeerCacheLike,
 } from './types.js';
 
 function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
@@ -18,9 +16,8 @@ function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {
   return String(nodeId);
 }
 
-interface PeerExchangeEvents {
-  'candidates-added': (count: number) => void;
-}
+/** The most peers we request in a PEER_REQUEST, and so the most we accept back. */
+const MAX_PEERS_PER_RESPONSE = 20;
 
 export class PeerExchangeManager extends EventEmitter {
   private node: GMPNodeLike;
@@ -45,7 +42,7 @@ export class PeerExchangeManager extends EventEmitter {
           this.pendingRequestTimers.delete(timer);
           if (link.state === 'connected') {
             try {
-              link.sendPeerRequest(20);
+              link.sendPeerRequest(MAX_PEERS_PER_RESPONSE);
             } catch (err) {
               // Link might have disconnected
             }
@@ -96,8 +93,12 @@ export class PeerExchangeManager extends EventEmitter {
   handlePeerResponse(link: GMPLinkLike, msg: PeerResponsePayload): void {
     if (!msg || !Array.isArray(msg.peers)) return;
 
+    // Bounded twice over. We only ever request 20 peers, but the response is
+    // the remote's to shape: one peer could send tens of thousands of entries
+    // per frame, repeatedly, and every one used to be kept here forever.
+    const maxPool = config.GMP_PEER_CACHE_MAX_SIZE || 500;
     let addedCount = 0;
-    for (const peer of msg.peers) {
+    for (const peer of msg.peers.slice(0, MAX_PEERS_PER_RESPONSE)) {
       const nodeIdHex = toHex(peer.nodeId);
 
       if (this.node.identity && nodeIdHex === this.node.identity.nodeIdHex) {
@@ -114,6 +115,12 @@ export class PeerExchangeManager extends EventEmitter {
         port: peer.port,
         lastSeen: peer.lastSeen
       });
+      // Map iteration is insertion order, so the first key is the oldest.
+      while (this.candidatePool.size > maxPool) {
+        const oldest = this.candidatePool.keys().next().value;
+        if (oldest === undefined) break;
+        this.candidatePool.delete(oldest);
+      }
       addedCount++;
     }
 

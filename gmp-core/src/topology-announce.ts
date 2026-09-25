@@ -1,10 +1,8 @@
 import { EventEmitter } from 'events';
 import type {
   TopologyAnnouncePayload,
-  RouteEntry,
   GMPNodeLike,
   GMPLinkLike,
-  RoutingTableLike,
 } from './types.js';
 import config from './config.js';
 import metrics from './metrics.js';
@@ -259,6 +257,19 @@ export class TopologyManager extends EventEmitter {
       const staticHashHex = bytesToHex(sha512(staticPub)).toLowerCase();
       const signingHashHex = bytesToHex(sha512(signingPub)).toLowerCase();
       if (nodeIdHex !== staticHashHex && nodeIdHex !== signingHashHex) {
+        return false;
+      }
+      // The hash check above binds only ONE of the two carried keys to the
+      // NodeID. For the usual NodeID = SHA-512(staticPubKey), the static key is
+      // public (it travels in every HELLO and every announce), so on its own it
+      // lets anyone attach their own signing key to another node's NodeID. When
+      // the announcer is a direct neighbour we know its real signing key from
+      // the authenticated handshake; an announce under any other key is forged.
+      // Announcers we have never handshaken with remain covered only by the
+      // hash check — closing that needs a static-key binding in the protocol.
+      const neighbour = this.node.getLinkByNodeId(nodeIdHex);
+      if (neighbour && neighbour.remoteSigningPubkey &&
+          bytesToHex(neighbour.remoteSigningPubkey).toLowerCase() !== a.announcerSigningPubKey.toLowerCase()) {
         return false;
       }
       return verifySignature(signingPub, announceSigningBytes(a), hexToBytes(a.signature));

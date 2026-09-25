@@ -32,6 +32,7 @@ import {
   sha512,
   bytesToHex,
   stringToBytes,
+  concatBytes,
 } from './identity.js';
 import { NonceStore } from './nonce-store.js';
 import { RateLimiter } from './rate-limiter.js';
@@ -75,9 +76,10 @@ const MESSAGETYPES = {
 const DEFAULT_PORT = config.GMP_PORT || 49500;
 const PING_INTERVAL_MS = config.GMP_PING_INTERVAL_MS || 30000;
 const PONG_TIMEOUT_MS = config.GMP_PING_TIMEOUT_MS || 10000;
-const TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 const MAX_MESSAGE_SIZE = 1024 * 1024;
 const SESSION_KEY_LRU_SIZE = 50;
+// How long a responder waits for the initiator's key-confirmation PING.
+const HANDSHAKE_CONFIRM_TIMEOUT_MS = 10000;
 
 const HELLO_PAYLOAD_LEN = 265;
 const HELLO_ACK_PAYLOAD_LEN = 280;
@@ -129,14 +131,6 @@ function decryptAESGCM(key, nonceCounter, ciphertext, aad) {
   decipher.setAuthTag(authTag);
   if (aad) decipher.setAAD(aad);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]);
-}
-
-function uint8ArrayEquals(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
 }
 
 // Compare two buffers for equality (timing-safe)
@@ -232,6 +226,7 @@ class GMPLink extends EventEmitter {
 
     this.pingTimer = null;
     this.pongTimer = null;
+    this.confirmTimer = null;
     this.lastPongReceived = false;
 
     this.initiatorNonce = null;
@@ -311,10 +306,15 @@ class GMPLink extends EventEmitter {
   _processMessage(type, payload) {
     switch (type) {
       case MESSAGETYPES.HELLO:
-        this._handleHELLO(payload);
+        // These handlers are async and reach into X25519, which throws on a
+        // malformed/low-order peer key. A throw here is an unhandled rejection
+        // that would take down the whole node process, so a single crafted
+        // HELLO from any unauthenticated peer is a remote crash. Catch it and
+        // tear down just this link instead.
+        this._handleHELLO(payload).catch((err) => this.destroy(err));
         break;
       case MESSAGETYPES.HELLO_ACK:
-        this._handleHELLO_ACK(payload);
+        this._handleHELLO_ACK(payload).catch((err) => this.destroy(err));
         break;
       case MESSAGETYPES.DATA:
         this._handleDATA(payload);
@@ -425,17 +425,38 @@ class GMPLink extends EventEmitter {
     this.initiatorNonce = initiatorNonce;
     this.initiatorEphemeralPubkey = initiatorEphemeralPubkey;
 
-    // Derive shared session keys using ephemeral X25519 ECDH
-    const sharedSecret = x25519DeriveSharedSecret(
-      new Uint8Array(this.ephemeralKeyPair.ephemeralPriv),
-      new Uint8Array(initiatorEphemeralPubkey)
-    );
-
-    const { initiatorKey, responderKey } = deriveSessionKeys(
-      sharedSecret,
-      new Uint8Array(initiatorNodeId),
-      new Uint8Array(this.identity.nodeId)
-    );
+    // Derive shared session keys from TWO X25519 exchanges:
+    //   - ephemeral<->ephemeral, which gives forward secrecy, and
+    //   - static<->static, between the two identities' long-term X25519 keys,
+    //     which is what authenticates identity.
+    // A NodeID commits to its static public key (NodeID = SHA-512(staticPubKey)),
+    // but the ephemeral-only agreement never exercised the static key, so an
+    // attacker could replay a victim's *public* static key to satisfy the NodeID
+    // check while signing with its own signing key and impersonate the victim
+    // outright. Folding the static-static secret in means only the holder of the
+    // matching static private key reaches the same session key: an impersonator
+    // fails the HELLO_ACK proof. A malformed/low-order key makes X25519 throw, so
+    // the try/catch also keeps a crafted key from crashing the node.
+    let initiatorKey, responderKey;
+    try {
+      const ssEphemeral = x25519DeriveSharedSecret(
+        new Uint8Array(this.ephemeralKeyPair.ephemeralPriv),
+        new Uint8Array(initiatorEphemeralPubkey)
+      );
+      const ssStatic = x25519DeriveSharedSecret(
+        new Uint8Array(this.identity.staticPrivKey),
+        new Uint8Array(initiatorStaticPubkey)
+      );
+      ({ initiatorKey, responderKey } = deriveSessionKeys(
+        concatBytes(ssEphemeral, ssStatic),
+        new Uint8Array(initiatorNodeId),
+        new Uint8Array(this.identity.nodeId)
+      ));
+    } catch (e) {
+      this._penalizeUntrusted('HELLO key agreement failed');
+      this.destroy(new Error('HELLO key agreement failed'));
+      return;
+    }
 
     // As responder: sendKey = responderKey, recvKey = initiatorKey
     this.sendKey = Buffer.from(responderKey);
@@ -477,10 +498,21 @@ class GMPLink extends EventEmitter {
     this.sendNonceCounter++;
     this._updateNonceStore();
 
+    // Not 'connected' yet. HELLO_ACK proves *our* key to the initiator, but
+    // nothing so far proves the initiator holds the static key its NodeID
+    // commits to — anyone can replay a victim's public HELLO fields. Treating
+    // the link as live here would emit 'connection' for the claimed NodeID,
+    // announce an edge to it, and record the claimant's signing key in the peer
+    // cache (which key rotation later trusts). Wait for key confirmation: the
+    // initiator's first frame is an encrypted PING, which only decrypts if it
+    // derived the same session keys (see _handlePING). The state is set before
+    // the write so a fast PING is not dropped as arriving mid-handshake.
+    this.state = 'confirming';
+    this.confirmTimer = setTimeout(() => {
+      if (this.state === 'confirming') this.destroy(new Error('Handshake confirmation timeout'));
+    }, HANDSHAKE_CONFIRM_TIMEOUT_MS);
+    if (this.confirmTimer.unref) this.confirmTimer.unref();
     await this._sendHELLO_ACK(encryptedProof);
-    this.state = 'connected';
-    this._startPingTimer();
-    this.emit('connected', { peerNodeId: this.remoteNodeId });
   }
 
   async _handleHELLO_ACK(payload) {
@@ -548,19 +580,33 @@ class GMPLink extends EventEmitter {
     this.remoteStaticPubkey = responderStaticPubkey;
     this.remoteSigningPubkey = responderSigningPubkey;
 
-    // Derive shared session keys using ephemeral X25519 ECDH
-    const sharedSecret = x25519DeriveSharedSecret(
-      new Uint8Array(this.ephemeralKeyPair.ephemeralPriv),
-      new Uint8Array(responderEphemeralPubkey)
-    );
-
+    // Derive shared session keys from the ephemeral<->ephemeral exchange (for
+    // forward secrecy) combined with the static<->static exchange between the
+    // two identities' long-term X25519 keys (which authenticates identity —
+    // see the matching comment in _handleHELLO). A malformed peer key makes
+    // X25519 throw, so the try/catch keeps a crafted HELLO_ACK from crashing us.
     // As initiator (isInitiator=true), we are the "initiator" in protocol terms
     // initiatorInfo binds keys to (initiatorNodeId, responderNodeId)
-    const { initiatorKey, responderKey } = deriveSessionKeys(
-      sharedSecret,
-      new Uint8Array(this.identity.nodeId),
-      new Uint8Array(responderNodeId)
-    );
+    let initiatorKey, responderKey;
+    try {
+      const ssEphemeral = x25519DeriveSharedSecret(
+        new Uint8Array(this.ephemeralKeyPair.ephemeralPriv),
+        new Uint8Array(responderEphemeralPubkey)
+      );
+      const ssStatic = x25519DeriveSharedSecret(
+        new Uint8Array(this.identity.staticPrivKey),
+        new Uint8Array(responderStaticPubkey)
+      );
+      ({ initiatorKey, responderKey } = deriveSessionKeys(
+        concatBytes(ssEphemeral, ssStatic),
+        new Uint8Array(this.identity.nodeId),
+        new Uint8Array(responderNodeId)
+      ));
+    } catch (e) {
+      this._penalizeUntrusted('HELLO_ACK key agreement failed');
+      this.destroy(new Error('HELLO_ACK key agreement failed'));
+      return;
+    }
 
     // As initiator: sendKey = initiatorKey, recvKey = responderKey
     this.sendKey = Buffer.from(initiatorKey);
@@ -616,6 +662,9 @@ class GMPLink extends EventEmitter {
     }
 
     this.state = 'connected';
+    // Key confirmation for the responder, sent before anything else on this
+    // session so it is the first frame the responder decrypts (_handlePING).
+    this._sendPING();
     this._startPingTimer();
     this.emit('connected', { peerNodeId: this.remoteNodeId });
   }
@@ -655,7 +704,7 @@ class GMPLink extends EventEmitter {
   }
 
   _handlePING(payload) {
-    if (this.state !== 'connected') return;
+    if (this.state !== 'connected' && this.state !== 'confirming') return;
     try {
       const header = Buffer.alloc(5);
       writeUint32BE(header, payload.length - 16, 0);
@@ -664,6 +713,14 @@ class GMPLink extends EventEmitter {
       decryptAESGCM(this.recvKey, this.recvNonceCounter, Buffer.from(payload), header);
       this.recvNonceCounter++;
       this._updateNonceStore();
+      if (this.state === 'confirming') {
+        // Key confirmation from the initiator: only now is its identity proven.
+        clearTimeout(this.confirmTimer);
+        this.confirmTimer = null;
+        this.state = 'connected';
+        this._startPingTimer();
+        this.emit('connected', { peerNodeId: this.remoteNodeId });
+      }
       this._sendPONG();
     } catch (e) {
       this._penalizeSuspicious('PING decryption failed');
@@ -839,6 +896,7 @@ class GMPLink extends EventEmitter {
     this._updateNonceStore();
     if (this.pingTimer) clearInterval(this.pingTimer);
     if (this.pongTimer) clearTimeout(this.pongTimer);
+    if (this.confirmTimer) clearTimeout(this.confirmTimer);
     this.state = 'closed';
   }
 
@@ -1362,7 +1420,6 @@ class GMPNode extends EventEmitter {
     }
 
     this.natType = 'UNKNOWN';
-    this.natDetectionTimer = null;
   }
 
   _setupRateLimiterTimeoutHandlers(limiter) {
@@ -1391,24 +1448,6 @@ class GMPNode extends EventEmitter {
     return this.natType;
   }
 
-  startNATDetectionInterval(publicPeers, intervalMs = 10 * 60 * 1000) {
-    this.stopNATDetectionInterval();
-    
-    // Run detection immediately
-    this.detectNATType(publicPeers).catch(() => {});
-
-    this.natDetectionTimer = setInterval(() => {
-      this.detectNATType(publicPeers).catch(() => {});
-    }, intervalMs);
-  }
-
-  stopNATDetectionInterval() {
-    if (this.natDetectionTimer) {
-      clearInterval(this.natDetectionTimer);
-      this.natDetectionTimer = null;
-    }
-  }
-
   async loadIdentity(seedPhrase) {
     this.identity = await deriveIdentityFromSeedPhrase(seedPhrase);
     if (this.identity) {
@@ -1432,10 +1471,22 @@ class GMPNode extends EventEmitter {
     const oldSigningPrivKey = this.identity.signingPrivKey;
 
     const newPublicKey = newKeypair.signingPubKeyHex;
-    const newNodeId = newKeypair.nodeIdHex || bytesToHex(sha512(hexToBytes(newPublicKey)));
+    // The NodeID the node actually operates under after rotation, and the one
+    // the certificate tells peers to re-point the old NodeID to, must be the
+    // same. They were not: the cert carried the new identity's NodeID
+    // (SHA-512 of its static key — also what a restart with the new seed
+    // yields) while the node switched to SHA-512 of the signing key, so every
+    // peer that honoured the cert filed us under a NodeID we never presented.
+    // (The fallback also called hexToBytes, which this module never imported.)
+    const newNodeIdBytes = newKeypair.nodeId
+      ? new Uint8Array(newKeypair.nodeId)
+      : sha512(newKeypair.signingPubKey);
+    const newNodeId = bytesToHex(newNodeIdBytes);
 
     const rotationTimestamp = Date.now();
-    const msg = oldNodeId + newPublicKey + rotationTimestamp;
+    // newNodeId is signed too: it decides where peers re-point the old NodeID,
+    // so leaving it outside the signature let any relay rewrite it in transit.
+    const msg = oldNodeId + newPublicKey + newNodeId + rotationTimestamp;
     const signatureBytes = signMessage(oldSigningPrivKey, stringToBytes(msg));
     const signature = bytesToHex(signatureBytes);
 
@@ -1458,9 +1509,8 @@ class GMPNode extends EventEmitter {
     this.identity.signingPubKeyHex = newKeypair.signingPubKeyHex;
     
     // Rotate to newNodeId
-    const newNodeIdBytes = sha512(newKeypair.signingPubKey);
     this.identity.nodeId = newNodeIdBytes;
-    this.identity.nodeIdHex = bytesToHex(newNodeIdBytes);
+    this.identity.nodeIdHex = newNodeId;
 
     if (newKeypair.staticPrivKey) this.identity.staticPrivKey = newKeypair.staticPrivKey;
     if (newKeypair.staticPubKey) this.identity.staticPubKey = newKeypair.staticPubKey;
@@ -1836,6 +1886,15 @@ class GMPNode extends EventEmitter {
         settled = true;
         clearTimeout(timeoutTimer);
         const peerHex = toHex(peerNodeId).slice(0, 64);
+        // The handshake proves who answered, not that it is who we dialled. A
+        // relay on the path can intercept the routed HELLO and complete it with
+        // its own (valid) identity; without this check the link would be filed
+        // under the destination and every message for it encrypted to the relay.
+        if (peerHex !== destHex) {
+          link.destroy(new Error('Virtual handshake answered by a different node than dialled'));
+          reject(new Error('Virtual handshake answered by a different node than dialled'));
+          return;
+        }
         this.emit('connection', { connId, link, peerNodeId, type: 'outgoing' });
         resolve({ connId, link, peerNodeId });
       });
@@ -1847,8 +1906,7 @@ class GMPNode extends EventEmitter {
       link.on('close', () => {
         clearTimeout(timeoutTimer);
         this.links.delete(connId);
-        const peerHex = link.remoteNodeId ? toHex(link.remoteNodeId).slice(0, 64) : destHex;
-        if (peerHex) this.virtualConnections.delete(peerHex);
+        if (this.virtualConnections.get(destHex) === link) this.virtualConnections.delete(destHex);
         this.emit('close', { connId });
         if (!settled) {
           settled = true;
@@ -1906,6 +1964,14 @@ class GMPNode extends EventEmitter {
 
       virtualLink.on('connected', ({ peerNodeId }) => {
         const peerHex = toHex(peerNodeId).slice(0, 64);
+        // The routed source prefix is only a claim made in the relayed frame;
+        // it is also the key this link is filed under in virtualConnections,
+        // which _getOrConnect uses for outgoing traffic to that node. Refuse a
+        // handshake whose proven identity does not match it.
+        if (peerHex !== sourceHex) {
+          virtualLink.destroy(new Error('Virtual handshake identity does not match routed source'));
+          return;
+        }
         this.emit('connection', { connId, link: virtualLink, peerNodeId, type: 'incoming' });
       });
 
@@ -1915,8 +1981,7 @@ class GMPNode extends EventEmitter {
 
       virtualLink.on('close', () => {
         this.links.delete(connId);
-        const peerHex = virtualLink.remoteNodeId ? toHex(virtualLink.remoteNodeId).slice(0, 64) : sourceHex;
-        if (peerHex) this.virtualConnections.delete(peerHex);
+        if (this.virtualConnections.get(sourceHex) === virtualLink) this.virtualConnections.delete(sourceHex);
         this.emit('close', { connId });
       });
 
@@ -1949,7 +2014,6 @@ class GMPNode extends EventEmitter {
   }
 
   close() {
-    this.stopNATDetectionInterval();
     this._removeRateLimiterTimeoutHandlers(this.rateLimiter);
     this._removeRateLimiterTimeoutHandlers(this.bindingRateLimiter);
 

@@ -4,8 +4,6 @@ import type {
   KeyRotationPayload,
   GMPNodeLike,
   GMPLinkLike,
-  PeerCacheLike,
-  RoutingTableLike,
 } from './types.js';
 import config from './config.js';
 import logger from './logger.js';
@@ -88,7 +86,7 @@ export class KeyRotationManager extends EventEmitter {
       return;
     }
 
-    const msgToVerify = cert.oldNodeId + cert.newPublicKey + cert.rotationTimestamp;
+    const msgToVerify = cert.oldNodeId + cert.newPublicKey + cert.newNodeId + cert.rotationTimestamp;
     const oldSigningPubKeyBytes = hexToBytes(cachedPeer.signingPubKey);
     const isValid = verifySignature(
       oldSigningPubKeyBytes,

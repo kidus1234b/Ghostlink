@@ -561,7 +561,7 @@ Nodes can rotate their signing keys (e.g., in case of compromise) without changi
   - `newPublicKey`: 64-hex new Ed25519 signing public key.
   - `newNodeId`: 128-hex new routing identity (SHA-512 of newPublicKey).
   - `rotationTimestamp`: Epoch timestamp of rotation.
-  - `signature`: Ed25519 signature of `oldNodeId + newPublicKey + rotationTimestamp` signed by the compromised key.
+  - `signature`: Ed25519 signature of `oldNodeId + newPublicKey + newNodeId + rotationTimestamp` signed by the compromised key. `newNodeId` is covered so a relay cannot redirect the old identity.
 - **Verification**: Receivers check the certificate signature against the sender's cached key and replace the routing target upon match. Certificates from unknown peers are ignored.
 
 ### 14.3 Clock Dependency Hardening

@@ -2,10 +2,8 @@ import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
 import type {
-  ReputationEvent,
   PeerTrustLevel,
   GMPNodeLike,
-  GMPLinkLike,
 } from './types.js';
 
 interface ReputationOptions {

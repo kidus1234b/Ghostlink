@@ -2,11 +2,8 @@ import config from './config.js';
 import logger from './logger.js';
 import metrics from './metrics.js';
 import type {
-  ForwarderStats,
   GMPNodeLike,
   GMPLinkLike,
-  ReputationManagerLike,
-  RoutingTableLike,
 } from './types.js';
 
 function toHex(nodeId: string | Uint8Array | Buffer | unknown): string {

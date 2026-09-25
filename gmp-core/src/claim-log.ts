@@ -811,7 +811,7 @@ export class ClaimLog {
         }
 
         const framed = Buffer.concat(fresh.map(r => this._seal(r)));
-        const fd = fs.openSync(this.filePath, 'a');
+        const fd = fs.openSync(this.filePath, 'a', 0o600);
         try {
           fs.writeSync(fd, framed);
           fs.fsyncSync(fd);

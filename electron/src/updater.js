@@ -69,14 +69,7 @@ function bindEvents() {
 
   /* ── Download progress ──────────────────────────────────────── */
   autoUpdater.on('download-progress', (progress) => {
-    const pct = Math.round(progress.percent);
-    console.log(`[Updater] Downloading: ${pct}%`);
-    sendToRenderer('update-progress', {
-      percent: pct,
-      bytesPerSecond: progress.bytesPerSecond,
-      transferred: progress.transferred,
-      total: progress.total,
-    });
+    console.log(`[Updater] Downloading: ${Math.round(progress.percent)}%`);
   });
 
   /* ── Update downloaded (ready to install) ───────────────────── */
@@ -148,6 +141,13 @@ function checkForUpdates() {
 }
 
 /**
+ * Whether a downloaded update is waiting to be installed.
+ */
+function updateReady() {
+  return updateDownloaded;
+}
+
+/**
  * Quit the app and install the downloaded update.
  */
 function quitAndInstall() {
@@ -160,6 +160,6 @@ function quitAndInstall() {
 
 module.exports = {
   initUpdater,
-  checkForUpdates,
+  updateReady,
   quitAndInstall,
 };

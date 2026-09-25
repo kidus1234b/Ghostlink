@@ -1,11 +1,9 @@
 import fs from 'fs';
-import path from 'path';
 import type {
   PublicPeerEntry,
   BindingResponse,
   GMPNodeLike,
   GMPLinkLike,
-  DialResult,
 } from './types.js';
 import logger from './logger.js';
 import { PUBLIC_PEERS_FILE } from './paths.js';
@@ -23,21 +21,6 @@ export function loadPublicPeers(filePath: string = DEFAULT_PEERS_FILE): PublicPe
     logger.error('public-peer-list', 'load-failed', `Failed to load public peers: ${err.message}`, { err: err.message });
   }
   return [];
-}
-
-export function savePublicPeers(peers: PublicPeerEntry[], filePath: string = DEFAULT_PEERS_FILE): boolean {
-  try {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    fs.writeFileSync(filePath, JSON.stringify(peers, null, 2), 'utf8');
-    return true;
-  } catch (e: unknown) {
-    const err = e as Error;
-    logger.error('public-peer-list', 'save-failed', `Failed to save public peers: ${err.message}`, { err: err.message });
-    return false;
-  }
 }
 
 export async function querySinglePeer(

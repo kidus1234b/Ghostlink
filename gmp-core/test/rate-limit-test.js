@@ -10,6 +10,7 @@
  * Run: node test/rate-limit-test.js
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { RateLimiter } from '../dist/rate-limiter.js';
 import { GMPNode } from '../dist/link.js';
 import net from 'net';

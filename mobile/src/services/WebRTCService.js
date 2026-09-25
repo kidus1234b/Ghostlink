@@ -24,8 +24,6 @@ import {
 } from '../utils/session-crypto';
 import {
   RTCPeerConnection,
-  RTCSessionDescription,
-  RTCIceCandidate,
   mediaDevices,
 } from 'react-native-webrtc';
 
@@ -158,15 +156,6 @@ class WebRTCService extends Emitter {
     };
     /** @private @type {Map<string, PeerSession>} */
     this._peers = new Map();
-    /** @private @type {import('./SignalingService').default|null} */
-    this._signaling = null;
-    /**
-     * Ghost Mesh peer address cache.
-     * Maps peerId → { yggdrasilAddress, publicKeyHex }
-     * Used to attempt direct mesh dial when Ghost Mesh is active.
-     * @private @type {Map<string, { yggdrasilAddress: string, publicKeyHex: string }>}
-     */
-    this._meshPeers = new Map();
     this._gmpActive = false;
     this._gmpWs = null;
     /**
@@ -313,59 +302,6 @@ class WebRTCService extends Emitter {
     }
   }
 
-  /**
-   * Register a peer's Yggdrasil mesh address for future direct-dial attempts.
-   * Called when the app learns a peer's Yggdrasil identity (e.g. from signaling
-   * metadata or a cached peer profile).
-   *
-   * @param {string} peerId
-   * @param {string} yggdrasilAddress Peer's Yggdrasil IPv6 address.
-   * @param {string} [publicKeyHex] Peer's X25519 public key hex.
-   */
-  setMeshPeerAddress(peerId, yggdrasilAddress, publicKeyHex = '') {
-    this._meshPeers.set(peerId, {yggdrasilAddress, publicKeyHex});
-  }
-
-  /**
-   * Get a peer's cached Yggdrasil mesh info, if known.
-   *
-   * @param {string} peerId
-   * @returns {{ yggdrasilAddress: string, publicKeyHex: string } | null}
-   */
-  getMeshPeerAddress(peerId) {
-    return this._meshPeers.get(peerId) || null;
-  }
-
-  /**
-   * Remove a peer's cached mesh address.
-   * @param {string} peerId
-   */
-  removeMeshPeerAddress(peerId) {
-    this._meshPeers.delete(peerId);
-  }
-
-  /**
-   * Rendezvous for the direct path.
-   *
-   * There is none. GhostLink deleted its signaling servers deliberately — the
-   * connection model is a Ghost Address resolved through the mesh, and the web
-   * client removed its manual SDP-paste fallback for the same reason ("handing
-   * the user a wall of base64 to copy was never an answer", index.html).
-   *
-   * So a direct WebRTC connection currently has no way to exchange an offer
-   * and an answer, and createConnection() cannot complete on its own. The mesh
-   * bridge is the working transport; see getMeshStatus(). This method stays as
-   * a named place for that gap rather than leaving callers to discover it by
-   * watching a connection hang.
-   */
-  attachSignaling() {
-    throw new Error(
-      'GhostLink has no signaling server: a direct WebRTC connection needs a ' +
-      'rendezvous, and the supported one is the Ghost Mesh. Configure a mesh ' +
-      'bridge (Settings → Mesh bridge) or see MOBILE_BUILD.md.',
-    );
-  }
-
   // ── Connection Creation ─────────────────────────────────────────────────
 
   /**
@@ -380,17 +316,6 @@ class WebRTCService extends Emitter {
   async createConnection(peerId, { initiator = true } = {}) {
     if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
       this.emit('peer-state', { peerId, state: PeerState.CONNECTING });
-      const cached = this.getMeshPeerAddress(peerId);
-      if (cached && cached.yggdrasilAddress) {
-        const parts = cached.yggdrasilAddress.split(':');
-        const addr = parts[0];
-        const port = parts[1] ? parseInt(parts[1]) : 49500;
-        this._gmpWs.send(JSON.stringify({
-          type: 'connect',
-          address: addr,
-          port: port
-        }));
-      }
       const session = new PeerSession(peerId, { close: () => {} });
       this._peers.set(peerId, session);
       return session;
@@ -408,14 +333,6 @@ class WebRTCService extends Emitter {
     this.emit('peer-state', { peerId, state: PeerState.CONNECTING });
 
     // ── ICE Candidate Handling ──────────────────────────────────────────
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate && this._signaling) {
-        // Unreachable while there is no rendezvous; kept so the shape of the
-        // flow survives for whatever replaces it.
-        this._signaling.sendIceCandidate(peerId, event.candidate);
-      }
-    };
 
     pc.onicecandidateerror = (event) => {
       console.warn(
@@ -486,66 +403,13 @@ class WebRTCService extends Emitter {
     // ── Create Offer (if initiator) ─────────────────────────────────────
 
     if (initiator) {
+      // There is no rendezvous to carry this offer to the peer (no signaling
+      // server exists), so a direct connection cannot complete yet.
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-
-      if (this._signaling) {
-        this._signaling.sendOffer(peerId, pc.localDescription);
-      }
     }
 
     return session;
-  }
-
-  // ── Incoming Signaling Handlers ─────────────────────────────────────────
-
-  /**
-   * Handle an incoming SDP offer from a remote peer.
-   * @private
-   * @param {{ from: string, offer: object }} data
-   */
-  async _handleOffer(data) {
-    const { from, offer } = data;
-    const session = await this.createConnection(from, { initiator: false });
-    const pc = session.pc;
-
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    if (this._signaling) {
-      this._signaling.sendAnswer(from, pc.localDescription);
-    }
-  }
-
-  /**
-   * Handle an incoming SDP answer from a remote peer.
-   * @private
-   * @param {{ from: string, answer: object }} data
-   */
-  async _handleAnswer(data) {
-    const { from, answer } = data;
-    const session = this._peers.get(from);
-    if (!session) return;
-
-    await session.pc.setRemoteDescription(new RTCSessionDescription(answer));
-  }
-
-  /**
-   * Handle an incoming ICE candidate from a remote peer.
-   * @private
-   * @param {{ from: string, candidate: object }} data
-   */
-  async _handleRemoteIceCandidate(data) {
-    const { from, candidate } = data;
-    const session = this._peers.get(from);
-    if (!session) return;
-
-    try {
-      await session.pc.addIceCandidate(new RTCIceCandidate(candidate));
-    } catch (err) {
-      console.warn(`[GhostLink:WebRTC] Failed to add ICE candidate for ${from}:`, err);
-    }
   }
 
   // ── Data Channel ──────────────────────────────────────────────────────
@@ -635,13 +499,6 @@ class WebRTCService extends Emitter {
   }
 
   /**
-   * Send a message to a specific peer over the data channel.
-   *
-   * @param {string} peerId
-   * @param {object|string} data Will be JSON-stringified if an object.
-   * @returns {boolean} True if sent, false if channel not ready.
-   */
-  /**
    * Take the peer's half of the session and derive the pair of keys.
    * @private
    */
@@ -679,6 +536,13 @@ class WebRTCService extends Emitter {
     this._localPeerId = peerId || null;
   }
 
+  /**
+   * Send a message to a specific peer over the data channel.
+   *
+   * @param {string} peerId
+   * @param {object|string} data Will be JSON-stringified if an object.
+   * @returns {boolean} True if sent, false if channel not ready.
+   */
   sendMessage(peerId, data) {
     if (this._gmpActive && this._gmpWs && this._gmpWs.readyState === 1) {
       const payload = typeof data === 'string' ? data : JSON.stringify(data);
@@ -714,20 +578,6 @@ class WebRTCService extends Emitter {
       return false;
     }
     return true;
-  }
-
-  /**
-   * Broadcast a message to all connected peers.
-   *
-   * @param {object|string} data
-   * @returns {number} Count of peers the message was sent to.
-   */
-  broadcast(data) {
-    let sent = 0;
-    for (const [peerId] of this._peers) {
-      if (this.sendMessage(peerId, data)) sent++;
-    }
-    return sent;
   }
 
   // ── Media Streams ─────────────────────────────────────────────────────
@@ -779,16 +629,6 @@ class WebRTCService extends Emitter {
   // ── Peer Queries ──────────────────────────────────────────────────────
 
   /**
-   * Get the current state of a peer connection.
-   * @param {string} peerId
-   * @returns {string|null}
-   */
-  getPeerState(peerId) {
-    const session = this._peers.get(peerId);
-    return session ? session.state : null;
-  }
-
-  /**
    * Get all connected peer IDs.
    * @returns {string[]}
    */
@@ -800,16 +640,6 @@ class WebRTCService extends Emitter {
       }
     }
     return connected;
-  }
-
-  /**
-   * Get the remote media stream for a peer (if any).
-   * @param {string} peerId
-   * @returns {MediaStream|null}
-   */
-  getRemoteStream(peerId) {
-    const session = this._peers.get(peerId);
-    return session ? session.remoteStream : null;
   }
 
   // ── Cleanup ───────────────────────────────────────────────────────────

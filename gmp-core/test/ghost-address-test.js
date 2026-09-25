@@ -14,6 +14,7 @@
  *      virtual circuit. That is exactly the "connect from anywhere" case.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNodeManager } from '../dist/gmp-node-manager.js';
 import {
   ghostAddressFromNodeId,

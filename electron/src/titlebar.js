@@ -71,40 +71,6 @@
       white-space: nowrap;
     }
 
-    #gl-titlebar-status {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 0 12px;
-      height: 100%;
-    }
-
-    #gl-titlebar-status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: #00ffc8;
-      box-shadow: 0 0 6px rgba(0, 255, 200, 0.5);
-      animation: gl-pulse 2s ease-in-out infinite;
-    }
-
-    #gl-titlebar-status-dot.disconnected {
-      background: #ff4757;
-      box-shadow: 0 0 6px rgba(255, 71, 87, 0.5);
-      animation: none;
-    }
-
-    #gl-titlebar-status-text {
-      color: rgba(255, 255, 255, 0.45);
-      font-size: 11px;
-      font-weight: 400;
-    }
-
-    @keyframes gl-pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-
     /* ── Window controls (right side, Windows/Linux) ─────────── */
     #gl-titlebar-controls {
       display: ${IS_MAC ? 'none' : 'flex'};
@@ -146,58 +112,17 @@
       stroke-width: 1.5;
       fill: none;
     }
-
-    /* ── Encrypted badge ─────────────────────────────────────── */
-    #gl-titlebar-encrypted {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: 10px;
-      background: rgba(0, 255, 200, 0.06);
-      border: 1px solid rgba(0, 255, 200, 0.12);
-      margin-right: 8px;
-      -webkit-app-region: no-drag;
-    }
-
-    #gl-titlebar-encrypted svg {
-      width: 10px;
-      height: 10px;
-      stroke: #00ffc8;
-      stroke-width: 2;
-      fill: none;
-    }
-
-    #gl-titlebar-encrypted span {
-      color: rgba(0, 255, 200, 0.6);
-      font-size: 10px;
-      font-weight: 500;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-    }
   `;
   document.head.appendChild(style);
 
   /* ─── Build HTML ──────────────────────────────────────────── */
-  bar.innerHTML = \`
+  bar.innerHTML = `
     <div id="gl-titlebar-left">
       <div id="gl-titlebar-icon">G</div>
-      <span id="gl-titlebar-title">\${TITLE}</span>
-      <div id="gl-titlebar-status">
-        <div id="gl-titlebar-status-dot"></div>
-        <span id="gl-titlebar-status-text">Encrypted</span>
-      </div>
+      <span id="gl-titlebar-title"></span>
     </div>
 
     <div style="display: flex; align-items: center; height: 100%;">
-      <div id="gl-titlebar-encrypted">
-        <svg viewBox="0 0 24 24">
-          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-          <path d="M7 11V7a5 5 0 0110 0v4"/>
-        </svg>
-        <span>E2E</span>
-      </div>
-
       <div id="gl-titlebar-controls">
         <button class="gl-titlebar-btn minimize" title="Minimize">
           <svg viewBox="0 0 10 10"><line x1="0" y1="5" x2="10" y2="5"/></svg>
@@ -213,7 +138,9 @@
         </button>
       </div>
     </div>
-  \`;
+  `;
+  // textContent, not markup: the title is data and must never be parsed.
+  bar.querySelector('#gl-titlebar-title').textContent = TITLE;
 
   document.body.prepend(bar);
 
@@ -230,21 +157,4 @@
     if (e.target.closest('.gl-titlebar-btn')) return;
     if (api) api.maximize();
   });
-
-  /* ─── Connection status API ───────────────────────────────── */
-  window.__ghostlinkTitlebar = {
-    setStatus(connected, text) {
-      const dot = document.getElementById('gl-titlebar-status-dot');
-      const label = document.getElementById('gl-titlebar-status-text');
-      if (dot) {
-        dot.className = connected ? '' : 'disconnected';
-        dot.id = 'gl-titlebar-status-dot';
-      }
-      if (label) label.textContent = text || (connected ? 'Encrypted' : 'Disconnected');
-    },
-    setTitle(newTitle) {
-      const el = document.getElementById('gl-titlebar-title');
-      if (el) el.textContent = newTitle;
-    },
-  };
 })();

@@ -8,7 +8,6 @@ import type {
   CachedPeer,
   GMPNodeLike,
   GMPLinkLike,
-  PeerCacheLike,
 } from './types.js';
 
 /** The minimum a bootstrap dial needs; both CachedPeer and PublicPeerEntry satisfy it. */

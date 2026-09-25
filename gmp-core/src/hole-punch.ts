@@ -2,7 +2,6 @@ import net from 'net';
 import logger from './logger.js';
 import type {
   GMPNodeLike,
-  GMPLinkLike,
   DialResult,
 } from './types.js';
 

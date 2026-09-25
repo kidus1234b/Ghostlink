@@ -34,19 +34,17 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  withSpring,
   withDelay,
   FadeIn,
   FadeOut,
   ZoomIn,
-  ZoomOut,
   SlideInDown,
   Easing,
-  interpolate,
 } from 'react-native-reanimated';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import PeerAvatar from '../components/PeerAvatar';
+import {CALLS_AVAILABLE} from '../utils/capabilities';
 
 // ─── Constants ─────────────────────────────────────────────
 const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
@@ -54,7 +52,6 @@ const {width: SCREEN_WIDTH, height: SCREEN_HEIGHT} = Dimensions.get('window');
 const ACCENT = '#00ffa3';
 const ACCENT2 = '#b347ff';
 const BG = '#0a0a0f';
-const BG_SECONDARY = '#12121a';
 const BG_TERTIARY = '#1a1a25';
 const TEXT_PRIMARY = '#e0e0e0';
 const TEXT_SECONDARY = '#8a8a9a';
@@ -415,7 +412,12 @@ export default function CallScreen({route, navigation}) {
   // ── Call Initialization ──
 
   useEffect(() => {
-    if (callState === CALL_STATES.CONNECTING) {
+    // The gate lives here too, not only on ChatScreen's buttons: this screen
+    // can be reached by other routes, and with calls unavailable it used to
+    // open the camera and microphone and then show a call as connected.
+    if (!CALLS_AVAILABLE) {
+      setCallState(CALL_STATES.FAILED);
+    } else if (callState === CALL_STATES.CONNECTING) {
       initializeCall();
     }
 
@@ -461,11 +463,10 @@ export default function CallScreen({route, navigation}) {
           return;
         }
       } else {
-        // Fallback: transition through states for UI feedback
-        setCallState(CALL_STATES.RINGING);
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        setCallState(CALL_STATES.CONNECTED);
-        Vibration.vibrate([0, 50, 50, 50]);
+        // No peer, no call. This used to walk through RINGING to CONNECTED on
+        // a timer and show a live "end-to-end encrypted" call with nobody.
+        setCallState(CALL_STATES.FAILED);
+        return;
       }
 
       // Start duration timer

@@ -7,8 +7,6 @@
  * This enables real P2P backup fragment distribution instead of clipboard-only.
  */
 
-import WebRTCService from './WebRTCService';
-
 const DEFAULT_TIMEOUT = 6000;
 
 class RecoveryTransport {
@@ -28,12 +26,18 @@ class RecoveryTransport {
   _handleMessage(peerId, msg) {
     if (!msg?.type) return;
 
-    if (msg.id && this._pendingRequests.has(msg.id)) {
-      const { resolve } = this._pendingRequests.get(msg.id);
+    // A reply only counts from the peer the request went to. Matching on the
+    // id alone let any connected peer answer a request meant for another —
+    // ids are a timestamp plus a counter, so easy to guess — and so supply the
+    // fragment a recovery was waiting on.
+    const pending = msg.id ? this._pendingRequests.get(msg.id) : null;
+    if (pending && pending.peerId === peerId) {
+      clearTimeout(pending.timer);
       this._pendingRequests.delete(msg.id);
-      resolve(msg);
+      pending.resolve(msg);
       return;
     }
+    if (pending) return;
 
     if (this._handler) {
       try {
@@ -78,7 +82,7 @@ class RecoveryTransport {
         reject(new Error(`Request to ${peerId} timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      this._pendingRequests.set(msgId, { resolve, timer });
+      this._pendingRequests.set(msgId, { resolve, timer, peerId });
 
       const sent = this._webrtc.sendMessage(peerId, fullMessage);
       if (!sent) {

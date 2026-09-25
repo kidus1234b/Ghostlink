@@ -11,6 +11,7 @@
  * Run: node test/nonce-persistence-test.js
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';
 import os from 'os';

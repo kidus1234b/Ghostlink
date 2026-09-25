@@ -17,6 +17,7 @@
  *
  * Run with: node test/topology-auth-test.js
  */
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { TopologyManager } from '../dist/topology-announce.js';
 import {
   deriveIdentityFromSeedPhrase,
@@ -145,6 +146,42 @@ async function main() {
       'announces this node originates carry a signature and its signing key');
     assert(mgr.isAnnounceAuthentic(own),
       "this node's own signed announce verifies as authentic");
+  }
+
+  // ── direct neighbour: announce key must match the handshake-proven key ────
+  {
+    // `victim` is a direct neighbour here; its handshake proved victim.signingPubKey.
+    const node = fakeNode(me);
+    node.getLinkByNodeId = (id) => (id === victim.nodeIdHex
+      ? { remoteNodeId: victim.nodeId, remoteSigningPubkey: victim.signingPubKey, state: 'connected' }
+      : null);
+    const pinned = new TopologyManager(node);
+    clearInterval(pinned.announceInterval);
+    const has = (a, c) => !!(pinned.lsdb.get(a) && pinned.lsdb.get(a).get(c));
+
+    // Carries the neighbour's (public) static key, so the NodeID hash matches,
+    // but is signed under a different signing key than the handshake proved.
+    const mismatched = {
+      announcerNodeId: victim.nodeIdHex, connectedToNodeId: attacker.nodeIdHex,
+      sequenceNumber: 2000000, timestamp: Date.now(), withdrawn: false, ttl: 16,
+      announcerStaticPubKey: bytesToHex(victim.staticPubKey),
+      announcerSigningPubKey: bytesToHex(attacker.signingPubKey),
+    };
+    mismatched.signature = bytesToHex(signMessage(attacker.signingPrivKey, signingBytes(mismatched)));
+    pinned.handleReceivedAnnounce(mismatched, {remoteNodeId: attacker.nodeId, _penalizeUntrusted() {}});
+    assert(!has(victim.nodeIdHex, attacker.nodeIdHex),
+      "a neighbour's announce under a key other than its handshake key is rejected");
+
+    const genuine = {
+      announcerNodeId: victim.nodeIdHex, connectedToNodeId: me.nodeIdHex,
+      sequenceNumber: 3, timestamp: Date.now(), withdrawn: false, ttl: 16,
+      announcerStaticPubKey: bytesToHex(victim.staticPubKey),
+      announcerSigningPubKey: bytesToHex(victim.signingPubKey),
+    };
+    genuine.signature = bytesToHex(signMessage(victim.signingPrivKey, signingBytes(genuine)));
+    pinned.handleReceivedAnnounce(genuine, {remoteNodeId: victim.nodeId, _penalizeUntrusted() {}});
+    assert(has(victim.nodeIdHex, me.nodeIdHex),
+      "a neighbour's announce under its handshake key is still accepted");
   }
 
   console.log(`\n  ${passed}/${run} passed, ${failed} failed`);

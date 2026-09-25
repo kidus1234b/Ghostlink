@@ -299,23 +299,6 @@ Reanimated's own sources, so the native build stops with
 `ninja: build stopped: subcommand failed`. Raising the NDK requires bumping
 Reanimated too — which in turn requires bumping React Native.
 
-## Screens that exist but are not reachable
-
-These files are in `src/` but nothing imports them, so they are not in the app
-and not in the bundle:
-
-- `screens/QRScannerScreen.js` — **QR invite scanning is not wired up.** It is
-  not imported by `navigation/MainNavigator.js`, and the library it uses
-  (`react-native-qrcode-scanner`) statically imports `react-native-camera`,
-  which is not installed. Wiring the screen in as-is would break the bundle.
-  `react-native-vision-camera` *is* installed and declared but unused.
-- `screens/ChainScreen.js`, `screens/FilesScreen.js`, `screens/SplashScreen.js`
-- `components/EncryptionBadge.js`, `components/GhostAvatar.js`,
-  `components/MessageBubble.js`
-- `services/RecoveryTransport.js`, `services/StorageService.js`
-
-Reachable screens: Setup, ChatList, Chat, Call, Settings, Recovery.
-
 ## Dependency drift that had to be pinned
 
 `package.json` used caret ranges on packages that track React Native's version

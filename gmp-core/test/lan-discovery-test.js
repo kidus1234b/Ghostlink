@@ -19,6 +19,7 @@
  * lan-discovery.js is written to degrade quietly there.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNodeManager } from '../dist/gmp-node-manager.js';
 import { LanDiscovery } from '../dist/lan-discovery.js';
 import { ghostAddressFromNodeId } from '../dist/ghost-address.js';

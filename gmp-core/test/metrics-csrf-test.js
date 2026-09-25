@@ -18,6 +18,7 @@
  *
  * Run with: node test/metrics-csrf-test.js
  */
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import assert from 'assert';
 import http from 'http';
 
@@ -103,6 +104,23 @@ async function main() {
   test('GET /metrics from the CLI shape still works', async () => {
     const res = await request({method: 'GET', path: '/metrics', headers: {}});
     assert.strictEqual(res.status, 200, `expected 200, got ${res.status}: ${res.body}`);
+  });
+
+  test('a failed /ping does not leave its timeout armed (process survives it)', async () => {
+    // A registered node whose send always fails (like "No route"). The handler
+    // used to answer 500 from its catch but leave the 10s timeout running; that
+    // timeout then called writeHead on the finished response and the throw from
+    // a timer took the whole process down.
+    const {EventEmitter} = await import('events');
+    const fakeManager = Object.assign(new EventEmitter(), {
+      sendMessage: async () => { throw new Error('No route to destination'); },
+    });
+    metrics.registerNode({connections: new Map(), virtualConnections: new Map()}, fakeManager);
+    const body = JSON.stringify({targetNodeId: 'ab'.repeat(64)});
+    const res = await request({path: '/ping', headers: {'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)}, body});
+    assert.strictEqual(res.status, 500, `expected 500, got ${res.status}: ${res.body}`);
+    assert.strictEqual(fakeManager.listenerCount('message'), 0, 'the pong listener must be removed on failure');
+    await new Promise((r) => setTimeout(r, 10500));   // past the ping timeout
   });
 
   for (const [name, fn] of tests) {

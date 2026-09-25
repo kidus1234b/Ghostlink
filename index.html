@@ -83,9 +83,12 @@
       on this page; no eval or new Function is used anywhere, hence no
       'unsafe-eval'. Only script-src is constrained here: styles, fonts, images,
       media and WebSocket connections are left to the app's own checks rather
-      than tightened blind.
+      than tightened blind. object-src and base-uri cost nothing: the page uses
+      neither plugins nor <base>, and an injected <base href> would otherwise
+      re-point every relative link and download on the page. In the Electron build this meta tag is the policy that
+      applies to the file:// page.
     -->
-    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'" />
     <title>GhostLink v2</title>
     <!-- The brand mark from assets/ghostlink-favicon.svg, inlined as a data URI:
          avoids the /favicon.ico 404 with no extra file or request. The tile is
@@ -371,279 +374,6 @@ const retentionFilter = (messages, retentionDays) => {
 
 let BIP39_WORDS = null;
 const EMOJIS = ["😀", "😂", "😍", "🥰", "😎", "🤔", "😤", "😭", "🥺", "😅", "🙏", "👍", "👎", "❤️", "🔥", "✅", "⚡", "🎉", "👀", "💀", "🤝", "🚀", "💡", "🔒", "⚠️", "📎", "📁", "🛡️", "🌐", "💬"];
-
-// ==================== GHOSTLINK PLATFORM (Production Architecture) ====================
-class GhostLinkPlatform {
-  static _instance = null;
-  static _initPromise = null;
-
-  constructor() {
-    if (GhostLinkPlatform._instance) return GhostLinkPlatform._instance;
-    this._initialized = false;
-    this._identity = null;
-    this._managers = {};
-    this._eventBus = null;
-    this._logger = null;
-    this._signalBus = null;
-  }
-
-  static getInstance() {
-    if (!GhostLinkPlatform._instance) {
-      GhostLinkPlatform._instance = new GhostLinkPlatform();
-    }
-    return GhostLinkPlatform._instance;
-  }
-
-  static async init(identity) {
-    if (GhostLinkPlatform._initPromise) return GhostLinkPlatform._initPromise;
-    const platform = GhostLinkPlatform.getInstance();
-
-    GhostLinkPlatform._initPromise = platform._initInternal(identity);
-    return GhostLinkPlatform._initPromise;
-  }
-
-  async _initInternal(identity) {
-    if (this._initialized) return;
-
-    this._identity = identity;
-
-    // Core infrastructure
-    this._eventBus = new GhostLink.EventBus('ghostlink-platform');
-    this._logger = new GhostLink.Logger('GhostLink', { minLevel: 'debug' });
-    this._signalBus = new GhostLink.SignalBus({ busName: 'ghostlink-signals' });
-
-    const logger = this._logger;
-
-    // Security Manager (no dependencies)
-    this._managers.security = new GhostLink.SecurityManager({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('security') : logger
-    });
-
-    // Connection Manager (depends on identity, eventBus, logger)
-    this._managers.connection = new GhostLink.ConnectionManager({
-      identity,
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('connection') : logger
-    });
-
-    // Signal Manager (depends on identity, eventBus, logger)
-    this._managers.signal = new GhostLink.SignalManager({
-      identity,
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('signal') : logger
-    });
-
-    // Relay Manager (depends on eventBus, logger)
-    this._managers.relay = new GhostLink.RelayManager({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('relay') : logger,
-      connectionManager: this._managers.connection
-    });
-
-    // Offline Queue (depends on eventBus, logger)
-    this._managers.offlineQueue = new GhostLink.OfflineQueue({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('offlineQueue') : logger
-    });
-
-    // Message Router (depends on many)
-    this._managers.message = new GhostLink.MessageRouter({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('message') : logger,
-      connectionManager: this._managers.connection,
-      securityManager: this._managers.security,
-      offlineQueue: this._managers.offlineQueue
-    });
-
-    // File Transfer Manager (depends on connection, key)
-    this._managers.fileTransfer = new GhostLink.FileTransferManager({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('fileTransfer') : logger,
-      connectionManager: this._managers.connection
-    });
-
-    // Presence Manager (depends on connection)
-    this._managers.presence = new GhostLink.PresenceManager({
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('presence') : logger,
-      connectionManager: this._managers.connection
-    });
-
-    // Peer Manager (wires everything together)
-    this._managers.peer = new GhostLink.PeerManager({
-      identity,
-      eventBus: this._eventBus,
-      logger: logger.child ? logger.child('peer') : logger,
-      connectionManager: this._managers.connection,
-      signalManager: this._managers.signal,
-      messageRouter: this._managers.message,
-      fileTransferManager: this._managers.fileTransfer,
-      presenceManager: this._managers.presence,
-      relayManager: this._managers.relay
-    });
-
-    // Debug Console
-    if (typeof GhostLink.DebugConsole !== 'undefined') {
-      this._managers.debugConsole = new GhostLink.DebugConsole({
-        eventBus: this._eventBus,
-        logger: logger,
-        peerManager: this._managers.peer,
-        connectionManager: this._managers.connection,
-        messageRouter: this._managers.message,
-        fileTransferManager: this._managers.fileTransfer,
-        signalManager: this._managers.signal
-      });
-    }
-
-    // Self-test capability
-    if (typeof GhostLink.SelfTest !== 'undefined') {
-      this._managers.selfTest = GhostLink.SelfTest;
-    }
-
-    // License System (Pro Licensing & Team Workspaces)
-    const licenseNS = window.GLLicenseAPI || {};
-    if (typeof licenseNS.initLicenseSystem === 'function') {
-      try {
-        const licenseSystem = await licenseNS.initLicenseSystem({
-          eventBus: this._eventBus
-        });
-        Object.assign(this._managers, licenseSystem);
-        window.GLLicenseRuntime = licenseSystem;
-        this._logger.info('License system initialized');
-      } catch (err) {
-        this._logger.error('License system initialization failed', { error: err.message });
-      }
-    }
-
-    // Wire eventBus to signalBus channels for cross-module communication
-    this._wireEventBusToSignalBus();
-
-    this._initialized = true;
-    this._logger.info('GhostLink Platform initialized', { peerId: identity?.name });
-
-    return this;
-  }
-
-  _wireEventBusToSignalBus() {
-    // Map EventBus events to SignalBus channels
-    const wiring = [
-    { event: 'peer:', channel: 'peer' },
-    { event: 'conn:', channel: 'network' },
-    { event: 'signal:', channel: 'network' },
-    { event: 'message:', channel: 'message' },
-    { event: 'file:', channel: 'file' },
-    { event: 'presence:', channel: 'presence' },
-    { event: 'security:', channel: 'security' },
-    { event: 'system:', channel: 'system' }];
-
-
-    wiring.forEach(({ event, channel }) => {
-      this._eventBus.on(event + '*', (data) => {
-        const topic = data?._topic || event + 'event';
-        this._signalBus.getChannel(channel).emit(topic, data);
-      });
-    });
-  }
-
-  // API
-  get eventBus() {return this._eventBus;}
-  get logger() {return this._logger;}
-  get signalBus() {return this._signalBus;}
-  get managers() {return this._managers;}
-  get identity() {return this._identity;}
-  get isInitialized() {return this._initialized;}
-
-  // Convenience getters for managers
-  get peerManager() {return this._managers.peer;}
-  get connectionManager() {return this._managers.connection;}
-  get signalManager() {return this._managers.signal;}
-  get messageRouter() {return this._managers.message;}
-  get fileTransferManager() {return this._managers.fileTransfer;}
-  get presenceManager() {return this._managers.presence;}
-  get securityManager() {return this._managers.security;}
-  get relayManager() {return this._managers.relay;}
-  get offlineQueue() {return this._managers.offlineQueue;}
-
-  // License System getters
-  get licenseManager() {return this._managers.licenseManager;}
-  get featureGate() {return this._managers.featureGate;}
-  get workspaceManager() {return this._managers.workspaceManager;}
-  get proThemes() {return this._managers.proThemes;}
-  get dataExport() {return this._managers.dataExport;}
-  get generator() {return this._managers.generator;}
-  get deviceFingerprint() {return this._managers.deviceFingerprint;}
-  get licenseValidator() {return this._managers.validator;}
-  get securityHardening() {return this._managers.hardening;}
-  get activationUI() {return this._managers.activationUI;}
-
-  // High-level API
-  async connectToPeer(peerId, mode = 'auto') {
-    return this._managers.peer?.addPeer(peerId, { mode });
-  }
-
-  async disconnectFromPeer(peerId) {
-    return this._managers.peer?.removePeer(peerId);
-  }
-
-  async sendMessage(peerId, content, type = 'chat') {
-    return this._managers.message?.sendMessage(peerId, type, { content });
-  }
-
-  async sendFile(peerId, file) {
-    return this._managers.fileTransfer?.sendFile(peerId, file);
-  }
-
-  getConnectedPeers() {
-    return this._managers.peer?.getAllPeers() || [];
-  }
-
-  getPeerState(peerId) {
-    return this._managers.peer?.getPeerState(peerId) || 'idle';
-  }
-
-  async runSelfTest() {
-    return this._managers.selfTest?.runAllTests();
-  }
-
-  destroy() {
-    this._managers.peer?.destroy();
-    this._managers.connection?.destroy();
-    this._managers.signal?.destroy();
-    this._managers.presence?.destroy();
-    this._managers.fileTransfer?.destroy();
-    this._managers.message?.destroy();
-    this._managers.relay?.destroy();
-    this._managers.security?.destroy();
-    this._managers.offlineQueue?.destroy();
-    this._managers.licenseManager?.destroy();
-    this._managers.featureGate?.destroy();
-    this._managers.workspaceManager?.destroy();
-    this._managers.proThemes?.destroy();
-    this._managers.dataExport?.destroy();
-    this._managers.debugConsole?.destroy();
-    this._managers.deviceFingerprint?.clearCache?.();
-    this._managers.hardening?.destroy?.();
-    this._managers.activationUI?.destroy?.();
-    this._managers = {};
-    this._initialized = false;
-    this._logger?.info('GhostLink Platform destroyed');
-    // Reset the static latch. init() short-circuits on _initPromise, so leaving
-    // the resolved promise behind means a later init() never runs
-    // _initInternal() and the platform stays destroyed with no managers.
-    if (GhostLinkPlatform._instance === this) {
-      GhostLinkPlatform._instance = null;
-      GhostLinkPlatform._initPromise = null;
-    }
-  }
-}
-
-// Expose globally
-window.GhostLinkPlatform = GhostLinkPlatform;
-// NOTE: do NOT alias window.GhostLinkDebug to this class — app.bundle.js
-// (src/debug/debug-console.js) already installs a GhostLinkDebug *instance*
-// exposing setConnectionManager/setSignalManager, and overwriting it with the
-// class breaks the debug wiring in initP2P.
 
 // ==================== CRYPTO ENGINE ====================
 const CryptoEngine = {
@@ -1217,9 +947,14 @@ const MessageVault = {
   },
 
   async _write(storeKey, data) {
-    if (!this._key) return false;
+    const key = this._key;
+    if (!key) return false;
     try {
-      localStorage.setItem(storeKey, JSON.stringify(await this._seal(this._key, data)));
+      const sealed = await this._seal(key, data);
+      // Locked (or re-keyed) while sealing: an account wipe must not be
+      // followed by this write putting the old history back on disk.
+      if (this._key !== key) return false;
+      localStorage.setItem(storeKey, JSON.stringify(sealed));
       return true;
     } catch (e) {
       console.error('[MessageVault] failed to persist', storeKey, e);
@@ -1242,6 +977,159 @@ async function unsealPayload(sealed, identity) {
   const privKey = identity?.keyPair?.privateKey || identity?.privateKey;
   if (!privKey) throw new Error('Private key unavailable — unlock your identity first');
   return JSON.parse(await CryptoEngine.decryptWithPrivateKey(sealed, privKey));
+}
+
+// ==================== INBOUND PAYLOAD SHAPING ====================
+// A sealed envelope proves only that the payload was encrypted to *us*; anyone
+// holding our public key can produce one, so everything inside is still
+// peer-authored JSON. It is rendered as React children, fed to <audio> and
+// persisted in the chain, so every field is coerced to the shape our own
+// senders produce before it goes anywhere. Without this, one field of the wrong
+// type — `content: {}` on a file message, a string `waveform`, an object
+// `replyTo.sender` — threw during render and took the whole app down to the
+// error boundary, and because the block is persisted, it did so again every
+// time that conversation was opened.
+const INBOUND_MSG_TYPES = ['text', 'file', 'image'];
+const INBOUND_NAME_MAX = 64;
+const INBOUND_WAVEFORM_MAX = 12000; // 10 minutes at the recorder's 20 samples/s
+const REACTION_EMOJIS = ['❤️', '👍', '👎', '😂', '😮', '😢', '🔥', '✅', '⚠️'];
+
+const inboundStr = (v, max) => typeof v === 'string' ? v.slice(0, max) : undefined;
+const inboundNum = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+
+// A peer's display name, never allowed to equal ours: the message list decides
+// which side a bubble is drawn on by comparing sender to our own name, so a
+// peer naming itself after us had its messages rendered as ones we wrote.
+function inboundSenderName(v, selfName) {
+  const name = inboundStr(v, INBOUND_NAME_MAX) || 'Peer';
+  return selfName && name === selfName ? `${name} (peer)` : name;
+}
+
+function sanitizeInboundChat(inner, selfName) {
+  const src = inner && typeof inner === 'object' ? inner : {};
+  const m = src.meta && typeof src.meta === 'object' && !Array.isArray(src.meta) ? src.meta : {};
+  const meta = {};
+  if (inboundNum(m.fileSize) !== undefined) meta.fileSize = m.fileSize;
+  if (inboundNum(m.chunks) !== undefined) meta.chunks = Math.floor(m.chunks);
+  if (inboundStr(m.hash, 128) !== undefined) meta.hash = inboundStr(m.hash, 128);
+  if (inboundStr(m.fileName, 255) !== undefined) meta.fileName = inboundStr(m.fileName, 255);
+  if (inboundNum(m.selfDestruct) !== undefined) meta.selfDestruct = m.selfDestruct;
+  if (typeof m.imageData === 'string' && /^[A-Za-z0-9+/]*={0,2}$/.test(m.imageData)) meta.imageData = m.imageData;
+  if (typeof m.mimeType === 'string' && /^image\/[a-z0-9.+-]+$/i.test(m.mimeType)) meta.mimeType = m.mimeType;
+  if (m.replyTo && typeof m.replyTo === 'object') {
+    meta.replyTo = {
+      index: inboundNum(m.replyTo.index) ?? 0,
+      sender: inboundStr(m.replyTo.sender, INBOUND_NAME_MAX) || '',
+      preview: inboundStr(m.replyTo.preview, 60) || ''
+    };
+  }
+  return {
+    content: typeof src.content === 'string' ? src.content : '',
+    msgType: INBOUND_MSG_TYPES.includes(src.msgType) ? src.msgType : 'text',
+    meta,
+    sender: inboundSenderName(src.sender, selfName)
+  };
+}
+
+// Voice notes carry their audio inline. A peer-supplied `url` is never used:
+// it went straight into `new Audio(url)`, so pressing play fetched whatever
+// address the peer chose — handing them this device's IP and the moment the
+// note was played.
+function sanitizeInboundVoice(v, selfName) {
+  if (!v || typeof v !== 'object' || typeof v.audioData !== 'string' || !v.audioData) return null;
+  const waveform = Array.isArray(v.waveform) ?
+  v.waveform.slice(0, INBOUND_WAVEFORM_MAX).map((a) => typeof a === 'number' && Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : 0) :
+  [];
+  return {
+    audioData: v.audioData,
+    mimeType: typeof v.mimeType === 'string' && /^audio\/[a-z0-9.+-]+$/i.test(v.mimeType) ? v.mimeType : 'audio/webm',
+    duration: inboundNum(v.duration) ?? 0,
+    waveform,
+    ts: inboundNum(v.ts) ?? Date.now(),
+    sender: inboundSenderName(v.sender, selfName)
+  };
+}
+
+// Record a peer's reaction. Only emoji from our own picker are accepted, and
+// only against a message hash we hold: an arbitrary emoji string such as
+// "toString" or "__proto__" resolved to an inherited property, whose missing
+// .includes threw inside the state updater and crashed the app.
+function applyInboundReaction(prev, messageHash, emoji, reactorId) {
+  if (typeof messageHash !== 'string' || !messageHash) return prev;
+  if (typeof emoji !== 'string' || !REACTION_EMOJIS.includes(emoji)) return prev;
+  const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const existing = own(prev, messageHash) ? prev[messageHash] : {};
+  const reactors = own(existing, emoji) && Array.isArray(existing[emoji]) ? existing[emoji] : [];
+  if (reactors.includes(reactorId)) return prev;
+  return { ...prev, [messageHash]: { ...existing, [emoji]: [...reactors, reactorId] } };
+}
+
+// ==================== PUBLIC-KEY PINNING ====================
+// A peer's announced ECDH key is pinned only after the peer proves it holds the
+// private half. Pinning on announcement alone let any connected node claim
+// someone else's public key (public keys are public — they are in every invite
+// and every key-announce). The NodeID→fingerprint map is derived from that pin,
+// so the claim made the node *be* that identity to every workspace check: a
+// stranger announcing an admin's key could delete the workspace, rewrite its
+// roster, or swap in a workspace key it knew. It also let the safety-number
+// ceremony "verify" a key the peer did not own.
+//
+// The proof: a nonce sealed to the announced key, which only its private key
+// opens. The challenge names both ends of the link, and the responder answers
+// only a challenge addressed to itself and issued by the peer it is actually
+// talking to — so a node cannot relay our challenge to the real key holder and
+// pass its answer back as its own.
+const PINNABLE_KEY = /^04[0-9a-f]{128}$/; // raw uncompressed P-256, as exportKey('raw') produces
+
+function createKeyPinning({ seal, unseal, selfIds, send, getPinned, pin, randomHex }) {
+  const pending = new Map(); // transport peer id -> { key, nonce, name }
+  return {
+    // → 'invalid' | 'mismatch' | 'known' | 'challenged'
+    async onAnnounce(peerId, msg) {
+      const key = typeof msg?.publicKeyHex === 'string' ? msg.publicKeyHex.trim().toLowerCase() : '';
+      if (!PINNABLE_KEY.test(key)) return 'invalid';
+      const known = getPinned(peerId)?.toLowerCase() || null;
+      if (known) return known === key ? 'known' : 'mismatch';
+      const nonce = randomHex(16);
+      pending.set(peerId, { key, nonce, name: inboundStr(msg.name, INBOUND_NAME_MAX) || '' });
+      send(peerId, {
+        type: 'key-challenge',
+        sealed: await seal({ nonce, target: peerId, challenger: selfIds() }, key)
+      });
+      return 'challenged';
+    },
+    // Answer a challenge sent to our own key. → true if answered.
+    async onChallenge(peerId, msg) {
+      let c;
+      try {c = await unseal(msg?.sealed);} catch (e) {return false;}
+      if (!c || typeof c.nonce !== 'string' || c.nonce.length > 128) return false;
+      if (!selfIds().includes(c.target)) return false;
+      if (!Array.isArray(c.challenger) || !c.challenger.includes(peerId)) return false;
+      send(peerId, { type: 'key-proof', nonce: c.nonce });
+      return true;
+    },
+    // → the pinned key, or null.
+    onProof(peerId, msg) {
+      const p = pending.get(peerId);
+      if (!p || typeof msg?.nonce !== 'string' || msg.nonce !== p.nonce) return null;
+      pending.delete(peerId);
+      const known = getPinned(peerId)?.toLowerCase() || null;
+      if (known && known !== p.key) return null;
+      pin(peerId, p.key, p.name);
+      return p.key;
+    }
+  };
+}
+
+// The Ghost Address in a scanned QR. Our own codes are JSON with the address in
+// `c`; a bare address (screenshot, paper) is accepted too.
+function ghostAddressFromScan(data) {
+  if (typeof data !== 'string') return null;
+  try {
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === 'object') return normalizeGhostAddress(parsed.c ?? parsed.code);
+  } catch (e) {/* not JSON: fall through to a bare address */}
+  return normalizeGhostAddress(data);
 }
 
 // ==================== PEER CACHE (localStorage) ====================
@@ -3045,7 +2933,6 @@ function GhostLinkApp() {
   const [activeTransfers, setActiveTransfers] = useState({});
 
   // Media Handler
-  const [mediaHandler, setMediaHandler] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
 
   // Offline Queue
@@ -3097,7 +2984,6 @@ function GhostLinkApp() {
   // Message Reactions
   const [messageReactions, setMessageReactions] = useState({}); // { messageHash: { emoji: [peerId, ...] } }
   const [showReactionPicker, setShowReactionPicker] = useState(null); // messageHash or null
-  const REACTION_EMOJIS = ['\u2764\uFE0F', '\uD83D\uDC4D', '\uD83D\uDC4E', '\uD83D\uDE02', '\uD83D\uDE2E', '\uD83D\uDE22', '\uD83D\uDD25', '\u2705', '\u26A0\uFE0F'];
 
   // Voice Messages with Waveform
   const [isRecording, setIsRecording] = useState(false);
@@ -3843,6 +3729,25 @@ function GhostLinkApp() {
     // *before* connecting, otherwise early events are missed.
     const setupEvents = (conn) => {
 
+      // Announced keys are pinned only once the peer proves it holds them.
+      const keyPinning = createKeyPinning({
+        seal: sealPayload,
+        unseal: (sealed) => unsealPayload(sealed, identityRef.current || identity),
+        // How this device is addressed on each transport: NodeID over the mesh,
+        // identity fingerprint on a direct data channel.
+        selfIds: () => [conn.nodeId, (identityRef.current || identity)?.fingerprint].filter(Boolean),
+        send: (peerId, payload) => conn.sendMessage(peerId, payload),
+        getPinned: (peerId) => PeerCache.getPublicKey(peerId),
+        pin: (peerId, key, name) => {
+          PeerCache.addPeer(peerId, { fingerprint: peerId, publicKeyHex: key, name });
+          setPeers((prev) => prev.map((p) =>
+          p.fingerprint === peerId || p.id === peerId ? { ...p, pubKey: key } : p
+          ));
+        },
+        randomHex: (n) => Array.from(crypto.getRandomValues(new Uint8Array(n))).
+        map((b) => b.toString(16).padStart(2, '0')).join('')
+      });
+
       // signaling events (now bridge events)
       conn.on('signaling-connected', () => {
         setSignalingConnected(true);
@@ -3980,26 +3885,25 @@ function GhostLinkApp() {
 
           // Renders a voice note that has already been unsealed. Called only
           // from the sealed-envelope branch — never directly from wire input.
-          const handleVoicePayload = (v) => {
+          const handleVoicePayload = (raw) => {
+            const v = sanitizeInboundVoice(raw, (identityRef.current || identity)?.name);
+            if (!v) return;
             const convoKey = getConvoKey(peerId);
-            let url = v.url || '';
-            if (!url && v.audioData) {
-              try {
-                const binaryString = atob(v.audioData);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-                url = URL.createObjectURL(new Blob([bytes], { type: v.mimeType || 'audio/webm' }));
-              } catch (e) {console.error('Voice decode failed:', e);return;}
-            }
-            if (!url) return;
+            let url;
+            try {
+              const binaryString = atob(v.audioData);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+              url = URL.createObjectURL(new Blob([bytes], { type: v.mimeType }));
+            } catch (e) {console.error('Voice decode failed:', e);return;}
             setVoiceMessages((prev) => ({
               ...prev,
               [convoKey]: [...(prev[convoKey] || []), {
                 id: 'voice-' + Date.now() + '-in',
-                url, duration: v.duration || 0,
-                waveform: v.waveform || [],
-                ts: v.ts || Date.now(),
-                sender: v.sender || 'Peer'
+                url, duration: v.duration,
+                waveform: v.waveform,
+                ts: v.ts,
+                sender: v.sender
               }]
             }));
             setPeers((prev) => prev.map((p) =>
@@ -4010,24 +3914,18 @@ function GhostLinkApp() {
           };
 
           if (msg.type === 'key-announce') {
-            const announced = typeof msg.publicKeyHex === 'string' ? msg.publicKeyHex.trim().toLowerCase() : '';
-            if (!/^[0-9a-f]{64,}$/.test(announced)) {
+            // Trust-on-first-use, but only for a key the peer proves it holds
+            // (see createKeyPinning). A changed key is either a reinstall or an
+            // impersonation attempt: refuse it and make the user decide.
+            const outcome = await keyPinning.onAnnounce(peerId, msg);
+            if (outcome === 'invalid') {
               console.warn('[key-announce] ignoring malformed key from', peerId);
               return;
             }
-            const known = PeerCache.getPublicKey(peerId)?.toLowerCase() || null;
-            if (known && known !== announced) {
-              // Trust-on-first-use pinning: a changed key is either a reinstall
-              // or an impersonation attempt. Refuse it and make the user decide.
+            if (outcome === 'mismatch') {
               console.warn('[key-announce] pinned key mismatch for', peerId);
               addToast('A peer announced a different public key — ignored. Verify their safety number before trusting it.', 'error');
               return;
-            }
-            if (!known) {
-              PeerCache.addPeer(peerId, { fingerprint: peerId, publicKeyHex: announced, name: msg.name || '' });
-              setPeers((prev) => prev.map((p) =>
-              p.fingerprint === peerId || p.id === peerId ? { ...p, pubKey: announced } : p
-              ));
             }
             // Reply once so the initiator learns our key too (no reply storm).
             if (msg.wantReply) {
@@ -4040,6 +3938,16 @@ function GhostLinkApp() {
                 }
               } catch (e) {console.warn('Key announce reply failed:', e);}
             }
+            return;
+          }
+
+          if (msg.type === 'key-challenge') {
+            await keyPinning.onChallenge(peerId, msg);
+            return;
+          }
+
+          if (msg.type === 'key-proof') {
+            if (!keyPinning.onProof(peerId, msg)) console.warn('[key-proof] unexpected or wrong proof from', peerId);
             return;
           }
 
@@ -4088,10 +3996,9 @@ function GhostLinkApp() {
               return;
             }
 
-            const msgType = inner.msgType || 'text';
-            const content = inner.content;
-            const block = await chain.add(inner.sender || msg.sender || 'Peer', content, msgType, inner.meta || {});
-            if (msg.blockHash) {
+            const { content, msgType, meta, sender } = sanitizeInboundChat(inner, (identityRef.current || identity)?.name);
+            const block = await chain.add(sender, content, msgType, meta);
+            if (typeof msg.blockHash === 'string' && msg.blockHash) {
               // Keep our locally computed hash — it is what chains this block to
               // its predecessor here, and what verify() can check. The sender's
               // hash is recorded separately so redeliveries stay recognisable.
@@ -4143,15 +4050,15 @@ function GhostLinkApp() {
               console.error('[reaction] failed to unseal from', peerId, e);
               return;
             }
-            if (!reaction?.messageHash || !reaction?.emoji) return;
-            setMessageReactions((prev) => {
-              const existing = prev[reaction.messageHash] || {};
-              const reactors = existing[reaction.emoji] || [];
-              if (!reactors.includes(peerId)) {
-                return { ...prev, [reaction.messageHash]: { ...existing, [reaction.emoji]: [...reactors, peerId] } };
-              }
-              return prev;
-            });
+            // The peer names the message by the hash *it* knows: ours if we
+            // wrote it (it holds that as remoteHash), its own if it wrote it
+            // (we hold that as remoteHash). Resolve either to our local hash,
+            // which is what the message list looks reactions up by.
+            const wireHash = reaction?.messageHash;
+            if (typeof wireHash !== 'string' || !wireHash) return;
+            const target = chain.blocks.find((b) => b.hash === wireHash || b.remoteHash === wireHash);
+            if (!target) return;
+            setMessageReactions((prev) => applyInboundReaction(prev, target.hash, reaction.emoji, peerId));
           } else if (msg.type === 'call-offer' || msg.type === 'call-answer' || msg.type === 'call-ice' || msg.type === 'call-end') {
             // Every call signal is sealed to us and routed by the transport peer
             // ID. A payload's own `from` is sender-declared — under the GMP
@@ -4347,36 +4254,15 @@ function GhostLinkApp() {
       try {
         if (connect) await conn.connect();
 
-        // Initialize production managers (PHASE 1)
-        if (window.GhostLink && window.GhostLink.globalBus) {
-          const GLBus = window.GhostLink.globalBus;
-
-          // Wire GhostLinkDebug
-          if (window.GhostLinkDebug) {
-            window.GhostLinkDebug.setConnectionManager(conn);
-            window.GhostLinkDebug.setSignalManager(conn._ws ? {
-              isConnected: () => conn.ws && conn.ws.readyState === WebSocket.OPEN,
-              _wsUrl: conn.wsUrl,
-              peers: () => Object.keys(conn.knownPeers || {}),
-              _myRoom: conn.roomId
-            } : null);
-          }
-
-          // Wire bus events for debug timeline
-          GLBus.on('pm:peer-connected', ({ peerId }) => {
-            setConnectionMode('P2P Direct');
-          });
-          GLBus.on('pm:signaling-ready', () => {
-            setSignalingConnected(true);
-            setSignalingAvailable(true);
-          });
-
-          // Production relay mode detection
-          GLBus.on('conn:peer-degraded', ({ peerId }) => {
-            setConnectionMode('Via Relay');
-          });
-          GLBus.on('conn:ice-failed', ({ peerId }) => {
-            setConnectionMode('Reconnecting');
+        // Wire GhostLinkDebug. The bridge socket is `conn.ws`; this used to
+        // test `conn._ws`, which nothing sets, so the debug console never saw it.
+        if (window.GhostLinkDebug) {
+          window.GhostLinkDebug.setConnectionManager(conn);
+          window.GhostLinkDebug.setSignalManager({
+            isConnected: () => !!conn.ws && conn.ws.readyState === WebSocket.OPEN,
+            _wsUrl: getBridgeWsUrl(),
+            peers: () => Object.keys(conn.knownPeers || {}),
+            _myRoom: null
           });
         }
 
@@ -4386,7 +4272,10 @@ function GhostLinkApp() {
         }
         if (typeof FileTransfer !== 'undefined' || typeof GhostLinkP2P !== 'undefined' && GhostLinkP2P.FileTransfer) {
           const FT = FileTransfer || GhostLinkP2P.FileTransfer;
-          const ft = new FT(conn, CryptoEngine);
+          const ft = new FT(conn, CryptoEngine, {
+            getPeerPublicKey: (peerId) => getPeerPublicKey(peerId),
+            getPrivateKey: () => (identityRef.current || identity)?.keyPair?.privateKey || null
+          });
           ft.on('complete', ({ peerId, file }) => {
             const peerName = peersRef.current.find((p) => p.fingerprint === peerId || p.id === peerId)?.name || 'Peer';
             setTransferredFiles((prev) => [...prev, {
@@ -5040,9 +4929,6 @@ function GhostLinkApp() {
       const ftm = fileTransferManagerRef.current || fileTransferManager;
       if (ftm && fileObj && dcConnected) {
         try {
-          ftm.on('progress', ({ transferId, progress }) => {
-            if (transferId === id) setUploadProgress((p) => ({ ...p, [id]: progress }));
-          });
           await ftm.sendFile(peerId, fileObj);
           const fHash = (await CryptoEngine.sha256(fileName + fileSize)).slice(0, 12);
           const fChunks = Math.ceil(fileSize / 65536);
@@ -5214,7 +5100,21 @@ function GhostLinkApp() {
     if (!confirm("CRITICAL: Delete identity and all data? You will lose access to this identity forever unless you have your seed phrase. Proceed?")) return;
     if (!confirm("FINAL WARNING: Your private key will be destroyed from this device. Are you absolutely sure?")) return;
 
-    // Clear all states
+    // Clear all states — including what lives outside React. The chain and
+    // the two vault keys are plain objects: left alone, the chain kept every
+    // deleted block in memory and the still-unlocked vault sealed it straight
+    // back into localStorage on the next write, under the old key, attached to
+    // whatever identity was created next. The recovery phrase also stayed in
+    // window.seedPhrase, where the next bridge session would have sent it.
+    MessageVault.lock();
+    LocalVault._key = null;
+    historyHydratedRef.current = { messages: false, chain: false };
+    chain.blocks = [];
+    bumpChain();
+    selfDestructTimersRef.current.forEach(clearTimeout);
+    selfDestructTimersRef.current.clear();
+    setSeedPhrase(null);
+    window.seedPhrase = null;
     setIdentity(null);
     setMessages({});
     setPeers([]);
@@ -5238,9 +5138,6 @@ function GhostLinkApp() {
 
   const startCall = async (type) => {
     try {
-      if (typeof MediaHandler === 'undefined') {
-        await import('./src/p2p/media-handler.js');
-      }
       const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
       if (!isSecure) {
         addToast('Calls require HTTPS. Please use https:// or run on localhost.', 'error');
@@ -5472,9 +5369,6 @@ function GhostLinkApp() {
 
   const answerIncomingCall = async (withVideo) => {
     if (!incomingCall) return;
-    if (typeof MediaHandler === 'undefined') {
-      await import('./src/p2p/media-handler.js');
-    }
     const callerPeerId = incomingCall.peerId;
     const callType = withVideo ? 'video' : 'voice';
 
@@ -5883,6 +5777,21 @@ function GhostLinkApp() {
     return url;
   };
 
+  // The relay hands us the far side's fingerprint and key as plain claims, and
+  // the fingerprint becomes the peer's id for this session. It must be the
+  // fingerprint of the key it arrived with, and must not take over a peer
+  // that is already connected — otherwise a stranger in the room could
+  // register itself under an existing contact's id and its messages would be
+  // filed in that contact's conversation.
+  const quickPeerClaimAcceptable = async (conn, data) => {
+    const key = typeof data.pubKeyHex === 'string' ? data.pubKeyHex.trim().toLowerCase() : '';
+    if (!PINNABLE_KEY.test(key) || typeof data.fingerprint !== 'string') return false;
+    if ((await fingerprintFromPublicKey(key)) !== data.fingerprint) return false;
+    const pinned = PeerCache.getPublicKey(data.fingerprint);
+    if (pinned && pinned.toLowerCase() !== key) return false;
+    return !conn.isConnected(data.fingerprint);
+  };
+
   // Host Flow
   const startQuickHost = async () => {
     if (!identity || !p2pConnectorRef.current) return;
@@ -6014,6 +5923,12 @@ function GhostLinkApp() {
 
       if (data.type === 'answer') {
         const pc = quickPcRef.current;
+        if (pc && !(await quickPeerClaimAcceptable(conn, data))) {
+          addToast('Rejected a peer whose identity did not match its key', 'error');
+          try {pc.close();} catch (e) {}
+          setQuickSignalStep('failed');
+          return;
+        }
         if (pc) {
           pc.__remoteFingerprint = data.fingerprint;
           pc.__remoteName = data.name;
@@ -6127,6 +6042,11 @@ function GhostLinkApp() {
       }
 
       if (data.type === 'offer') {
+        if (!(await quickPeerClaimAcceptable(conn, data))) {
+          addToast('Rejected a peer whose identity did not match its key', 'error');
+          setQuickSignalStep('failed');
+          return;
+        }
         const pc = new RTCPeerConnection({
           iceServers: getIceServers()
         });
@@ -6379,8 +6299,11 @@ function GhostLinkApp() {
             console.warn('[reaction] no public key for', peerId, '— not sending in the clear');
             return;
           }
+          // Name the message by the hash the peer holds for it (see the
+          // receive side): its own hash for a message it sent us, ours otherwise.
+          const block = chain.blocks.find((b) => b.hash === messageHash);
           const sealed = await sealPayload(
-            { type: 'reaction', messageHash, emoji, sender: identity?.name },
+            { type: 'reaction', messageHash: block?.remoteHash || messageHash, emoji, sender: identity?.name },
             peerPubKey
           );
           await peerManager.sendMessage(peerId, { type: 'reaction', sealed });
@@ -6407,15 +6330,6 @@ function GhostLinkApp() {
   // ---- Voice Messages with Waveform ----
   const startRecording = async () => {
     try {
-      if (!window.GhostLink?.VoiceRecorderManager) {
-        await Promise.all([
-          import('./src/voice/voice-recorder-manager.js'),
-          import('./src/voice/audio-waveform-renderer.js'),
-          import('./src/voice/voice-playback-manager.js'),
-          import('./src/voice/voice-transfer-manager.js'),
-          import('./src/voice/voice-message-ui.js')
-        ]);
-      }
       if (!window.isSecureContext && window.location.hostname !== 'localhost') {
         addToast('Microphone requires HTTPS or localhost', 'error');
         return;
@@ -6539,15 +6453,6 @@ function GhostLinkApp() {
   };
 
   const playVoiceMessage = async (msgId, url) => {
-    if (!window.GhostLink?.VoiceRecorderManager) {
-      await Promise.all([
-        import('./src/voice/voice-recorder-manager.js'),
-        import('./src/voice/audio-waveform-renderer.js'),
-        import('./src/voice/voice-playback-manager.js'),
-        import('./src/voice/voice-transfer-manager.js'),
-        import('./src/voice/voice-message-ui.js')
-      ]);
-    }
     const audio = new Audio(url);
     audio.play();
     setAudioPlayback({ messageId: msgId, playing: true });
@@ -8545,7 +8450,10 @@ inviteTab === "create" ? html`<>
     if (window.ghostlink?.isElectron) {
       if (newVal) {
         try {
-          await window.ghostlink.ghostMesh.startServer();
+          // The IPC handler reports a failed listen as a resolved
+          // { success: false }, not a rejection.
+          const res = await window.ghostlink.ghostMesh.startServer();
+          if (res && res.success === false) throw new Error(res.error || 'unknown error');
           addToast('Ghost Mesh server started', 'success');
         } catch (err) {
           addToast('Failed to start Ghost Mesh server: ' + err.message, 'error');
@@ -9155,12 +9063,7 @@ inviteTab === "create" ? html`<>
           // The QR now always carries a Ghost Address in its `c` field. A bare
           // address scanned from a screenshot or written on paper is accepted
           // too, so the scanner does not care how the code reached the camera.
-          let code = null;
-          try {
-            code = QRInvite.parseInvite(data).c;
-          } catch (parseErr) {
-            code = normalizeGhostAddress(data);
-          }
+          const code = ghostAddressFromScan(data);
           if (!code) {setQrScanResult('Not a Ghost Address');return;}
 
           setQrScanResult({ code });
@@ -9755,7 +9658,8 @@ inviteTab === "create" ? html`<>
 
     if (window.ghostlink?.isElectron) {
       try {
-        await window.ghostlink.ghostMesh.startServer();
+        const res = await window.ghostlink.ghostMesh.startServer();
+        if (res && res.success === false) throw new Error(res.error || 'unknown error');
         addToast('Ghost Mesh activated and server started', 'success');
       } catch (err) {
         addToast('Saved, but failed to start TCP server: ' + err.message, 'error');

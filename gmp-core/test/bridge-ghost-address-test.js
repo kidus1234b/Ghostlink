@@ -13,6 +13,7 @@
  * for two users' machines. They find each other by address, not by IP.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { WebSocket } from 'ws';
 import { startBridge } from '../dist/gmp-bridge.js';
 import { GMPNodeManager } from '../dist/gmp-node-manager.js';

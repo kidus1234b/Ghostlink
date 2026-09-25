@@ -109,17 +109,4 @@ export function verifySignature(pubKey: Uint8Array, message: Uint8Array, signatu
   return ed25519.verify(signature, message, pubKey);
 }
 
-export function deriveEphemeralKeyPairFromPriv(ephemeralPriv: Uint8Array): EphemeralKeypair {
-  const ephemeralPub = x25519.getPublicKey(new Uint8Array(ephemeralPriv));
-  return { ephemeralPriv: new Uint8Array(ephemeralPriv), ephemeralPub: new Uint8Array(ephemeralPub) };
-}
-
-export function bytesToHexString(bytes: Uint8Array): string {
-  return bytesToHex(bytes);
-}
-
-export function hexStringToBytes(hex: string): Uint8Array {
-  return hexToBytes(hex);
-}
-
 export { sha512 };

@@ -1,13 +1,10 @@
 import { EventEmitter } from 'events';
 import config from './config.js';
 import logger from './logger.js';
-import metrics from './metrics.js';
 import type {
   HealthReport,
   NodeHealthStatus,
   GMPNodeLike,
-  GMPLinkLike,
-  BootstrapLike,
 } from './types.js';
 
 export class NetworkHealthMonitor extends EventEmitter {

@@ -13,7 +13,6 @@ let trayInstance = null;
 let flashInterval = null;
 let originalIcon = null;
 let emptyIcon = null;
-let currentBadgeCount = 0;
 
 /* ═══════════════════════════════════════════════════════════════
    ICON GENERATION
@@ -64,12 +63,15 @@ function generateTrayIcon(empty) {
 /**
  * Create the system tray icon and context menu.
  *
- * @param {BrowserWindow} mainWindow - reference to the main window
- * @param {Store}          store     - electron-store config instance
- * @param {Function}       onQuit    - callback to quit the app
+ * @param {Function} getMainWindow - returns the current main window or null.
+ *   A getter, not the window itself: on macOS the window can be closed and
+ *   re-created while the tray lives on, and a captured reference then points
+ *   at a destroyed BrowserWindow whose show() throws.
+ * @param {Store}    store         - electron-store config instance
+ * @param {Function} onQuit        - callback to quit the app
  * @returns {Tray}
  */
-function createTray(mainWindow, store, onQuit) {
+function createTray(getMainWindow, store, onQuit) {
   originalIcon = loadTrayIcon();
   emptyIcon = generateTrayIcon(true);
 
@@ -85,6 +87,7 @@ function createTray(mainWindow, store, onQuit) {
       {
         label: 'Open GhostLink',
         click: () => {
+          const mainWindow = getMainWindow();
           if (mainWindow) {
             mainWindow.show();
             mainWindow.focus();
@@ -97,6 +100,7 @@ function createTray(mainWindow, store, onQuit) {
         click: () => {
           store.set('mutedNotifications', !isMuted);
           trayInstance.setContextMenu(buildContextMenu());
+          const mainWindow = getMainWindow();
           if (mainWindow) {
             mainWindow.webContents.send('tray-action', {
               action: 'mute-toggle',
@@ -116,6 +120,7 @@ function createTray(mainWindow, store, onQuit) {
       {
         label: 'Settings',
         click: () => {
+          const mainWindow = getMainWindow();
           if (mainWindow) {
             mainWindow.show();
             mainWindow.focus();
@@ -137,6 +142,7 @@ function createTray(mainWindow, store, onQuit) {
 
   /* ─── Single click: toggle window visibility ────────────────── */
   trayInstance.on('click', () => {
+    const mainWindow = getMainWindow();
     if (!mainWindow) return;
     if (mainWindow.isVisible()) {
       mainWindow.hide();
@@ -148,6 +154,7 @@ function createTray(mainWindow, store, onQuit) {
 
   /* ─── Double-click: always show + focus ─────────────────────── */
   trayInstance.on('double-click', () => {
+    const mainWindow = getMainWindow();
     if (mainWindow) {
       mainWindow.show();
       mainWindow.focus();
@@ -162,11 +169,10 @@ function createTray(mainWindow, store, onQuit) {
    ═══════════════════════════════════════════════════════════════ */
 
 /**
- * Update the tray tooltip and icon overlay to reflect unread count.
+ * Update the tray tooltip to reflect unread count.
  */
 function updateBadge(tray, count) {
   if (!tray || tray.isDestroyed()) return;
-  currentBadgeCount = count;
 
   if (count > 0) {
     tray.setToolTip(`GhostLink — ${count} unread message${count > 1 ? 's' : ''}`);
@@ -174,28 +180,6 @@ function updateBadge(tray, count) {
     tray.setToolTip('GhostLink — Encrypted Messaging');
     stopFlash(tray);
   }
-
-  // On supported platforms, try to draw badge count on icon
-  try {
-    if (count > 0) {
-      tray.setImage(createBadgedIcon(count));
-    } else {
-      tray.setImage(originalIcon);
-    }
-  } catch {
-    // Fallback: just update tooltip
-  }
-}
-
-/**
- * Create icon with a small red badge number overlay.
- * Due to nativeImage limitations, we do a simplified approach.
- */
-function createBadgedIcon(count) {
-  // For simplicity in pure Node (no canvas), return the standard icon
-  // with tooltip showing the count. On production builds with native
-  // deps, a canvas-based overlay would render the number.
-  return originalIcon;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -252,6 +236,5 @@ module.exports = {
   createTray,
   updateBadge,
   flashTray,
-  stopFlash,
   destroyTray,
 };

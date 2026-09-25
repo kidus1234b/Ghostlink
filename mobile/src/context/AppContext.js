@@ -8,6 +8,7 @@
 
 import WebRTCService from '../services/WebRTCService';
 import {DEFAULT_SETTINGS, parseStoredState} from '../utils/settings-migration';
+import {BUNDLE_STORAGE_KEY, FRAGMENTS_STORAGE_KEY} from '../utils/recovery';
 import React, {
   createContext,
   useContext,
@@ -27,11 +28,42 @@ const STORAGE_KEYS = {
   GHOST_MESH: '@ghostlink/ghost_mesh',
 };
 
-// ─── Default Settings ────────────────────────────────────────
+/**
+ * Everything else this identity writes to AsyncStorage outside the reducer.
+ *
+ * The recovery bundle carries the wrapped private key with the name, public
+ * key and Ghost Address beside it in plaintext; the fragments are all seven
+ * Shamir shares of that bundle. Neither was removed by a wipe or a restore, so
+ * "Wipe All Data" left the identity on the device, and a restore kept the
+ * previous identity's backup.
+ */
+const IDENTITY_SCOPED_EXTRA_KEYS = [
+  BUNDLE_STORAGE_KEY,
+  FRAGMENTS_STORAGE_KEY,
+  'gl_invite_code', // SetupScreen
+];
+
+/** Shares other people asked this device to hold (MobileDistributor). */
+const HELD_FRAGMENTS_KEY = '@ghostlink/recovery-fragments';
+
+/** What "Wipe All Data" removes from AsyncStorage. */
+const WIPE_KEYS = [
+  ...Object.values(STORAGE_KEYS),
+  ...IDENTITY_SCOPED_EXTRA_KEYS,
+  HELD_FRAGMENTS_KEY,
+];
+
+/** What installing a different identity removes; settings stay. */
+const IDENTITY_SCOPED_KEYS = [
+  STORAGE_KEYS.MESSAGES,
+  STORAGE_KEYS.PEERS,
+  STORAGE_KEYS.GHOST_MESH,
+  ...IDENTITY_SCOPED_EXTRA_KEYS,
+];
 
 // ─── Initial State ───────────────────────────────────────────
 const INITIAL_STATE = {
-  identity: null, // { name, publicKeyHex, fingerprint, keyPair }
+  identity: null, // { name, publicKeyHex, fingerprint, ghostAddress, ... } — never a private key
   peers: new Map(), // peerId -> { id, name, publicKeyHex, fingerprint, online, lastSeen }
   messages: new Map(), // roomId -> [{ id, sender, text, timestamp, type, status }]
   settings: {...DEFAULT_SETTINGS},
@@ -81,12 +113,28 @@ function objectToMap(obj) {
   return map;
 }
 
+/**
+ * The identity as app state may hold it: no private key.
+ *
+ * The key lives in the keystore. RecoveryScreen's restore paths hand
+ * setIdentity the object unlockBundle returns, which carries privateKeyRaw,
+ * and the identity is persisted to AsyncStorage — unencrypted — so a restore
+ * wrote the raw private key to disk beside the public one. Stripping here also
+ * scrubs a copy an earlier build already saved: hydration re-persists the
+ * identity through the same path.
+ */
+function withoutSecrets(identity) {
+  if (!identity || typeof identity !== 'object') return identity;
+  const {keyPair, privateKeyRaw, privateKey, seedPhrase, ...rest} = identity;
+  return rest;
+}
+
 // ─── Reducer ─────────────────────────────────────────────────
 
 function appReducer(state, action) {
   switch (action.type) {
     case Actions.SET_IDENTITY:
-      return {...state, identity: action.payload};
+      return {...state, identity: withoutSecrets(action.payload)};
 
     case Actions.ADD_PEER: {
       const nextPeers = new Map(state.peers);
@@ -106,9 +154,15 @@ function appReducer(state, action) {
     }
 
     case Actions.REMOVE_PEER: {
+      // The conversation goes with the peer. Deleting a chat used to drop only
+      // the peer entry, leaving its whole history persisted and unreachable.
+      const removed = state.peers.get(action.payload);
       const nextPeers = new Map(state.peers);
       nextPeers.delete(action.payload);
-      return {...state, peers: nextPeers};
+      const nextMessages = new Map(state.messages);
+      nextMessages.delete(action.payload);
+      if (removed?.roomId) nextMessages.delete(removed.roomId);
+      return {...state, peers: nextPeers, messages: nextMessages};
     }
 
     case Actions.ADD_MESSAGE: {
@@ -168,8 +222,11 @@ function appReducer(state, action) {
         },
       };
 
-    case Actions.RESTORE_STATE:
-      return {...state, ...action.payload};
+    case Actions.RESTORE_STATE: {
+      const next = {...state, ...action.payload};
+      if ('identity' in action.payload) next.identity = withoutSecrets(action.payload.identity);
+      return next;
+    }
 
     // Everything the previous identity owned, without touching the
     // preferences that belong to the person holding the phone.
@@ -178,7 +235,7 @@ function appReducer(state, action) {
         ...state,
         peers: new Map(),
         messages: new Map(),
-        ghostMesh: {enabled: false, address: '', publicKeyHex: ''},
+        ghostMesh: {enabled: false, address: '', publicKeyHex: '', status: 'not_configured'},
       };
 
     case Actions.WIPE_ALL:
@@ -286,11 +343,9 @@ function AppProvider({children}) {
       return;
     }
     if (state.identity) {
-      // Strip non-serialisable keyPair before writing
-      const {keyPair, ...serialisable} = state.identity;
       AsyncStorage.setItem(
         STORAGE_KEYS.IDENTITY,
-        JSON.stringify(serialisable),
+        JSON.stringify(withoutSecrets(state.identity)),
       ).catch(() => {});
     } else {
       AsyncStorage.removeItem(STORAGE_KEYS.IDENTITY).catch(() => {});
@@ -398,14 +453,8 @@ function AppProvider({children}) {
     const failed = [];
 
     try {
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.IDENTITY,
-        STORAGE_KEYS.MESSAGES,
-        STORAGE_KEYS.SETTINGS,
-        STORAGE_KEYS.PEERS,
-        STORAGE_KEYS.GHOST_MESH,
-      ]);
-      cleared.push('messages', 'settings', 'peer cache', 'mesh state');
+      await AsyncStorage.multiRemove(WIPE_KEYS);
+      cleared.push('messages', 'settings', 'peer cache', 'mesh state', 'recovery backup');
     } catch (err) {
       console.warn('[AppContext] wipe: local store failed:', err);
       failed.push('local store');
@@ -445,11 +494,7 @@ function AppProvider({children}) {
    */
   const clearIdentityScopedData = useCallback(async () => {
     try {
-      await AsyncStorage.multiRemove([
-        STORAGE_KEYS.MESSAGES,
-        STORAGE_KEYS.PEERS,
-        STORAGE_KEYS.GHOST_MESH,
-      ]);
+      await AsyncStorage.multiRemove(IDENTITY_SCOPED_KEYS);
     } catch (err) {
       // Non-fatal: the restore still has to complete, and leaving stale rows
       // is better than refusing to restore the identity at all. Say so.
@@ -509,5 +554,5 @@ function useApp() {
   return ctx;
 }
 
-export {AppProvider, useApp, DEFAULT_SETTINGS, STORAGE_KEYS};
+export {AppProvider, useApp, DEFAULT_SETTINGS, STORAGE_KEYS, WIPE_KEYS, IDENTITY_SCOPED_KEYS};
 export default AppContext;

@@ -2,6 +2,7 @@
  * GMP Multi-hop Routing Test Suite — Phase 3
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode } from '../dist/link.js';
 import crypto from 'crypto';
 

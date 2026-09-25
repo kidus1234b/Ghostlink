@@ -8,6 +8,7 @@
  * store bug, milder consequence: a forgotten peer costs a colder bootstrap.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { PeerCache } from '../dist/peer-cache.js';
 import fs from 'fs';
 import path from 'path';

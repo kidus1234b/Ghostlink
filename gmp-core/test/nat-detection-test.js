@@ -1,3 +1,4 @@
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { classifyNAT, detectNATType } from '../dist/nat-detector.js';
 import { EventEmitter } from 'events';
 

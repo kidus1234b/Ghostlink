@@ -2,6 +2,7 @@
  * GMP Peer Exchange Test Suite — Phase 4
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode } from '../dist/link.js';
 import fs from 'fs';
 import path from 'path';
@@ -189,6 +190,17 @@ async function testCandidatePoolPopulation() {
 
   assertEqual(nodeA.peerExchange.candidatePool.size, 2, "Unconnected peers from response added to candidate pool");
   assert(nodeA.peerExchange.candidatePool.has('22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222'), "Pool contains node_two");
+
+  // A peer controls the size of its response. Oversized responses must not
+  // grow the pool without bound (it used to keep every entry forever).
+  for (let r = 0; r < 60; r++) {
+    const peers = [];
+    for (let i = 0; i < 1000; i++) {
+      peers.push({ nodeId: `${r}-${i}`.padStart(128, 'f'), address: '10.0.0.1', port: 49500, lastSeen: Date.now() });
+    }
+    nodeA.peerExchange.handlePeerResponse(mockLink, { peers });
+  }
+  assert(nodeA.peerExchange.candidatePool.size <= 500, `Candidate pool stays bounded under oversized responses (size ${nodeA.peerExchange.candidatePool.size})`);
 
   nodeA.close();
 }

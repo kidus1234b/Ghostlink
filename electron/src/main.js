@@ -22,23 +22,39 @@ const {
 const path = require('path');
 const fs = require('fs');
 const Store = require('electron-store');
-const os = require('os');
 const net = require('net');
 const { createTray, updateBadge, flashTray, destroyTray } = require('./tray');
-const { initUpdater } = require('./updater');
-// We no longer start the old signaling server.
+const { initUpdater, updateReady, quitAndInstall } = require('./updater');
 let gmpManager = null;
 let gmpBridge = null;
+let gmpStarting = null;
 
-async function startGMPNode(seedPhrase) {
-  if (gmpManager) return;
-  const { GMPNodeManager } = await import('../../gmp-core/dist/gmp-node-manager.js');
-  const { startBridge } = await import('../../gmp-core/dist/gmp-bridge.js');
+/**
+ * Start the node and its loopback bridge once. startBridge is async and
+ * resolves to { wss } only after the listener is bound; it used to be stored
+ * unawaited, so gmpBridge was a Promise, `gmpBridge.wss` was always undefined
+ * and stopGMPNode never closed the bridge, and a bind failure surfaced as an
+ * unhandled rejection. gmpManager was also set before start() succeeded, so a
+ * failed start left a dead manager that made every later gmp-start a silent
+ * no-op. Concurrent callers now share one attempt, and a failure is cleaned
+ * up so the next call can retry.
+ */
+function startGMPNode(seedPhrase) {
+  if (!gmpStarting) {
+    gmpStarting = (async () => {
+      const { GMPNodeManager } = await import('../../gmp-core/dist/gmp-node-manager.js');
+      const { startBridge } = await import('../../gmp-core/dist/gmp-bridge.js');
 
-  gmpManager = new GMPNodeManager({ seedPhrase, port: 49500 });
-  gmpBridge = startBridge(gmpManager, 3002);
-  await gmpManager.start();
-  console.log('[Electron GMP] Node Manager started on port 49500, Bridge on 3002');
+      gmpManager = new GMPNodeManager({ seedPhrase });
+      gmpBridge = await startBridge(gmpManager, 3002);
+      const { port } = await gmpManager.start();
+      console.log(`[Electron GMP] Node Manager started on port ${port}, Bridge on 3002`);
+    })().catch((err) => {
+      stopGMPNode();
+      throw err;
+    });
+  }
+  return gmpStarting;
 }
 
 function stopGMPNode() {
@@ -46,10 +62,12 @@ function stopGMPNode() {
     try { gmpBridge.wss.close(); } catch(e){}
   }
   if (gmpManager) {
-    try { gmpManager.stop(); } catch(e){}
+    // stop() is async: a try/catch alone never sees its rejection.
+    gmpManager.stop().catch(() => {});
   }
   gmpManager = null;
   gmpBridge = null;
+  gmpStarting = null;
 }
 
 /* ─── Constants ─────────────────────────────────────────────── */
@@ -141,10 +159,6 @@ function getStoredSeed() {
   return legacy;
 }
 
-/* ─── Secure store (session-only, in-memory) ─────────────────  */
-
-const secureVault = new Map();
-
 /* ─── Ghost Mesh TCP bridge state ───────────────────────────── */
 // These were referenced by every ghostmesh-* IPC handler but never declared,
 // so the first `if (ghostMeshServer)` threw a ReferenceError and the whole
@@ -156,7 +170,6 @@ const activeMeshSockets = new Map(); // connId -> net.Socket
 /* ─── Window tracking ───────────────────────────────────────── */
 
 let mainWindow = null;
-let chatWindows = new Map(); // id -> BrowserWindow
 let tray = null;
 let isQuitting = false;
 
@@ -316,66 +329,18 @@ function createMainWindow() {
   return mainWindow;
 }
 
-/**
- * Pop-out chat window for a specific conversation
- */
-function createChatWindow(chatId, title) {
-  if (chatWindows.has(chatId)) {
-    chatWindows.get(chatId).focus();
-    return;
-  }
-
-  const chatWin = new BrowserWindow({
-    width: 480,
-    height: 680,
-    minWidth: 360,
-    minHeight: 480,
-    frame: false,
-    backgroundColor: '#0a0a0f',
-    icon: getAppIcon(),
-    webPreferences: {
-      preload: PRELOAD_PATH,
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-    },
-  });
-
-  chatWin.loadFile(INDEX_PATH, { hash: `/chat/${chatId}` });
-
-  chatWin.webContents.on('did-finish-load', () => {
-    injectTitleBar(chatWin, title || 'GhostLink Chat');
-    injectElectronStyles(chatWin);
-  });
-
-  chatWin.once('ready-to-show', () => chatWin.show());
-
-  chatWin.on('closed', () => {
-    chatWindows.delete(chatId);
-  });
-
-  chatWindows.set(chatId, chatWin);
-}
-
 /* ═══════════════════════════════════════════════════════════════
    TITLE BAR INJECTION
    ═══════════════════════════════════════════════════════════════ */
 
-function injectTitleBar(win, title) {
+function injectTitleBar(win) {
   const titleBarJS = fs.readFileSync(
     path.join(__dirname, 'titlebar.js'),
     'utf-8'
   );
-  // The title reaches here from the renderer (pop-out-chat) and is derived
-  // from a conversation name, which a peer controls. Substituting it into the
-  // placeholder raw spliced that string into JavaScript source — a name
-  // containing a quote and a semicolon ran as code in the page, where the
-  // preload bridge lives. JSON.stringify emits a string literal instead, so
-  // the value can only ever be data.
-  const literal = JSON.stringify(String(title || 'GhostLink'));
-  win.webContents.executeJavaScript(
-    titleBarJS.replace("'__WINDOW_TITLE__'", literal)
-  );
+  win.webContents
+    .executeJavaScript(titleBarJS.replace("'__WINDOW_TITLE__'", JSON.stringify('GhostLink')))
+    .catch((err) => console.error('[GhostLink] Title bar injection failed:', err.message));
 }
 
 function injectElectronStyles(win) {
@@ -400,8 +365,12 @@ function injectElectronStyles(win) {
  * the window-open hook used a `startsWith('http')` test that also matched
  * `httpsomething:` — so a link in a message could reach the handler for
  * smb:, ms-msdt:, vscode:, or any other locally registered protocol. Parse the
- * URL and allow only http/https.
+ * URL and allow only http/https, plus mailto: — the license request flow and
+ * the "Contact for pricing" link navigate to mailto:, and blocking it left
+ * both dead in the desktop app. A mail client only opens a compose window.
  */
+const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+
 function openExternalIfSafe(url) {
   let parsed;
   try {
@@ -409,12 +378,54 @@ function openExternalIfSafe(url) {
   } catch (_e) {
     return false;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (!EXTERNAL_PROTOCOLS.has(parsed.protocol)) {
     console.warn('[GhostLink] Blocked external open for scheme:', parsed.protocol);
     return false;
   }
   shell.openExternal(parsed.toString());
   return true;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GHOST MESH SOCKETS
+   ═══════════════════════════════════════════════════════════════ */
+
+// One newline-delimited frame. The reader used to append every chunk to a
+// string until it saw '\n', with no limit, so anyone who could reach the
+// mesh port (it listens on [::], every interface) could stream bytes without
+// a newline and grow the main process's heap until it died.
+const MAX_MESH_LINE_CHARS = 1024 * 1024;
+
+function wireMeshSocket(socket, connId, label) {
+  // setEncoding keeps a multi-byte character that straddles two TCP chunks
+  // intact; decoding each chunk on its own turned it into U+FFFD.
+  socket.setEncoding('utf8');
+  let buffer = '';
+  socket.on('data', (data) => {
+    buffer += data;
+    let boundary = buffer.indexOf('\n');
+    while (boundary !== -1) {
+      const line = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 1);
+      if (line) {
+        mainWindow?.webContents.send('ghostmesh-data', { connId, data: line });
+      }
+      boundary = buffer.indexOf('\n');
+    }
+    if (buffer.length > MAX_MESH_LINE_CHARS) {
+      console.warn(`[GhostMesh ${label}] Dropping ${connId}: frame exceeds ${MAX_MESH_LINE_CHARS} chars`);
+      socket.destroy();
+    }
+  });
+
+  socket.on('close', () => {
+    activeMeshSockets.delete(connId);
+    mainWindow?.webContents.send('ghostmesh-peer-disconnected', { connId });
+  });
+
+  socket.on('error', (err) => {
+    console.warn(`[GhostMesh ${label} Socket Error]`, err.message);
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -505,40 +516,7 @@ function setupIPC() {
     }
   });
 
-  /* ── Secure storage (in-memory encrypted vault) ─────────────── */
-  ipcMain.handle('secure-get', (_e, key) => {
-    return secureVault.get(key) ?? null;
-  });
-  ipcMain.handle('secure-set', (_e, key, value) => {
-    secureVault.set(key, value);
-    return true;
-  });
-  ipcMain.handle('secure-delete', (_e, key) => {
-    return secureVault.delete(key);
-  });
-
-  /* ── Pop-out chat windows ───────────────────────────────────── */
-  ipcMain.on('pop-out-chat', (_e, chatId, title) => {
-    createChatWindow(chatId, title);
-  });
-
-  /* ── Settings ───────────────────────────────────────────────── */
-  ipcMain.handle('get-setting', (_e, key) => store.get(key));
-  ipcMain.handle('set-setting', (_e, key, value) => {
-    store.set(key, value);
-    if (key === 'autoLaunch') setAutoLaunch(value);
-    return true;
-  });
-
   /* ── GMP Node/Bridge IPC Handlers ───────────────────────────── */
-  ipcMain.handle('gmp-get-seed', () => getStoredSeed());
-  ipcMain.handle('gmp-set-seed', (_e, seed) => {
-    try {
-      return setStoredSeed(seed);
-    } catch (err) {
-      return { error: err.message };
-    }
-  });
   ipcMain.handle('gmp-start', async (_e, seed) => {
     try {
       setStoredSeed(seed);
@@ -548,32 +526,15 @@ function setupIPC() {
     await startGMPNode(seed);
     return true;
   });
-  ipcMain.handle('gmp-status', () => {
-    if (!gmpManager) return { started: false };
-    return { started: true, nodeId: gmpManager.node?.identity?.nodeIdHex };
-  });
-
-  ipcMain.handle('get-network-info', () => {
-    const interfaces = os.networkInterfaces();
-    const addresses = [];
-    for (const [name, nets] of Object.entries(interfaces)) {
-      for (const net of nets) {
-        if (net.family === 'IPv4' && !net.internal) {
-          addresses.push({ name, address: net.address });
-        }
-      }
-    }
-    // `signalingPort` used to be referenced here but was never declared, so
-    // this handler threw. The signaling server is gone; the mesh port is the
-    // port callers actually want.
-    return { addresses, meshPort: GHOSTMESH_PORT };
-  });
 
   /* ── Auto-update trigger ────────────────────────────────────── */
   ipcMain.on('install-update', () => {
-    isQuitting = true;
-    const { quitAndInstall } = require('./updater');
-    quitAndInstall();
+    // Only flag the quit when an update is actually installed; otherwise a
+    // stray call left isQuitting set and the window stopped hiding to tray.
+    if (updateReady()) {
+      isQuitting = true;
+      quitAndInstall();
+    }
   });
 
   /* ── Ghost Mesh (Yggdrasil TCP Socket Bridge) ───────────────── */
@@ -594,28 +555,7 @@ function setupIPC() {
             type: 'incoming'
           });
           
-          let buffer = '';
-          socket.on('data', (data) => {
-            buffer += data.toString('utf8');
-            let boundary = buffer.indexOf('\n');
-            while (boundary !== -1) {
-              const line = buffer.slice(0, boundary).trim();
-              buffer = buffer.slice(boundary + 1);
-              if (line) {
-                mainWindow?.webContents.send('ghostmesh-data', { connId, data: line });
-              }
-              boundary = buffer.indexOf('\n');
-            }
-          });
-          
-          socket.on('close', () => {
-            activeMeshSockets.delete(connId);
-            mainWindow?.webContents.send('ghostmesh-peer-disconnected', { connId });
-          });
-          
-          socket.on('error', (err) => {
-            console.warn('[GhostMesh Server Socket Error]', err.message);
-          });
+          wireMeshSocket(socket, connId, 'Server');
         });
         
         ghostMeshServer.on('error', (err) => {
@@ -638,8 +578,13 @@ function setupIPC() {
       return { success: true };
     }
     return new Promise((resolve) => {
+      // destroy, not end: server.close() only calls back once every
+      // connection is fully closed, and end() is a half-close that a peer
+      // which never sends its own FIN keeps open forever — the promise then
+      // never settled and ghostMeshServer stayed set, so the server could not
+      // be restarted.
       for (const [connId, socket] of activeMeshSockets.entries()) {
-        try { socket.end(); } catch (e) {}
+        try { socket.destroy(); } catch (e) {}
         activeMeshSockets.delete(connId);
       }
       ghostMeshServer.close(() => {
@@ -658,29 +603,7 @@ function setupIPC() {
           const connId = `mesh-${Math.random().toString(36).slice(2, 10)}`;
           activeMeshSockets.set(connId, socket);
           
-          let buffer = '';
-          socket.on('data', (data) => {
-            buffer += data.toString('utf8');
-            let boundary = buffer.indexOf('\n');
-            while (boundary !== -1) {
-              const line = buffer.slice(0, boundary).trim();
-              buffer = buffer.slice(boundary + 1);
-              if (line) {
-                mainWindow?.webContents.send('ghostmesh-data', { connId, data: line });
-              }
-              boundary = buffer.indexOf('\n');
-            }
-          });
-          
-          socket.on('close', () => {
-            activeMeshSockets.delete(connId);
-            mainWindow?.webContents.send('ghostmesh-peer-disconnected', { connId });
-          });
-          
-          socket.on('error', (err) => {
-            console.warn('[GhostMesh Dial Socket Error]', err.message);
-          });
-          
+          wireMeshSocket(socket, connId, 'Dial');
           resolve({ success: true, connId });
         });
         
@@ -720,19 +643,6 @@ function setupIPC() {
       }
     }
     return false;
-  });
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   FILE DRAG-AND-DROP
-   ═══════════════════════════════════════════════════════════════ */
-
-function setupDragDrop() {
-  ipcMain.on('ondragstart', (event, filePath) => {
-    event.sender.startDrag({
-      file: filePath,
-      icon: getAppIcon(),
-    });
   });
 }
 
@@ -825,13 +735,12 @@ app.whenReady().then(async () => {
   );
 
   setupIPC();
-  setupDragDrop();
   registerShortcuts();
 
   mainWindow = createMainWindow();
 
   // System tray
-  tray = createTray(mainWindow, store, () => {
+  tray = createTray(() => mainWindow, store, () => {
     isQuitting = true;
     app.quit();
   });
@@ -864,7 +773,6 @@ app.on('will-quit', () => {
   stopGMPNode();
   globalShortcut.unregisterAll();
   destroyTray(tray);
-  secureVault.clear();
 });
 
 app.on('window-all-closed', () => {

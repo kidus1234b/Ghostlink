@@ -7,7 +7,6 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import WebRTCService from './WebRTCService';
 import RecoveryTransport from './RecoveryTransport';
 import {CryptoEngine} from '../utils/crypto';
 

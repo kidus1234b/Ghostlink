@@ -19,27 +19,17 @@ const SEND_CHANNELS = [
   'badge-count',
   'clipboard-write',
   'install-update',
-  'pop-out-chat',
-  'ondragstart',
 ];
 
 const INVOKE_CHANNELS = [
   'save-file',
   'open-file',
-  'secure-get',
-  'secure-set',
-  'secure-delete',
-  'get-setting',
-  'set-setting',
   'ghostmesh-start-server',
   'ghostmesh-stop-server',
   'ghostmesh-dial',
   'ghostmesh-send',
   'ghostmesh-close',
-  'gmp-get-seed',
-  'gmp-set-seed',
   'gmp-start',
-  'gmp-status',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -85,9 +75,6 @@ contextBridge.exposeInMainWorld('ghostlink', {
   /* ── Platform info ──────────────────────────────────────────── */
   platform: process.platform,
   isElectron: true,
-  
-  /* ── Signaling server URL (file:// has no hostname) ────────── */
-  signalingUrl: 'ws://localhost:3001',
 
   /* ── Window controls ────────────────────────────────────────── */
   minimize: () => secureSend('minimize'),
@@ -107,9 +94,6 @@ contextBridge.exposeInMainWorld('ghostlink', {
   saveFile: (data, filename) => secureInvoke('save-file', data, filename),
   openFile: () => secureInvoke('open-file'),
 
-  /* ── Pop-out chat ───────────────────────────────────────────── */
-  popOutChat: (chatId, title) => secureSend('pop-out-chat', chatId, title),
-
   /* ── Deep links ─────────────────────────────────────────────── */
   onDeepLink: (callback) => secureOn('deep-link', callback),
 
@@ -118,19 +102,6 @@ contextBridge.exposeInMainWorld('ghostlink', {
   onUpdateDownloaded: (callback) => secureOn('update-downloaded', callback),
   onUpdateError: (callback) => secureOn('update-error', callback),
   installUpdate: () => secureSend('install-update'),
-
-  /* ── Secure storage (encrypted with OS keychain-level) ──────── */
-  secureStore: {
-    get: (key) => secureInvoke('secure-get', key),
-    set: (key, value) => secureInvoke('secure-set', key, value),
-    delete: (key) => secureInvoke('secure-delete', key),
-  },
-
-  /* ── Settings ───────────────────────────────────────────────── */
-  settings: {
-    get: (key) => secureInvoke('get-setting', key),
-    set: (key, value) => secureInvoke('set-setting', key, value),
-  },
 
   /* ── Ghost Mesh ─────────────────────────────────────────────── */
   ghostMesh: {
@@ -145,43 +116,25 @@ contextBridge.exposeInMainWorld('ghostlink', {
   },
 
   gmp: {
-    getSeed: () => secureInvoke('gmp-get-seed'),
-    setSeed: (seed) => secureInvoke('gmp-set-seed', seed),
     start: (seed) => secureInvoke('gmp-start', seed),
-    getStatus: () => secureInvoke('gmp-status'),
   },
-
-  /* ── Drag-and-drop support ──────────────────────────────────── */
-  startDrag: (filePath) => secureSend('ondragstart', filePath),
 
   /* ── Tray actions listener ──────────────────────────────────── */
   onTrayAction: (callback) => secureOn('tray-action', callback),
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   DRAG-AND-DROP ENHANCEMENT
+   DRAG-AND-DROP GUARD
    ═══════════════════════════════════════════════════════════════
-   Intercept native file drops and forward file data to the
-   web app through a custom DOM event. */
+   A file dropped outside the chat drop zone would otherwise make
+   Chromium navigate the window to that file. The chat pane's own
+   onDrop handler (React, on #root) runs before these bubble-phase
+   listeners on document. */
 
 window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     e.stopPropagation();
-    const files = [];
-    for (const file of e.dataTransfer.files) {
-      files.push({
-        name: file.name,
-        path: file.path,
-        size: file.size,
-        type: file.type,
-      });
-    }
-    if (files.length > 0) {
-      window.dispatchEvent(
-        new CustomEvent('ghostlink-file-drop', { detail: { files } })
-      );
-    }
   });
 
   document.addEventListener('dragover', (e) => {

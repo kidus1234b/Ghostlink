@@ -48,6 +48,17 @@ ok(chat.includes('accessibilityLabel={CALLS_AVAILABLE ?'),
 ok(CALLS_UNAVAILABLE_REASON === 'Calls unavailable until direct connection is supported',
    'The reason given to screen readers is the agreed wording');
 
+// A URL from any web page must not be a way round the gate.
+const app = read('App.js');
+const linkScreens = app.slice(app.indexOf('const DEEP_LINK_CONFIG'), app.indexOf('};', app.indexOf('const DEEP_LINK_CONFIG')));
+ok(!/\bCall\s*:/.test(linkScreens), 'No ghostlink:// URL maps to the Call screen');
+
+const call = read('src/screens/CallScreen.js');
+ok(/if \(!CALLS_AVAILABLE\) \{\s*setCallState\(CALL_STATES\.FAILED\);/.test(call),
+   'The Call screen itself refuses to start while calls are unavailable');
+ok(!call.includes('Fallback: transition through states'),
+   'A call with no peer fails instead of pretending to connect');
+
 // ── Ghost Mesh setup ───────────────────────────────────────────────────────
 ok(MESH_SETUP_AVAILABLE === false,
    'Ghost Mesh setup is marked unavailable in this build');

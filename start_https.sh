@@ -53,11 +53,24 @@ else
 fi
 
 cd "$ROOT" || exit 1
+# Only what the page loads is served. SimpleHTTPRequestHandler serves its whole
+# working directory, which here is the repo root: key.pem (this server's own TLS
+# private key), .git, gmp-core/data and the rest were all one GET away for
+# anyone on the network this listens on.
 python3 -c "
-import ssl, http.server
+import ssl, http.server, posixpath, urllib.parse
+ALLOWED = {'', 'index.html', 'app.bundle.js', 'landing.html', 'vendor', 'src', 'shared', 'assets'}
+class AppOnly(http.server.SimpleHTTPRequestHandler):
+    def send_head(self):
+        path = posixpath.normpath(urllib.parse.unquote(urllib.parse.urlsplit(self.path).path))
+        parts = [p for p in path.split('/') if p]
+        if (parts[0] if parts else '') not in ALLOWED or any(p.startswith('.') for p in parts):
+            self.send_error(404)
+            return None
+        return super().send_head()
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain('cert.pem', 'key.pem')
-httpd = http.server.HTTPServer(('0.0.0.0', $HTTPS_PORT), http.server.SimpleHTTPRequestHandler)
+httpd = http.server.HTTPServer(('0.0.0.0', $HTTPS_PORT), AppOnly)
 httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
 print('Serving HTTPS on https://0.0.0.0:$HTTPS_PORT')
 httpd.serve_forever()

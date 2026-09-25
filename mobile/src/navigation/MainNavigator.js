@@ -7,12 +7,11 @@
  */
 
 import React from 'react';
-import {StyleSheet} from 'react-native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 
 import {useApp} from '../context/AppContext';
 
-// Screen imports — lazy require so navigator can be created before screens exist
+// Screens
 import SetupScreen from '../screens/SetupScreen';
 import RestoreIdentityScreen from '../screens/RestoreIdentityScreen';
 import ChatListScreen from '../screens/ChatListScreen';
@@ -86,11 +85,4 @@ function RootNavigator() {
   return <MainNavigator />;
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
-
-export {AuthNavigator, MainNavigator};
 export default RootNavigator;

@@ -48,7 +48,10 @@ export function writeFileAtomicSync(filePath: string, data: string | Buffer): vo
   const tmpPath = `${filePath}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
 
   try {
-    const fd = fs.openSync(tmpPath, 'w');
+    // 0600: these files hold replay state and peer history for this identity.
+    // Readable-by-others is never needed, and the default (0666 & umask) made
+    // them world-readable on a typical 022 umask. The mode survives the rename.
+    const fd = fs.openSync(tmpPath, 'w', 0o600);
     try {
       fs.writeFileSync(fd, data);
       fs.fsyncSync(fd);

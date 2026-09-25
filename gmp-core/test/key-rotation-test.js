@@ -2,6 +2,7 @@
  * GMP Key Rotation Test Suite — Phase 5
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode } from '../dist/link.js';
 import { deriveIdentityFromSeedPhrase } from '../dist/identity.js';
 import fs from 'fs';
@@ -117,9 +118,24 @@ async function testBasicRotation() {
   const cachedEntry = nodeB.peerCache.cache.find(e => e.nodeId === successorIdentity.nodeIdHex);
   assert(cachedEntry !== undefined, "Connected peer B updated peer cache with new NodeID");
   assertEqual(cachedEntry.signingPubKey, successorIdentity.signingPubKeyHex, "Signing public key matches successor");
+  // The NodeID peers were told to use must be the one A actually presents now
+  // (it used to switch to SHA-512(signingPubKey) while the cert said otherwise).
+  assertEqual(nodeA.identity.nodeIdHex, cert.newNodeId, "Rotated node operates under the NodeID its certificate announced");
 
   nodeA.close();
   nodeB.close();
+
+  // newNodeId is signed: a cert whose newNodeId was rewritten after signing is
+  // refused, so a relay cannot redirect the old identity somewhere else.
+  const nodeC = new GMPNode({ port: 49982, peerCachePath: tempCacheBPath, disableBootstrap: true, seedPhrase: 'rotation C seed' });
+  await nodeC.loadIdentity('rotation C seed');
+  const oldA = await deriveIdentityFromSeedPhrase('rotation A seed');
+  nodeC.peerCache.recordSuccess(oldA.nodeIdHex, '127.0.0.1', 49980, oldA.signingPubKeyHex);
+  const redirected = { ...cert, newNodeId: 'f'.repeat(128) };
+  nodeC.keyRotationManager.handleReceivedRotation({ cert: redirected, sequenceNumber: 99, ttl: 16 }, null);
+  assert(nodeC.peerCache.cache.find(e => e.nodeId === 'f'.repeat(128)) === undefined,
+    "A certificate with newNodeId altered after signing is rejected");
+  nodeC.close();
 }
 
 async function testRotationFlood() {

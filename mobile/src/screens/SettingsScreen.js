@@ -95,11 +95,17 @@ export default function SettingsScreen({navigation}) {
                   style: 'destructive',
                   onPress: async () => {
                     Vibration.vibrate([0, 100, 50, 100, 50, 200]);
-                    await wipeAll();
-                    navigation.reset({
-                      index: 0,
-                      routes: [{name: 'Setup'}],
-                    });
+                    // No navigation here: clearing the identity is what swaps
+                    // the root navigator to Setup, and 'Setup' is not a route
+                    // in this stack, so a reset to it was never handled.
+                    const result = await wipeAll();
+                    if (!result.ok) {
+                      Alert.alert(
+                        'Wipe incomplete',
+                        `Could not remove: ${result.failed.join(', ')}. ` +
+                          'Clear the app data from Android settings to finish.',
+                      );
+                    }
                   },
                 },
               ],
@@ -108,7 +114,7 @@ export default function SettingsScreen({navigation}) {
         },
       ],
     );
-  }, [wipeAll, navigation]);
+  }, [wipeAll]);
 
   // ── Derived values ──
 

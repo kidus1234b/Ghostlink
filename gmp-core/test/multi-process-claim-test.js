@@ -12,6 +12,7 @@
  * about separate address spaces racing on one file.
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { fork } from 'child_process';
 import { NonceStore } from '../dist/nonce-store.js';
 import fs from 'fs';

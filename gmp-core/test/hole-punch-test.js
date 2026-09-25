@@ -1,3 +1,4 @@
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode } from '../dist/link.js';
 import { holePunchConnect } from '../dist/hole-punch.js';
 import net from 'net';

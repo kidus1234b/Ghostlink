@@ -1,4 +1,4 @@
-import React, {useState, useCallback, useMemo, useRef, useEffect} from 'react';
+import React, {useState, useCallback, useMemo, useRef} from 'react';
 import {
   View,
   StyleSheet,
@@ -9,27 +9,20 @@ import {
   Vibration,
   StatusBar,
   RefreshControl,
-  Dimensions,
   Platform,
 } from 'react-native';
 // Text and TextInput come from the scaled wrappers so the user's chosen
 // size reaches every literal in this file's StyleSheet. See ScaledText.js.
 import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
-  FadeIn,
   FadeInDown,
-  FadeInUp,
-  FadeOut,
   SlideInDown,
   SlideOutDown,
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  withTiming,
-  withRepeat,
   withSequence,
   interpolate,
-  runOnJS,
 } from 'react-native-reanimated';
 import {Gesture, GestureDetector, GestureHandlerRootView} from 'react-native-gesture-handler';
 import {useTheme} from '../context/ThemeContext';
@@ -38,7 +31,6 @@ import {CryptoEngine} from '../utils/crypto';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {normalizeGhostAddress} from '../utils/ghost-address';
 
-const SCREEN_WIDTH = Dimensions.get('window').width;
 const SWIPE_THRESHOLD = 80;
 const CHAT_ITEM_HEIGHT = 76;
 
@@ -286,10 +278,17 @@ export default function ChatListScreen({navigation}) {
     return peers
       .map(peer => {
         const roomId = peer.roomId || peer.id;
-        const msgs = state.messages?.get?.(roomId) ?? [];
+        // ChatScreen files a conversation under the peer's id; `roomId` is a
+        // separate value set when the peer is added and never written to, so
+        // looking only there showed every conversation as "No messages yet".
+        const msgs =
+          state.messages?.get?.(peer.id) ?? state.messages?.get?.(roomId) ?? [];
         const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
         const unread = msgs.filter(
-          m => !m.read && m.sender !== identity?.name,
+          m =>
+            !m.read &&
+            m.status !== 'read' &&
+            (typeof m.outgoing === 'boolean' ? !m.outgoing : m.sender !== identity?.name),
         ).length;
 
         return {

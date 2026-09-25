@@ -32,6 +32,7 @@ import {
   FRAGMENTS_STORAGE_KEY,
 } from '../utils/recovery';
 import {distributor} from '../services/MobileDistributor';
+import {useSecureScreen} from '../utils/useSecureScreen';
 
 // ─── Constants ──────────────────────────────────────────────────
 const TABS = ['Backup', 'Verify', 'Restore'];
@@ -47,8 +48,14 @@ const LAYER_BADGES = [
 // ─── Component ──────────────────────────────────────────────────
 export default function RecoveryScreen({navigation}) {
   const {theme} = useTheme();
-  const {identity, messages, setIdentity, wipeAll} = useApp();
+  const {identity, setIdentity} = useApp();
   const webrtcRef = useRef(null);
+
+  // This screen shows a recovery phrase on its backup tab and takes one on its
+  // restore tab. Setup and RestoreIdentity already set FLAG_SECURE for the
+  // same words; without it here they landed in screenshots and in the
+  // recent-apps thumbnail.
+  useSecureScreen();
 
   useEffect(() => {
     const initWebRTC = async () => {
@@ -132,6 +139,7 @@ export default function RecoveryScreen({navigation}) {
           privateKeyRaw: stored.privateKeyRaw,
           publicKeyHex: stored.publicKeyHex,
           name: identity?.name || '',
+          ghostAddress: identity?.ghostAddress || '',
         },
         seedPhrase,
       );
@@ -217,6 +225,7 @@ export default function RecoveryScreen({navigation}) {
               privateKeyRaw: stored.privateKeyRaw,
               publicKeyHex: stored.publicKeyHex,
               name: identity?.name || '',
+              ghostAddress: identity?.ghostAddress || '',
             },
             seedPhrase,
           );
@@ -406,6 +415,8 @@ export default function RecoveryScreen({navigation}) {
         const blob = await distributor.recover(tag, connectedPeers, {k: 1});
         // Peers hold the same wrapped bundle, so it unlocks the same way.
         const identity = await unlockBundle(blob, words);
+        // The key goes to the keystore; app state never holds it.
+        await CryptoEngine.storeKeyPair(identity.publicKeyHex, identity.privateKeyRaw);
         await saveRecoveryBundle(blob);
 
         setShamirStatus('success');
@@ -457,6 +468,8 @@ export default function RecoveryScreen({navigation}) {
       // The peer returns the wrapped bundle, so it unlocks exactly like the
       // local and fragment paths do.
       const identity = await unlockBundle(blob, words);
+      // The key goes to the keystore; app state never holds it.
+      await CryptoEngine.storeKeyPair(identity.publicKeyHex, identity.privateKeyRaw);
       await saveRecoveryBundle(blob);
 
       setShamirStatus('success');

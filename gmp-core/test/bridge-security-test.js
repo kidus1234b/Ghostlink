@@ -1,3 +1,4 @@
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { WebSocket } from 'ws';
 import { startBridge } from '../dist/gmp-bridge.js';
 
@@ -73,6 +74,27 @@ async function run() {
     });
   });
   await filePromise;
+
+  // Scenario 4: a message that is valid JSON but not an object (`null`) used to
+  // throw on `msg.type` inside the async handler and kill the bridge process.
+  // It must be answered with an error, and the bridge must keep serving.
+  const nullPromise = new Promise((resolve) => {
+    const ws = new WebSocket('ws://127.0.0.1:3009');
+    ws.on('open', () => ws.send('null'));
+    ws.on('message', (data) => {
+      const reply = JSON.parse(data.toString());
+      if (reply.type !== 'error') return;
+      assert(reply.code === 'INVALID_JSON', 'a non-object JSON message is rejected with INVALID_JSON');
+      ws.send(JSON.stringify({ type: 'getStatus' }));
+      ws.once('message', (d2) => {
+        assert(JSON.parse(d2.toString()).type === 'status', 'the bridge keeps serving after a non-object message');
+        ws.close();
+        resolve(true);
+      });
+    });
+    ws.on('error', (err) => { assert(false, `unexpected error: ${err.message}`); resolve(false); });
+  });
+  await nullPromise;
 
   // Close the bridge server
   wss.close();

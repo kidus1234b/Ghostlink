@@ -16,6 +16,7 @@
  * Run: node test/two-node-test.js
  */
 
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import { GMPNode, SessionKeyLRUSet } from '../dist/link.js';
 import { deriveIdentityFromSeedPhrase, signMessage } from '../dist/identity.js';
 import { RateLimiter } from '../dist/rate-limiter.js';

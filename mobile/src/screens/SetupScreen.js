@@ -5,10 +5,8 @@ import {
   TouchableOpacity,
   ScrollView,
   Alert,
-  Switch,
   Vibration,
   StatusBar,
-  Platform,
   ActivityIndicator,
 } from 'react-native';
 // Text and TextInput come from the scaled wrappers so the user's chosen
@@ -17,10 +15,8 @@ import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
   FadeInDown,
   FadeInUp,
-  FadeOutLeft,
   useSharedValue,
   useAnimatedStyle,
-  withSpring,
   withRepeat,
   withSequence,
   withTiming,
@@ -31,7 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import {useSecureScreenWhen} from '../utils/useSecureScreen';
-import {CryptoEngine, ShamirSSS, generateBackupFragments, generateSeedPhrase} from '../utils/crypto';
+import {CryptoEngine, generateBackupFragments, generateSeedPhrase} from '../utils/crypto';
 import {wrapIdentity, saveRecoveryBundle, FRAGMENTS_STORAGE_KEY} from '../utils/recovery';
 
 // ==================== BIP39 512-WORD LIST ====================

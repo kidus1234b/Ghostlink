@@ -431,7 +431,12 @@ class MetricsTracker {
             fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
           }
           fileConfig.GMP_SEED_PHRASE = newSeedPhrase;
-          fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf8');
+          // This file now holds the plaintext seed phrase — the root secret every
+          // key is derived from — so it must not be readable by other local
+          // users. writeFileSync's mode only applies on creation, so tighten an
+          // existing file too.
+          fs.writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), { encoding: 'utf8', mode: 0o600 });
+          fs.chmodSync(configPath, 0o600);
         } catch (e) {
           const err = e as Error;
           logger.warn('metrics', 'rotate-config-failed', `Could not update config.json: ${err.message}`);
@@ -452,6 +457,11 @@ class MetricsTracker {
     let body = '';
     req.on('data', (chunk: Buffer) => { body += chunk; });
     req.on('end', async () => {
+      // Hoisted so the catch below can tear them down. If sendMessage threw
+      // (e.g. no route), the catch answered 500 but left the 10s timeout armed;
+      // it then called writeHead on the finished response, and the resulting
+      // ERR_HTTP_HEADERS_SENT thrown from a timer crashed the whole node.
+      let cleanup: (() => void) | null = null;
       try {
         const { targetNodeId } = JSON.parse(body) as PingBody;
         if (!targetNodeId) {
@@ -482,7 +492,7 @@ class MetricsTracker {
               const payload = JSON.parse(payloadStr);
               if (payload.type === 'virtual-pong') {
                 const rtt = Date.now() - start;
-                cleanup();
+                cleanup?.();
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true, rtt, hops }));
               }
@@ -490,13 +500,13 @@ class MetricsTracker {
           }
         };
 
-        const cleanup = (): void => {
+        cleanup = (): void => {
           this.nodeManagerInstance?.off('message', onMessage);
           clearTimeout(timeout);
         };
 
         const timeout = setTimeout(() => {
-          cleanup();
+          cleanup?.();
           res.writeHead(504, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Ping timeout' }));
         }, 10000);
@@ -508,6 +518,8 @@ class MetricsTracker {
           JSON.stringify({ type: 'virtual-ping', timestamp: start })
         );
       } catch (err) {
+        cleanup?.();
+        if (res.headersSent) return;
         const error = err as Error;
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));

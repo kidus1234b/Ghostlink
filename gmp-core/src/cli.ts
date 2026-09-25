@@ -1,18 +1,12 @@
 #!/usr/bin/env node
 
-import fs from 'fs';
-import path from 'path';
 import http from 'http';
 import readline from 'readline';
 import { Writable } from 'stream';
-import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-import config, { loadConfig } from './config.js';
+import config from './config.js';
 import type { GMPNodeManagerOptions } from './types.js';
 import { BIP39_WORDS } from './bip39-english.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 function getMetricsPort(): number {
   return config.GMP_METRICS_PORT || 9090;

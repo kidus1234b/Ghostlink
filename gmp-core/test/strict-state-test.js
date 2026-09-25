@@ -13,6 +13,7 @@
  * refusal and starting fresh anyway, and strict mode escalating cases that are
  * perfectly normal — a missing file, or a healthy one.
  */
+import './helpers/isolate-data.mjs'; // must stay first: keeps state out of gmp-core/data
 import fs from 'fs';
 import os from 'os';
 import path from 'path';

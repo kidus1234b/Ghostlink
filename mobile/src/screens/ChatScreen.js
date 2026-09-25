@@ -35,7 +35,6 @@ import {
 import {Text, TextInput} from '../components/ScaledText';
 import Animated, {
   FadeIn,
-  FadeOut,
   SlideInUp,
   SlideInDown,
   SlideOutDown,
@@ -46,15 +45,13 @@ import Animated, {
   withRepeat,
   withSequence,
   withTiming,
-  withSpring,
   Easing,
-  runOnJS,
-  interpolateColor,
 } from 'react-native-reanimated';
 import {useTheme} from '../context/ThemeContext';
 import {useApp} from '../context/AppContext';
 import WebRTCService from '../services/WebRTCService';
 import {CALLS_AVAILABLE, CALLS_UNAVAILABLE_REASON} from '../utils/capabilities';
+import {parseInboundChat, parseInboundAck} from '../utils/untrusted';
 import PeerAvatar from '../components/PeerAvatar';
 
 // ─── Constants ─────────────────────────────────────────────
@@ -734,7 +731,9 @@ export default function ChatScreen({route, navigation}) {
   const [pinnedMessageIds, setPinnedMessageIds] = useState(new Set());
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [viewerImage, setViewerImage] = useState(null);
-  const [peerTyping, setPeerTyping] = useState(false);
+  // No typing frames exist on the wire yet. The indicator this fed used to be
+  // switched on at random.
+  const [peerTyping] = useState(false);
 
   const flatListRef = useRef(null);
   const inputRef = useRef(null);
@@ -776,20 +775,6 @@ export default function ChatScreen({route, navigation}) {
     () => groupMessagesByDay(roomMessages),
     [roomMessages],
   );
-
-  // Simulate typing indicator
-  useEffect(() => {
-    if (!peerOnline) return;
-    const interval = setInterval(() => {
-      setPeerTyping(t => {
-        // Random brief typing simulation
-        if (!t && Math.random() < 0.05) return true;
-        if (t) return false;
-        return t;
-      });
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [peerOnline]);
 
   // Auto-scroll on new message
   useEffect(() => {
@@ -843,29 +828,37 @@ export default function ChatScreen({route, navigation}) {
     const roomId = peerId;
 
     const onMessage = ({peerId: from, data, transport, encrypted}) => {
-      if (from !== peerId || !data || typeof data !== 'object') return;
+      if (from !== peerId) return;
 
-      if (data.__gl === 'ack' && data.id) {
-        updateMessage(roomId, data.id, {status: MESSAGE_STATUS.DELIVERED});
+      // Every field here was written by the peer and is persisted, then
+      // rendered on the next launch — see utils/untrusted.js.
+      const ackId = parseInboundAck(data);
+      if (ackId) {
+        updateMessage(roomId, ackId, {status: MESSAGE_STATUS.DELIVERED});
         return;
       }
 
-      if (data.__gl === 'chat' && data.text) {
+      const chat = parseInboundChat(data);
+      if (chat) {
         addMessage(roomId, {
-          id: data.id || `rx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          id: chat.id || `rx_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           sender: peer?.name || 'Peer',
-          text: data.text,
-          plainText: data.text,
-          timestamp: data.timestamp || Date.now(),
+          // Direction is recorded, not inferred from the sender's name: a peer
+          // who called themselves by our name used to have their messages
+          // drawn as ours.
+          outgoing: false,
+          text: chat.text,
+          plainText: chat.text,
+          timestamp: chat.timestamp,
           type: 'text',
           status: MESSAGE_STATUS.READ,
-          replyTo: data.replyTo || null,
+          replyTo: chat.replyTo,
           transport: transport || 'unknown',
           encrypted: !!encrypted,
         });
         // Acknowledge, so their client can show a delivery it can stand behind.
-        if (data.id) {
-          WebRTCService.sendMessage(peerId, {__gl: 'ack', id: data.id});
+        if (chat.id) {
+          WebRTCService.sendMessage(peerId, {__gl: 'ack', id: chat.id});
         }
       }
     };
@@ -893,6 +886,7 @@ export default function ChatScreen({route, navigation}) {
     const newMessage = {
       id: messageId,
       sender: identity?.name || 'You',
+      outgoing: true,
       text,
       plainText: text,
       timestamp: Date.now(),
@@ -1009,6 +1003,7 @@ export default function ChatScreen({route, navigation}) {
       const voiceMsg = {
         id: `msg_${Date.now()}_voice`,
         sender: identity?.name || 'You',
+        outgoing: true,
         text: 'Voice message',
         plainText: 'Voice message',
         timestamp: Date.now(),
@@ -1038,7 +1033,11 @@ export default function ChatScreen({route, navigation}) {
       }
 
       // Regular message
-      const isMine = item.sender === (identity?.name || 'You');
+      // Messages saved before `outgoing` existed fall back to the name check.
+      const isMine =
+        typeof item.outgoing === 'boolean'
+          ? item.outgoing
+          : item.sender === (identity?.name || 'You');
       const replyMsg = item.replyTo
         ? roomMessages.find(m => m.id === item.replyTo)
         : null;

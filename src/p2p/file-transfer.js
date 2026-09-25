@@ -1,8 +1,8 @@
 /**
  * GhostLink Encrypted Chunked File Transfer over WebRTC
  *
- * Sends and receives files over WebRTC data channels with per-chunk
- * AES-256-GCM encryption, SHA-256 integrity verification, and flow control.
+ * Sends and receives files over WebRTC data channels or the mesh, each
+ * transfer under its own AES-256-GCM key sealed to the recipient.
  *
  * @module file-transfer
  */
@@ -12,14 +12,27 @@
 /** Size of each raw chunk before encryption (64 KB). */
 const CHUNK_SIZE = 64 * 1024;
 
-/** Number of chunks sent before requiring an ACK from the receiver. */
+/** Chunks sent between pauses that let the channel buffer drain. */
 const WINDOW_SIZE = 16;
 
-/** Pause sending when data channel bufferedAmount exceeds this (1 MB). */
-const BUFFER_HIGH_WATER = 1024 * 1024;
+// ─── Limits on what a peer may claim ─────────────────────────────────────────
 
-/** Resume sending when bufferedAmount drops to this (256 KB). */
-const BUFFER_LOW_WATER = 256 * 1024;
+/** Largest file accepted (matches the Pro transfer ceiling in index.html). */
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** Incoming transfers held open at once, across all peers. */
+const MAX_INCOMING = 16;
+
+/**
+ * Types a received blob may keep. Anything else is served as an opaque
+ * download: a peer-chosen text/html or image/svg+xml blob is a same-origin
+ * document the moment it is opened in a tab, with the page's keys in reach.
+ */
+const SAFE_MIME = /^(image\/(png|jpeg|gif|webp|bmp)|audio\/[\w.+-]+|video\/[\w.+-]+|text\/plain|application\/(pdf|zip))$/i;
+
+const hex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+const unhex = (str) => new Uint8Array(str.match(/.{2}/g).map(b => parseInt(b, 16)));
+const aad = (transferId, chunkIndex) => new TextEncoder().encode(`${transferId}:${chunkIndex}`);
 
 // ─── Transfer State ──────────────────────────────────────────────────────────
 
@@ -28,21 +41,18 @@ const BUFFER_LOW_WATER = 256 * 1024;
  * @private
  */
 class TransferState {
-  constructor(id, direction, peerId, meta) {
+  constructor(id, direction, peerId, meta, key) {
     this.id = id;
     this.direction = direction;
     this.peerId = peerId;
     this.fileName = meta.name || 'unknown';
     this.fileSize = meta.size || 0;
     this.totalChunks = meta.totalChunks || 0;
-    this.hash = meta.hash || '';
     this.mimeType = meta.type || 'application/octet-stream';
+    this.key = key;
     this.chunks = new Map(); // chunkIndex -> ArrayBuffer
     this.receivedChunks = 0;
-    this.sentChunks = 0;
-    this.acknowledged = 0;
-    this.finished = false;
-    this.error = null;
+    this.receivedBytes = 0;
     this.startTime = Date.now();
   }
 }
@@ -81,26 +91,40 @@ if (typeof window.EventEmitter === 'undefined') {
 // ─── FileTransfer ───────────────────────────────────────────────────────────
 
 /**
- * Manages encrypted file transfers over WebRTC data channels.
+ * Manages encrypted file transfers over WebRTC data channels or the mesh.
  *
- * @param {RTCPeerManager} peerManager
- * @param {object} cryptoEngine - Must expose sha256(), encrypt(), and a key.
+ * Every transfer gets a fresh random AES-256-GCM key. The key and the file's
+ * metadata travel sealed to the recipient's public key in `file-meta`, so only
+ * the holder of the matching private key can read either. (The key used to be
+ * SHA-256 of `peerId:transferId:chunkIndex` — values that are all public, and
+ * that the two ends did not even agree on, since each side put the *other*
+ * peer's id first: nothing on the path was kept out, and no file ever arrived.)
+ * Each chunk is bound to its transfer and position through the GCM additional
+ * data, so chunks cannot be replayed into another transfer or reordered.
+ *
+ * @param {object} peerManager - sendOnChannel(peerId, channel, obj) + on('file-chunk')
+ * @param {object} cryptoEngine - encryptWithPublicKey(), decryptWithPrivateKey()
+ * @param {{getPeerPublicKey: function(string): ?string, getPrivateKey: function(): ?CryptoKey}} keys
  */
 class FileTransfer extends EventEmitter {
-  constructor(peerManager, cryptoEngine) {
+  constructor(peerManager, cryptoEngine, keys = {}) {
     super();
     this._pm = peerManager;
     this._crypto = cryptoEngine;
-    this._transfers = new Map(); // id -> TransferState
-    this._setupListeners();
-  }
-
-  _setupListeners() {
+    this._keys = keys;
+    this._transfers = new Map(); // `${peerId}\n${transferId}` -> TransferState
+    this._inbox = new Map(); // peerId -> tail of that peer's processing chain
     this._pm.on('file-chunk', (peerId, data) => {
-      this._handleFileChunk(peerId, data);
-    });
-    this._pm.on('file-complete', (peerId, data) => {
-      this._handleFileComplete(peerId, data);
+      // Handled strictly in arrival order per peer. Opening a file-meta is
+      // async (ECDH + unseal), and the transport keeps delivering meanwhile:
+      // without the queue, the first chunks reached a transfer that did not
+      // exist yet and were dropped.
+      const run = () => this._handleFileChunk(peerId, data).catch((e) => {
+        console.error('[FileTransfer] receive failed:', e);
+      });
+      const next = (this._inbox.get(peerId) || Promise.resolve()).then(run);
+      this._inbox.set(peerId, next);
+      next.then(() => { if (this._inbox.get(peerId) === next) this._inbox.delete(peerId); });
     });
   }
 
@@ -113,161 +137,148 @@ class FileTransfer extends EventEmitter {
    * @returns {Promise<string>} transferId
    */
   async sendFile(peerId, file) {
-    const id = 'tx-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
-    const buffer = await file.arrayBuffer();
-    const totalChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
+    const pubKey = this._keys.getPeerPublicKey?.(peerId);
+    if (!pubKey) throw new Error('No public key for this peer — the file cannot be encrypted to them');
 
+    const id = 'tx-' + hex(crypto.getRandomValues(new Uint8Array(16)));
+    const buffer = await file.arrayBuffer();
     const meta = {
       name: file.name || 'file',
-      size: file.size || buffer.byteLength,
+      size: buffer.byteLength,
       type: file.type || 'application/octet-stream',
-      totalChunks,
-      hash: await this._crypto.sha256(file.name + String(file.size)),
+      totalChunks: Math.ceil(buffer.byteLength / CHUNK_SIZE),
+    };
+    const rawKey = crypto.getRandomValues(new Uint8Array(32));
+    const key = await crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt']);
+    const sealed = await this._crypto.encryptWithPublicKey(JSON.stringify({ key: hex(rawKey), meta }), pubKey);
+    rawKey.fill(0);
+
+    const send = async (payload) => {
+      // sendOnChannel reports a transport with nowhere to send by returning
+      // false; carrying on would announce a transfer that never left.
+      if (await this._pm.sendOnChannel(peerId, 'files', payload) === false) {
+        throw new Error('Connection to peer lost during file transfer');
+      }
     };
 
-    const state = new TransferState(id, 'send', peerId, meta);
-    this._transfers.set(id, state);
+    await send({ type: 'file-meta', transferId: id, sealed });
 
-    // Send metadata header
-    await this._pm.sendOnChannel(peerId, 'files', {
-      type: 'file-meta',
-      transferId: id,
-      meta,
-    });
-
-    // Chunked send with flow control
-    let offset = 0;
-    let chunkIndex = 0;
-    let inFlight = 0;
-
-    while (offset < buffer.byteLength) {
-      const chunk = buffer.slice(offset, offset + CHUNK_SIZE);
+    for (let chunkIndex = 0; chunkIndex < meta.totalChunks; chunkIndex++) {
+      const chunk = buffer.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
       const iv = crypto.getRandomValues(new Uint8Array(12));
-      const key = await this._deriveKey(peerId, id, chunkIndex);
       const encrypted = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv },
-        key,
-        chunk
-      );
-
-      const payload = {
+        { name: 'AES-GCM', iv, additionalData: aad(id, chunkIndex) }, key, chunk);
+      await send({
         type: 'file-chunk',
         transferId: id,
         chunkIndex,
-        iv: Array.from(iv).map(b => b.toString(16).padStart(2, '0')).join(''),
-        data: Array.from(new Uint8Array(encrypted)).map(b => b.toString(16).padStart(2, '0')).join(''),
-      };
+        iv: hex(iv),
+        data: hex(new Uint8Array(encrypted)),
+      });
 
-      await this._pm.sendOnChannel(peerId, 'files', payload);
-
-      offset += CHUNK_SIZE;
-      chunkIndex++;
-      state.sentChunks = chunkIndex;
-      inFlight++;
-
-      // Flow control: pause if buffer high water mark reached
-      const pc = this._pm.getPeerConnection?.(peerId);
-      if (pc && inFlight >= WINDOW_SIZE) {
+      // Flow control: yield so the channel buffer can drain.
+      if ((chunkIndex + 1) % WINDOW_SIZE === 0) {
         await new Promise(resolve => setTimeout(resolve, 50));
-        inFlight = 0;
       }
-
-      this.emit('progress', { transferId: id, peerId, progress: Math.min(100, (chunkIndex / totalChunks) * 100) });
+      this.emit('progress', { transferId: id, peerId, progress: Math.min(100, ((chunkIndex + 1) / meta.totalChunks) * 100) });
     }
 
-    // Signal completion
-    await this._pm.sendOnChannel(peerId, 'files', {
-      type: 'file-done',
-      transferId: id,
-    });
+    await send({ type: 'file-done', transferId: id });
 
-    state.finished = true;
-    this.emit('complete', { transferId: id, peerId, file: { name: meta.name, size: meta.size, type: meta.type } });
+    // 'sent', not 'complete': 'complete' means a file *arrived*, and the app
+    // files it under received transfers with a "File received" toast.
+    this.emit('sent', { transferId: id, peerId, file: { name: meta.name, size: meta.size, type: meta.type } });
     return id;
   }
 
   // ── Incoming handlers ─────────────────────────────────────────────────────
 
+  _fail(key, peerId, transferId, error) {
+    this._transfers.delete(key);
+    this.emit('error', { transferId, peerId, error });
+  }
+
   async _handleFileChunk(peerId, data) {
+    if (!data || typeof data !== 'object') return;
+    const transferId = data.transferId;
+    if (typeof transferId !== 'string' || !transferId || transferId.length > 64) return;
+    // Keyed by sender too: one peer must not be able to write into, or
+    // replace, a transfer another peer has open.
+    const key = peerId + '\n' + transferId;
+
     if (data.type === 'file-meta') {
-      const state = new TransferState(data.transferId, 'receive', peerId, data.meta);
-      this._transfers.set(data.transferId, state);
-      this.emit('incoming', { transferId: data.transferId, peerId, meta: data.meta });
-
-      // Send ACK
-      await this._pm.sendOnChannel(peerId, 'files', {
-        type: 'file-ack',
-        transferId: data.transferId,
-      });
-    } else if (data.type === 'file-chunk') {
-      const state = this._transfers.get(data.transferId);
-      if (!state) return;
-
-      const ivBytes = new Uint8Array(data.iv.match(/.{2}/g).map(b => parseInt(b, 16)));
-      const encrypted = new Uint8Array(data.data.match(/.{2}/g).map(b => parseInt(b, 16)));
-      const key = await this._deriveKey(peerId, data.transferId, data.chunkIndex);
-
+      if (this._transfers.has(key) || this._transfers.size >= MAX_INCOMING) return;
+      let opened;
       try {
-        const decrypted = await crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: ivBytes },
-          key,
-          encrypted
-        );
-        state.chunks.set(data.chunkIndex, decrypted);
-        state.receivedChunks++;
-        this.emit('progress', { transferId: data.transferId, peerId, progress: Math.min(100, (state.receivedChunks / state.totalChunks) * 100) });
+        const privKey = this._keys.getPrivateKey?.();
+        if (!privKey) throw new Error('private key unavailable');
+        opened = JSON.parse(await this._crypto.decryptWithPrivateKey(data.sealed, privKey));
       } catch (e) {
-        state.error = e.message;
-        this.emit('error', { transferId: data.transferId, peerId, error: e.message });
+        this.emit('error', { transferId, peerId, error: 'could not decrypt the file header' });
+        return;
       }
-    } else if (data.type === 'file-done') {
-      const state = this._transfers.get(data.transferId);
+      const m = opened && opened.meta;
+      if (!m || !Number.isInteger(m.size) || m.size < 0 || m.size > MAX_FILE_BYTES ||
+          m.totalChunks !== Math.ceil(m.size / CHUNK_SIZE) ||
+          typeof opened.key !== 'string' || !/^[0-9a-f]{64}$/.test(opened.key)) {
+        this.emit('error', { transferId, peerId, error: 'malformed file header' });
+        return;
+      }
+      const name = (typeof m.name === 'string' ? m.name : '')
+        .replace(/[\u0000-\u001f\u007f/\\]/g, '_').slice(0, 255) || 'file';
+      const type = typeof m.type === 'string' && SAFE_MIME.test(m.type) ? m.type : 'application/octet-stream';
+      const aesKey = await crypto.subtle.importKey('raw', unhex(opened.key), 'AES-GCM', false, ['decrypt']);
+      const meta = { name, size: m.size, type, totalChunks: m.totalChunks };
+      this._transfers.set(key, new TransferState(transferId, 'receive', peerId, meta, aesKey));
+      this.emit('incoming', { transferId, peerId, meta });
+      await this._pm.sendOnChannel(peerId, 'files', { type: 'file-ack', transferId });
+    } else if (data.type === 'file-chunk') {
+      const state = this._transfers.get(key);
       if (!state) return;
-
-      // Reassemble file
-      const chunks = [];
-      for (let i = 0; i < state.totalChunks; i++) {
-        const chunk = state.chunks.get(i);
-        if (!chunk) {
-          state.error = `Missing chunk ${i}`;
-          this.emit('error', { transferId: data.transferId, peerId, error: state.error });
-          return;
-        }
-        chunks.push(chunk);
+      const idx = data.chunkIndex;
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.totalChunks || state.chunks.has(idx)) return;
+      if (typeof data.iv !== 'string' || !/^[0-9a-f]{24}$/.test(data.iv) ||
+          typeof data.data !== 'string' || data.data.length % 2 !== 0 ||
+          data.data.length > (CHUNK_SIZE + 16) * 2 || !/^[0-9a-f]*$/.test(data.data)) {
+        this._fail(key, peerId, transferId, 'malformed chunk');
+        return;
       }
-
-      const blob = new Blob(chunks, { type: state.mimeType });
-      const url = URL.createObjectURL(blob);
-      state.finished = true;
-
+      let decrypted;
+      try {
+        decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: unhex(data.iv), additionalData: aad(transferId, idx) },
+          state.key, unhex(data.data));
+      } catch (e) {
+        this._fail(key, peerId, transferId, 'chunk failed authentication');
+        return;
+      }
+      if (this._transfers.get(key) !== state || state.chunks.has(idx)) return;
+      state.receivedBytes += decrypted.byteLength;
+      if (state.receivedBytes > state.fileSize) {
+        this._fail(key, peerId, transferId, 'more data than the header declared');
+        return;
+      }
+      state.chunks.set(idx, decrypted);
+      state.receivedChunks++;
+      this.emit('progress', { transferId, peerId, progress: Math.min(100, (state.receivedChunks / state.totalChunks) * 100) });
+    } else if (data.type === 'file-done') {
+      const state = this._transfers.get(key);
+      if (!state) return;
+      if (state.receivedChunks !== state.totalChunks || state.receivedBytes !== state.fileSize) {
+        this._fail(key, peerId, transferId, `incomplete transfer (${state.receivedChunks}/${state.totalChunks} chunks)`);
+        return;
+      }
+      const chunks = [];
+      for (let i = 0; i < state.totalChunks; i++) chunks.push(state.chunks.get(i));
+      // Drop the state (and the plaintext chunks it holds) now that the blob owns the bytes.
+      this._transfers.delete(key);
+      const url = URL.createObjectURL(new Blob(chunks, { type: state.mimeType }));
       this.emit('complete', {
-        transferId: data.transferId,
+        transferId,
         peerId,
-        file: {
-          name: state.fileName,
-          size: state.fileSize,
-          type: state.mimeType,
-          url,
-        },
+        file: { name: state.fileName, size: state.fileSize, type: state.mimeType, url },
       });
     }
-  }
-
-  async _handleFileComplete(peerId, data) {
-    // Already handled in _handleFileChunk for file-done
-  }
-
-  // ── Helpers ───────────────────────────────────────────────────────────────
-
-  async _deriveKey(peerId, transferId, chunkIndex) {
-    const material = new TextEncoder().encode(`${peerId}:${transferId}:${chunkIndex}`);
-      const hash = await crypto.subtle.digest('SHA-256', material);
-    return crypto.subtle.importKey(
-      'raw', hash,
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt']
-    );
   }
 }
 

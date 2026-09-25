@@ -313,6 +313,8 @@ export interface GMPLinkLike {
   isVirtual: boolean;
   /** link.js assigns the raw 64-byte NodeID here, never its hex form. */
   remoteNodeId: Uint8Array | null;
+  /** The Ed25519 key the peer proved in the handshake (null until then). */
+  remoteSigningPubkey?: Uint8Array | null;
   socket: { remoteAddress?: string; remotePort?: number } | null;
   send(data: string): Promise<void>;
   destroy(error?: Error): void;

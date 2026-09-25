@@ -172,13 +172,44 @@
           this._cachedAt = null;
           return;
         }
-        this._cachedLicense = parsed;
+        // The stored record is only a cache of what activate() verified. Its
+        // tier and expiry used to be trusted as written, so one localStorage
+        // edit ({tier:'enterprise', expiresAt: 9e15}) unlocked everything with
+        // no key at all. Re-verify the key and take tier and expiry from it.
+        const verified = await this._reverify(parsed);
+        if (!verified) {
+          localStorage.removeItem(STORAGE_KEY);
+          this._cachedLicense = null;
+          this._cachedAt = null;
+          return;
+        }
+        this._cachedLicense = verified;
         this._cachedAt = Date.now();
       } catch (e) {
         try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
         this._cachedLicense = null;
         this._cachedAt = null;
       }
+    }
+
+    async _reverify(stored) {
+      const core = Core();
+      if (!this._validator || !core) return null;
+      // skipDeviceCheck is false: a stored license copied from another device
+      // is exactly what the device binding exists to refuse. Expiry is not
+      // checked here — an expired license still has to reach getTier() so the
+      // grace period can apply.
+      const result = await this._validator.validate(stored.key, { skipDeviceCheck: false });
+      if (!result.valid) return null;
+      const license = result.license;
+      return {
+        ...stored,
+        tier: license.tier,
+        durationMonths: license.durationMonths,
+        expiresAt: core.computeExpiryTimestamp(stored.activatedAt, license.durationMonths),
+        maxUsers: license.maxUsers || null,
+        version: license.version,
+      };
     }
 
     _validateStoredStructure(license) {

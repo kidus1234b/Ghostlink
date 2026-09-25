@@ -1,11 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import config from './config.js';
 import type { LogLevel, LogMeta } from './types.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const LEVELS: Record<LogLevel, number> = {
   TRACE: 0,

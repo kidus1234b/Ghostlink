@@ -6,7 +6,8 @@
  * suites were being skipped because an early one broke. This runs each suite
  * regardless and fails at the end if any did.
  */
-import {readdirSync} from 'fs';
+import {readdirSync, mkdtempSync, rmSync} from 'fs';
+import os from 'os';
 import {spawnSync} from 'child_process';
 import {fileURLToPath} from 'url';
 import path from 'path';
@@ -24,11 +25,18 @@ for (const suite of suites) {
   // NODE_ENV=test turns on the internal invariant assertions (see
   // ASSERT_BOUNDARIES in claim-log.ts), so a suite that trips one fails loudly
   // rather than carrying on with a broken offset.
+  //
+  // GMP_DATA_DIR gives each suite its own throwaway state directory. Without
+  // it every suite that builds a node wrote nonce claim logs, nonce-state.json
+  // and peer-cache.json into the developer's real gmp-core/data (one new claim
+  // log pair per identity per run), and suites could see each other's state.
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'gmp-suite-'));
   const r = spawnSync(process.execPath, [path.join(here, suite)], {
     encoding: 'utf8',
     timeout: 180000,
-    env: {...process.env, NODE_ENV: 'test'},
+    env: {...process.env, NODE_ENV: 'test', GMP_DATA_DIR: dataDir},
   });
+  rmSync(dataDir, {recursive: true, force: true});
   const out = (r.stdout || '') + (r.stderr || '');
   const m = out.match(/Results: (\d+) passed, (\d+) failed/) || out.match(/=== (\d+)\/(\d+) passed/);
   const skipped = /=== skipped ===/.test(out);
