@@ -35,6 +35,7 @@ No cryptographic code, CSP directive or Electron sandbox flag was changed.
 | 8 | *New:* flaky mobile test (~3.5% failure rate) | **Fixed** |
 | 9 | *New:* `.deb` target could not build (missing `author.email` / `homepage`) | **Fixed** |
 | 10 | *New:* desktop mesh node calls the global `crypto`, which Electron 28's main process does not have | **Not fixed** — needs a decision, see below |
+| 11 | *New:* LAN-discovered peers were never resolvable or dialable — caught by CI, where multicast works | **Fixed** |
 
 ### 1. Fresh clone → `npm test` fails
 
@@ -71,7 +72,8 @@ The blanket `*.md` / `*.txt` rules are replaced with `docs/archive/*.md` and
     `resources/`. It then copies the packaged gmp-core out of the checkout and
     imports it, which proves it loads from its own bundled dependencies.
   - **audit**: `npm audit --omit=dev --audit-level=high` for the root and
-    gmp-core. It is advisory (`continue-on-error`) for now; see remaining work.
+    gmp-core. It is advisory for now: findings become `::warning` annotations
+    and the check stays green. See remaining work.
 - **`.github/workflows/release.yml`** runs on `v*` tags.
   1. It checks that the tag equals all four package versions.
   2. It rebuilds and re-runs the bundle-sync gate and all tests.
@@ -193,6 +195,49 @@ code. There are two options:
 A desktop smoke test should cover this whichever way it is fixed (see
 remaining work).
 
+### 11. LAN discovery was never wired in — FIXED
+
+The first CI run failed `gmp-core/test/lan-discovery-test.js` on Node 20 and
+22. That test skips on hosts that filter multicast, which includes the machine
+it was developed on, so this was its first real run. GitHub's runners allow
+multicast.
+
+The fault was in the product, not the test. `LanDiscovery` received beacons,
+but nothing consumed them:
+
+- `GMPNodeManager.resolveGhostAddress` only searched links and the routing
+  table.
+- `connectByNodeId` only tried a mesh relay.
+
+So in the no-infrastructure case the feature exists for (two devices on the
+same network, no public peer), a Ghost Address could never resolve. The fix is
+in `gmp-core/src/gmp-node-manager.ts`:
+
+- **Resolve:** peers currently beaconing on the LAN count as known, so their
+  addresses resolve. Nothing connects automatically: the test's "discovery
+  does NOT connect anyone" privacy checks still pass.
+- **Connect:** if the NodeID was seen on the LAN, dial the beacon's
+  address:port directly, with a 5 s timeout. Beacons are unauthenticated, so
+  the link is kept only if the Ed25519-authenticated handshake yields exactly
+  the requested NodeID. Otherwise the link is destroyed, a
+  `lan-identity-mismatch` warning is logged, and the code falls back to the
+  mesh as before.
+
+A new test section `[4b]` plants a beacon that claims an unrelated NodeID but
+points at a real peer. It asserts that no LAN session results and that the
+stray link is dropped. A mutation check (removing the `link.destroy()`) makes
+it fail.
+
+The test was reproduced locally in a private network namespace with a
+multicast route on loopback:
+
+```bash
+unshare -rn sh -c 'ip link set lo up && ip route add 224.0.0.0/4 dev lo && \
+  NODE_ENV=test node gmp-core/test/lan-discovery-test.js'
+```
+
+Unfixed code: 8/12, the same 4 failures as CI. Fixed: 12/12.
+
 ## How to apply and verify
 
 From a clean checkout of this branch:
@@ -201,7 +246,7 @@ From a clean checkout of this branch:
 rm -rf node_modules gmp-core/node_modules gmp-core/dist
 npm ci
 npm test                  # pretest installs + builds gmp-core, then the web suite
-npm run test:gmp          # 33 suites via run-all.mjs (lan-discovery SKIPs without multicast)
+npm run test:gmp          # 33 suites via run-all.mjs (lan-discovery SKIPs without multicast; see finding 11 to run it anyway)
 npm run test:mobile
 npm run build && git diff --exit-code app.bundle.js   # bundle in sync
 (cd electron && npm run build:dir)                    # packaging check
@@ -266,7 +311,7 @@ The `audit` job runs but does not block. To finish:
 1. Triage the current `npm audit --omit=dev` output. Most advisories in a
    React Native tree are in build tooling, not shipped code.
 2. Fix or document each high/critical finding.
-3. Remove `continue-on-error: true` from the job.
+3. Remove the `|| echo "::warning::…"` fallbacks from the audit steps.
 4. Add Dependabot (`.github/dependabot.yml`) for `npm` (root and `/gmp-core`)
    and `github-actions`.
 

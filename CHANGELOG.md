@@ -30,6 +30,14 @@ number (see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md#versioni
   `test:mobile`, `ci`.
 
 ### Fixed
+- LAN discovery now does what it was built for: a Ghost Address seen on the
+  local network resolves with no mesh or public peer, and connecting to it
+  dials the peer directly over the LAN. Beacons are unauthenticated, so the
+  link is kept only if the handshake proves the expected NodeID. Previously
+  discovered peers were never consulted. The test hid this by skipping on
+  hosts without multicast, and CI's first real run caught it.
+- CI's advisory `npm audit` job reports findings as warnings instead of
+  showing a red check.
 - `npm test` on a fresh clone: `pretest` now installs and compiles gmp-core
   (its `dist/` is gitignored, and it has its own lockfile, so a root `npm ci`
   never installed it and `tsc` failed against React Native's hoisted

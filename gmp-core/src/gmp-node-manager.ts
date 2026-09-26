@@ -13,6 +13,9 @@ import type {
 import type { BootstrapDiagnosis } from './bootstrap.js';
 import { loadPublicPeers, queryPublicAddress } from './public-peer-list.js';
 
+/** How long a direct dial to a LAN-discovered peer may take before falling back to the mesh. */
+const LAN_DIAL_TIMEOUT_MS = 5000;
+
 function toHex(nodeId: string | Buffer | Uint8Array): string {
   if (typeof nodeId === 'string') return nodeId;
   if (Buffer.isBuffer(nodeId) || nodeId instanceof Uint8Array) {
@@ -322,6 +325,13 @@ export class GMPNodeManager extends EventEmitter {
         }
       }
     }
+    // Peers beaconing on the local network. This makes them resolvable, not
+    // connected — being on the same network is not consent to a session.
+    if (this._node.lanDiscovery) {
+      for (const id of this._node.lanDiscovery.getNodeIds()) {
+        if (!knownNodeIds.includes(id)) knownNodeIds.push(id);
+      }
+    }
     const matches = findNodeIdsForAddress(knownNodeIds, normalized);
     if (matches.length === 0) return { reason: 'not-found' };
     if (matches.length > 1) return { reason: 'ambiguous', nodeId: matches[0] };
@@ -349,6 +359,33 @@ export class GMPNodeManager extends EventEmitter {
     const vLink = this._node.virtualConnections.get(prefix);
     if (vLink && vLink.state === 'connected') {
       return { connected: true, transport: 'virtual' };
+    }
+    // Seen on the LAN: dial it directly. A beacon is unauthenticated, so the
+    // handshake decides — the link is kept only if the peer proves it holds
+    // the NodeID we asked for. Anything else falls through to the mesh.
+    const lanPeer = this._node.lanDiscovery ? this._node.lanDiscovery.getPeer(nodeId) : null;
+    if (lanPeer) {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const dialed = this._node.dial(lanPeer.address, lanPeer.port);
+        const { link, peerNodeId } = await Promise.race([
+          dialed,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('LAN dial timed out')), LAN_DIAL_TIMEOUT_MS);
+          })
+        ]);
+        if (toHex(peerNodeId) === nodeId.toLowerCase()) {
+          return { connected: true, transport: 'lan' };
+        }
+        logger.warn('gmp-node-manager', 'lan-identity-mismatch',
+          'LAN peer answered with a different NodeID than its beacon claimed; dropping the link',
+          { expected: nodeId.slice(0, 16), address: lanPeer.address });
+        link.destroy();
+      } catch {
+        // Unreachable or timed out: try the mesh instead.
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     }
     try {
       await this._node.dialVirtual(Buffer.from(nodeId, 'hex'));

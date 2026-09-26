@@ -58,7 +58,7 @@ npm run mobile:android          # React Native, needs the Android SDK
 |---------|-------|-------|
 | `npm test` | Root / web suite | Installs + builds gmp-core first (`pretest`). |
 | `npm run test:web` | Root / web suite only | Assumes gmp-core is already built. |
-| `npm run test:gmp` | gmp-core, via `gmp-core/test/run-all.mjs` | Runs every suite even if one fails; each gets a throwaway `GMP_DATA_DIR`. `lan-discovery-test.js` reports SKIP on hosts without multicast — that is expected. |
+| `npm run test:gmp` | gmp-core, via `gmp-core/test/run-all.mjs` | Runs every suite even if one fails; each gets a throwaway `GMP_DATA_DIR`. `lan-discovery-test.js` reports SKIP on hosts without multicast — that is expected, but it does run in CI. To run it locally anyway: `unshare -rn sh -c 'ip link set lo up && ip route add 224.0.0.0/4 dev lo && NODE_ENV=test node gmp-core/test/lan-discovery-test.js'` (Linux). |
 | `npm run test:mobile` | Mobile (plain Node, no device needed) | |
 | `npm run ci` | Everything CI runs, in CI's order | install:gmp → build:gmp → build → web → gmp → mobile |
 

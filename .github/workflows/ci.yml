@@ -118,15 +118,15 @@ jobs:
     name: npm audit (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Non-blocking until the existing advisory backlog is triaged — see
-    # docs/PRODUCTION_READINESS.md. Remove continue-on-error to enforce.
-    continue-on-error: true
+    # Advisory until the existing backlog is triaged (see
+    # docs/PRODUCTION_READINESS.md): findings are reported as warnings and the
+    # check stays green. To enforce, drop the `|| echo ::warning` fallbacks.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Audit production dependencies (root + workspaces)
-        run: npm audit --omit=dev --audit-level=high
+        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical advisories in root/workspace dependencies"
       - name: Audit gmp-core
-        run: npm audit --prefix gmp-core --omit=dev --audit-level=high
+        run: npm audit --prefix gmp-core --omit=dev --audit-level=high || echo "::warning::npm audit found high/critical advisories in gmp-core"
