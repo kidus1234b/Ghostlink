@@ -21,6 +21,7 @@ const {
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const Store = require('electron-store');
 const net = require('net');
 const { createTray, updateBadge, flashTray, destroyTray } = require('./tray');
@@ -42,8 +43,17 @@ let gmpStarting = null;
 function startGMPNode(seedPhrase) {
   if (!gmpStarting) {
     gmpStarting = (async () => {
-      const { GMPNodeManager } = await import('../../gmp-core/dist/gmp-node-manager.js');
-      const { startBridge } = await import('../../gmp-core/dist/gmp-bridge.js');
+      // gmp-core keeps peer cache / nonce state under its package data dir,
+      // which is read-only inside an installed app. Redirect mutable state to
+      // the per-user data dir unless the environment already picked a spot.
+      if (app.isPackaged && !process.env.GMP_DATA_DIR) {
+        process.env.GMP_DATA_DIR = path.join(app.getPath('userData'), 'gmp-data');
+        fs.mkdirSync(process.env.GMP_DATA_DIR, { recursive: true });
+      }
+      // A raw absolute path breaks dynamic import() on Windows
+      // (ERR_UNSUPPORTED_ESM_URL_SCHEME) — ESM needs a file:// URL.
+      const { GMPNodeManager } = await import(pathToFileURL(path.join(GMP_CORE_DIR, 'dist', 'gmp-node-manager.js')).href);
+      const { startBridge } = await import(pathToFileURL(path.join(GMP_CORE_DIR, 'dist', 'gmp-bridge.js')).href);
 
       gmpManager = new GMPNodeManager({ seedPhrase });
       gmpBridge = await startBridge(gmpManager, 3002);
@@ -74,7 +84,25 @@ function stopGMPNode() {
 
 const IS_DEV = process.argv.includes('--dev');
 const PROTOCOL = 'ghostlink';
-const INDEX_PATH = path.join(__dirname, '..', '..', 'index.html');
+
+/**
+ * Locate a repo-root resource that the packaged app needs.
+ *
+ * Development and `electron-builder --dir` runs load straight from the
+ * checkout (electron/src -> repo root). Installed builds instead ship these
+ * files via electron-builder's extraResources, which lands them under
+ * process.resourcesPath (resources/ inside the install directory): the web
+ * payload under resources/webapp/ and the mesh core under resources/gmp-core/.
+ * The checkout path is tried first so the repo layout keeps working unchanged.
+ */
+function resolveResource(checkoutRelative, packagedRelative) {
+  const checkoutPath = path.join(__dirname, '..', '..', checkoutRelative);
+  if (fs.existsSync(checkoutPath)) return checkoutPath;
+  return path.join(process.resourcesPath, packagedRelative);
+}
+
+const INDEX_PATH = resolveResource('index.html', path.join('webapp', 'index.html'));
+const GMP_CORE_DIR = resolveResource('gmp-core', 'gmp-core');
 const PRELOAD_PATH = path.join(__dirname, 'preload.js');
 
 /* ─── Persistent config store ───────────────────────────────── */

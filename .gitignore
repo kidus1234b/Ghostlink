@@ -11,6 +11,11 @@ gmp-core/data/*
 docs/archive/*.md
 docs/archive/*.txt
 
+# Local environment (real values). .env.example is the committed template.
+.env
+.env.*
+!.env.example
+
 # TLS certs / keys (mkcert + self-signed) — never commit private keys
 *.pem
 *.pem.*
@@ -50,6 +55,9 @@ CLAUDE.md
 .cursorrules
 gmp-core/dist/
 
+# electron-builder output (desktop installers / unpacked dirs)
+electron/dist/
+
 # Android release signing — losing these means never being able to update the
 # app, but committing them means anyone can sign a build as us.
 mobile/android/app/*.keystore
@@ -79,5 +87,6 @@ mobile/android/app/src/main/res/drawable-*/
 mobile/android/app/src/main/assets/index.android.bundle
 mobile/android/app/src/main/res/drawable-*/
 
-# Transient stub written by test/identity-derivation.test.mjs
+# Transient stubs written by tests that load mobile/src from Node
 mobile/.crypto-under-test-*.mjs
+mobile/.roundtrip-*.mjs
