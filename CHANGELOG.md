@@ -30,6 +30,9 @@ number (see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md#versioni
   `test:mobile`, `ci`.
 
 ### Fixed
+- `mobile/test/ghost-address.test.mjs` imported gmp-core from a hardcoded
+  `/home/shadow/...` path, so it only passed on one machine. It now resolves
+  the repo root relative to itself.
 - LAN discovery now does what it was built for: a Ghost Address seen on the
   local network resolves with no mesh or public peer, and connecting to it
   dials the peer directly over the LAN. Beacons are unauthenticated, so the

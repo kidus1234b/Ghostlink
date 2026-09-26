@@ -36,6 +36,7 @@ No cryptographic code, CSP directive or Electron sandbox flag was changed.
 | 9 | *New:* `.deb` target could not build (missing `author.email` / `homepage`) | **Fixed** |
 | 10 | *New:* desktop mesh node calls the global `crypto`, which Electron 28's main process does not have | **Not fixed** — needs a decision, see below |
 | 11 | *New:* LAN-discovered peers were never resolvable or dialable — caught by CI, where multicast works | **Fixed** |
+| 12 | *New:* mobile test imported gmp-core from a hardcoded `/home/shadow/...` path | **Fixed** |
 
 ### 1. Fresh clone → `npm test` fails
 
@@ -237,6 +238,21 @@ unshare -rn sh -c 'ip link set lo up && ip route add 224.0.0.0/4 dev lo && \
 ```
 
 Unfixed code: 8/12, the same 4 failures as CI. Fixed: 12/12.
+
+### 12. Hardcoded developer path in a mobile test — FIXED
+
+`mobile/test/ghost-address.test.mjs` imported gmp-core from
+`/home/shadow/Documents/Ghostlink/...`. Local "fresh clone" checks passed
+because they ran on the machine where that path exists. CI failed with
+`ERR_MODULE_NOT_FOUND`. The test now resolves the repo root from
+`import.meta.url`.
+
+To rule out any other machine-specific dependency, the full CI sequence was
+re-run from a clone with the original checkout hidden by a tmpfs mount
+(`unshare -rm`). All three suites pass that way, and the unfixed test fails
+with the same error CI showed. `git grep /home/` finds no other hardcoded
+paths in code. `gmp-core/PROTOCOL_SPEC.md` still has dead `file:///home/killer/...`
+links in its threat table, which is cosmetic.
 
 ## How to apply and verify
 
