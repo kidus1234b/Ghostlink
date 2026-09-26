@@ -1,0 +1,107 @@
+# Changelog
+
+All notable changes to GhostLink are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The root package, `electron/`, `mobile/` and `gmp-core/` share one version
+number (see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md#versioning-policy)).
+
+## [Unreleased]
+
+### Added
+- CI (`.github/workflows/ci.yml`): on every push and PR to `main`, on Node 20
+  and 22 — workspace install, gmp-core build, web bundle build, a
+  bundle-sync gate that fails if the committed `app.bundle.js` differs from a
+  fresh build, and the web, gmp-core and mobile test suites. Plus an
+  `electron-builder --dir` packaging check that also verifies the packaged
+  mesh core loads from its own bundled dependencies, and an advisory
+  `npm audit` job.
+- Release workflow (`.github/workflows/release.yml`) for `v*` tags: checks the
+  tag against all four package versions, re-verifies bundle sync and tests,
+  builds Windows (NSIS), macOS (DMG) and Linux (AppImage, deb) installers,
+  and collects them with SHA-256 checksums. Publishing to GitHub Releases is
+  wired up but disabled until the installers are code-signed.
+- `CONTRIBUTING.md`, `CHANGELOG.md`, `docs/PRODUCTION_READINESS.md`, and a
+  vulnerability disclosure process with scope and a 90-day timeline in
+  `SECURITY.md`.
+- `.env.example` documenting every `GMP_*` environment variable and `PORT`.
+- Root scripts: `install:gmp`, `build:gmp`, `test:web`, `test:gmp`,
+  `test:mobile`, `ci`.
+
+### Fixed
+- `npm test` on a fresh clone: `pretest` now installs and compiles gmp-core
+  (its `dist/` is gitignored, and it has its own lockfile, so a root `npm ci`
+  never installed it and `tsc` failed against React Native's hoisted
+  `@types/node`). `@noble/hashes` and `@noble/ciphers` are declared at the
+  root, so `ghost-address-kdf` and `phrase-roundtrip` resolve them.
+- `.gitignore` no longer ignores every `*.md` / `*.txt` file — new docs were
+  silently dropped by `git add`. The ignore is scoped to `docs/archive/`.
+  `.env` files are now ignored (`.env.example` excepted), as is
+  electron-builder's `electron/dist/` output.
+- Desktop packaging: the installed app could not find `index.html` or the
+  mesh core, because electron-builder does not package `../` paths from
+  `files`. The web payload and gmp-core now ship via `extraResources`, and
+  `main.js` resolves them under `process.resourcesPath` when the checkout path
+  is absent (development runs are unchanged). Mesh state moves to the per-user
+  data directory in installed builds, whose install directory is read-only.
+  gmp-core is loaded through a `file://` URL, which Windows requires for ESM
+  `import()`.
+- electron-builder no longer prunes the workspace's own devDependencies
+  (electron, 7zip-bin) mid-build (`electron/scripts/prepare-packaging.cjs`).
+- `.deb` builds: `electron/package.json` now has the `author.email` and
+  `homepage` that electron-builder requires for Debian packages.
+- Flaky mobile test: `recovery.test.mjs` checked that no phrase word appears
+  in the whole recovery tag, but the constant `ghostlink:recovery:` prefix
+  itself contains six BIP-39 words, so ~3.5% of random phrases failed. The
+  check now applies to the phrase-derived digest.
+- `package.json` `repository.url` points at the real repository.
+
+### Changed
+- `engines.node` is now `>=20.19.0` (was `>=18.0.0`, which never actually
+  worked — see the Node 18 note in `CONTRIBUTING.md`).
+- `electron`, `mobile` and `gmp-core` versions aligned with the root (`2.0.0`).
+- Electron pinned to `28.3.3` for reproducible desktop builds.
+
+## [2.0.0] - 2026-09-25
+
+The first release after a full security audit of every component. Summarised
+from the commit history; see `git log` for detail.
+
+### Security
+- Mesh handshake: fingerprints bound to public keys; impersonation during the
+  handshake blocked; ECDH failures fail closed instead of deriving keys from
+  public peer IDs.
+- Replay protection: the `NonceStore` replay guard is actually constructed and
+  wired in, backed by an append-only, individually authenticated session-key
+  claim log with atomic, durable writes.
+- Topology announcements are authenticated with Ed25519 — a peer can no longer
+  poison mesh-wide routing.
+- Local bridge: CSRF identity takeover via `/rotate-key` blocked, `Origin: null`
+  refused by default, rotate-key uses a CSPRNG and the full BIP-39 list.
+- File transfer is encrypted; workspace key spoofing fixed.
+- `start_https.sh` no longer serves the whole repository.
+- Web: `escapeHTML` fixed (was a no-op), HKDF-based v2 at-rest encryption.
+- Desktop: CSP and permission-request hardening; seed phrase stored in the OS
+  keychain.
+- Mobile: keys no longer stored unencrypted,
+  `storeKeyPair` throws on keystore failure, wiping the app clears the keystore
+  identity, QR-scan crash loop fixed.
+- Removed misleading UI: a false "Double Ratchet ACTIVE" panel and false
+  end-to-end labels. Security labels are now derived from real session state.
+- Guardian (social) recovery disabled until a real fragment transport exists.
+- Client-side licensing documented as an accepted limitation (`SECURITY.md`).
+
+### Added
+- Ghost Address: short, stable identifiers for every identity, shared by web
+  and mobile.
+- Real mobile transport with app-layer AES-GCM over direct WebRTC.
+- Shared BIP-39 wordlist, so phrases created on the web restore on mobile.
+- LAN discovery, NAT detection, hole punching and public-peer support in
+  gmp-core.
+
+### Removed
+- Non-functional Signal / KeyManager code and 31 dead files (~13k lines).
+
+[Unreleased]: https://github.com/kidus1234b/Ghostlink/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/kidus1234b/Ghostlink/releases/tag/v2.0.0

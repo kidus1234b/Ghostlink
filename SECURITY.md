@@ -55,6 +55,54 @@ never reports a guardian backup as complete. Use the recovery phrase.
 
 ## Reporting a vulnerability
 
-Please report security issues privately to ghostlink@proton.me rather than in a
-public issue. Include the affected component (web, desktop, mobile, gmp-core),
-the version or commit, and steps to reproduce.
+**Do not open a public issue, pull request, or discussion for a security
+problem.** Report it privately, by either:
+
+- email to **ghostlink@proton.me**, or
+- GitHub's private vulnerability reporting: *Security → Report a
+  vulnerability* on <https://github.com/kidus1234b/Ghostlink>.
+
+Please include:
+
+- the affected component (web, desktop, mobile, gmp-core) and version or
+  commit hash;
+- what an attacker needs (network position, a malicious peer, a malicious web
+  page, local access…) and what they gain;
+- steps to reproduce or a proof of concept — the smallest one that works.
+
+### Scope
+
+| Component | Location | In scope |
+|-----------|----------|----------|
+| Web app | `index.html`, `src/`, `app.bundle.js`, `vendor/` | Key handling, message/file encryption, XSS / CSP bypass, storage at rest, anything that weakens the P2P trust model |
+| Desktop app | `electron/` | Sandbox / context-isolation escapes, IPC abuse from the renderer, deep-link (`ghostlink://`) handling, the embedded mesh node and its local bridge |
+| Mobile app | `mobile/` | Key storage (Keychain / Keystore), recovery-phrase handling, QR / deep-link input, transport encryption |
+| Mesh core | `gmp-core/` | Handshake, replay protection, routing/topology authentication, the loopback bridge. The protocol's own threat model and known limits are in [`gmp-core/SECURITY.md`](gmp-core/SECURITY.md) — read it first; issues it already lists as out of scope are not vulnerabilities |
+| Build & release | `.github/workflows/`, package manifests | Anything that lets an outsider change what ships in a release |
+
+Out of scope: the accepted limitations above (client-side licensing), disabled
+features (guardian recovery), findings that require an already-compromised
+device, denial of service needing more bandwidth than the target has, and
+reports from automated scanners without a demonstrated impact.
+
+### What happens next — 90-day disclosure
+
+| When | What |
+|------|------|
+| within 3 working days | We acknowledge the report. |
+| within 10 working days | We confirm or reject it and give a severity assessment. |
+| as fast as severity requires | A fix is developed privately; you are kept informed and may review it. |
+| **90 days after the report**, or on release of the fix if sooner | Coordinated public disclosure: a GitHub Security Advisory, a CHANGELOG entry, and credit to you unless you prefer to stay anonymous. |
+
+If a fix needs longer than 90 days we will ask you, explain why, and agree on a
+new date — we will not sit on a report silently. If a vulnerability is already
+being exploited in the wild, we may disclose sooner with mitigations.
+
+We do not run a paid bug bounty. We will not pursue legal action against
+good-faith research that respects users' privacy, avoids accessing other
+people's data or disrupting their service, and follows this process.
+
+### Supported versions
+
+Security fixes land on `main` and ship in the next release. Only the latest
+release of each app (web, desktop, mobile) is supported.

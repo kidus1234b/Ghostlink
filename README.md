@@ -389,8 +389,9 @@ python3 -m http.server 8000
 ### Desktop (Electron)
 
 ```bash
+npm ci                                   # at the repo root (workspaces)
+npm run install:gmp && npm run build:gmp # the desktop app loads gmp-core/dist
 cd electron
-npm install
 npm start
 # Starts the Ghost Mesh node (port 49500) and its local bridge (127.0.0.1:3002)
 ```
