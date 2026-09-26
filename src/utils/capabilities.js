@@ -43,9 +43,31 @@
   var MESH_SETUP_UNAVAILABLE_REASON =
     'Yggdrasil setup is unverified against a real node and is disabled.';
 
+  /**
+   * Guardian (Shamir) social recovery: sending recovery fragments to peers.
+   *
+   * The receiving side never stored a fragment — the `fragment-sealed`
+   * handler decrypted it, showed a toast, and dropped it — so a sender could
+   * be shown "3/7 distributed ✓" while no peer held anything. That is a false
+   * assurance about the one thing a user relies on when their device is gone.
+   *
+   * Disabled on the sending and receiving side until there is a transport
+   * that delivers a fragment, stores it on the guardian's device, and can
+   * return it. Copying a fragment and handing it over by hand still works;
+   * fragments are restored by pasting them.
+   *
+   * Mirrors GUARDIAN_RECOVERY_AVAILABLE in mobile/src/utils/capabilities.js.
+   */
+  var GUARDIAN_RECOVERY_AVAILABLE = false;
+
+  var GUARDIAN_RECOVERY_UNAVAILABLE_REASON =
+    'Sending recovery fragments to peers is disabled: peers cannot store them yet';
+
   exports.GhostLink = exports.GhostLink || {};
   exports.GhostLink.Capabilities = {
     MESH_SETUP_AVAILABLE: MESH_SETUP_AVAILABLE,
-    MESH_SETUP_UNAVAILABLE_REASON: MESH_SETUP_UNAVAILABLE_REASON
+    MESH_SETUP_UNAVAILABLE_REASON: MESH_SETUP_UNAVAILABLE_REASON,
+    GUARDIAN_RECOVERY_AVAILABLE: GUARDIAN_RECOVERY_AVAILABLE,
+    GUARDIAN_RECOVERY_UNAVAILABLE_REASON: GUARDIAN_RECOVERY_UNAVAILABLE_REASON
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

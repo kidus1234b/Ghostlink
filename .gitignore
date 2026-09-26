@@ -4,9 +4,17 @@ license-test.html
 test-license.html
 gmp-core/data/*
 !gmp-core/data/public-peers.example.json
-*.md
-*.txt
-!**/requirements.txt
+
+# Only the archived design/audit reports stay out of the tree. The previous
+# blanket *.md/*.txt rule silently swallowed every new doc (CONTRIBUTING.md,
+# CHANGELOG.md, docs/*.md) at `git add` time. Scope the ignore instead.
+docs/archive/*.md
+docs/archive/*.txt
+
+# Local environment (real values). .env.example is the committed template.
+.env
+.env.*
+!.env.example
 
 # TLS certs / keys (mkcert + self-signed) — never commit private keys
 *.pem
@@ -47,6 +55,9 @@ CLAUDE.md
 .cursorrules
 gmp-core/dist/
 
+# electron-builder output (desktop installers / unpacked dirs)
+electron/dist/
+
 # Android release signing — losing these means never being able to update the
 # app, but committing them means anyone can sign a build as us.
 mobile/android/app/*.keystore
@@ -65,11 +76,8 @@ assets/app-screenshot.png
 *.apk
 *.aab
 
-# Track key docs despite the blanket *.md rule
-!README.md
-!SECURITY.md
+# One archived doc is referenced by the deployment guide and stays tracked.
 !docs/archive/DEPLOYMENT.md
-!gmp-core/PROTOCOL_SPEC.md
 mobile/android/app/src/main/res/drawable-*/
 
 # Generated React Native bundle. Committing it makes reviewers read minified
@@ -79,5 +87,6 @@ mobile/android/app/src/main/res/drawable-*/
 mobile/android/app/src/main/assets/index.android.bundle
 mobile/android/app/src/main/res/drawable-*/
 
-# Transient stub written by test/identity-derivation.test.mjs
+# Transient stubs written by tests that load mobile/src from Node
 mobile/.crypto-under-test-*.mjs
+mobile/.roundtrip-*.mjs

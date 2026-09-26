@@ -123,6 +123,20 @@ async function waitFor(check, timeoutMs = 8000, intervalMs = 150) {
     assert(outcome.transport === 'lan' || outcome.transport === 'direct',
       'the connection is direct, not relayed through a mesh that does not exist');
 
+    console.log('\n[4b] A beacon cannot borrow someone else\'s identity');
+    // Beacons are unauthenticated. Plant one claiming an unrelated NodeID but
+    // pointing at bob: the handshake proves bob is bob, so no LAN session may
+    // be reported for the claimed identity, and the stray link is dropped.
+    const impostorId = 'c'.repeat(128);
+    aliceDiscovery.peers.set(impostorId, { nodeId: impostorId, address: seen.address, port: seen.port, lastSeen: Date.now() });
+    const linksBefore = alice.node.connections.size;
+    const spoofed = await alice.connectByNodeId(impostorId);
+    assert(!(spoofed.connected && spoofed.transport === 'lan'),
+      `a beacon claiming another NodeID does not yield a LAN session (transport: ${spoofed.transport})`);
+    assert(await waitFor(() => alice.node.connections.size === linksBefore, 3000),
+      'the link to the peer that answered instead is dropped');
+    aliceDiscovery.peers.delete(impostorId);
+
     console.log('\n[5] Beacons are validated');
     const before = aliceDiscovery.peers.size;
     aliceDiscovery._onBeacon(Buffer.from('not json'), { address: '10.0.0.9' });

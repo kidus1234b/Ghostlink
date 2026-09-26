@@ -33,6 +33,10 @@ import {
 } from '../utils/recovery';
 import {distributor} from '../services/MobileDistributor';
 import {useSecureScreen} from '../utils/useSecureScreen';
+import {
+  GUARDIAN_RECOVERY_AVAILABLE,
+  GUARDIAN_RECOVERY_UNAVAILABLE_REASON,
+} from '../utils/capabilities';
 
 // ─── Constants ──────────────────────────────────────────────────
 const TABS = ['Backup', 'Verify', 'Restore'];
@@ -192,6 +196,12 @@ export default function RecoveryScreen({navigation}) {
   }, []);
 
   const handleGiveFragment = useCallback(async (frag, idx) => {
+    // No guardian can receive and hold a fragment yet, so there is nothing to
+    // send to — and nothing may be reported as held.
+    if (!GUARDIAN_RECOVERY_AVAILABLE) {
+      Alert.alert('Unavailable', GUARDIAN_RECOVERY_UNAVAILABLE_REASON);
+      return;
+    }
     setPendingFragment({frag, idx});
     setShowPeerPicker(true);
   }, []);
@@ -202,6 +212,10 @@ export default function RecoveryScreen({navigation}) {
 
       const {frag, idx} = pendingFragment;
       setShowPeerPicker(false);
+      if (!GUARDIAN_RECOVERY_AVAILABLE) {
+        setPendingFragment(null);
+        return;
+      }
       setDistributing(true);
 
       try {
@@ -249,26 +263,18 @@ export default function RecoveryScreen({navigation}) {
         } else {
           Clipboard.setString(frag.data);
           Vibration.vibrate(15);
-          setFragmentDist(prev => ({
-            ...prev,
-            [idx]: {distributed: true, peerName: peer.name || peer.id},
-          }));
           Alert.alert(
-            'Fallback',
-            `P2P not available. Fragment ${frag.id} copied to clipboard for manual sharing.`,
+            'Not sent',
+            `P2P not available. Fragment ${frag.id} was copied to the clipboard instead — it has not reached ${peer.name || peer.id}.`,
           );
         }
       } catch (e) {
         console.warn('[RecoveryScreen] Distribution error:', e);
         Clipboard.setString(frag.data);
         Vibration.vibrate(15);
-        setFragmentDist(prev => ({
-          ...prev,
-          [idx]: {distributed: true, peerName: peer.name || peer.id, fallback: true},
-        }));
         Alert.alert(
-          'Fallback',
-          `P2P distribution failed. Fragment ${frag.id} copied to clipboard.`,
+          'Not sent',
+          `P2P distribution failed. Fragment ${frag.id} was copied to the clipboard instead — it has not reached ${peer.name || peer.id}.`,
         );
       } finally {
         setDistributing(false);
@@ -367,10 +373,12 @@ export default function RecoveryScreen({navigation}) {
       .split(/\s+/)
       .filter((w) => w.length > 0);
 
-    if (validFrags.length < 3 && connectedPeers.length === 0) {
+    if (validFrags.length < 3 && (!GUARDIAN_RECOVERY_AVAILABLE || connectedPeers.length === 0)) {
       Alert.alert(
         'Need Fragments',
-        'Please paste at least 3 recovery fragments or connect to peers for P2P recovery.',
+        GUARDIAN_RECOVERY_AVAILABLE
+          ? 'Please paste at least 3 recovery fragments or connect to peers for P2P recovery.'
+          : 'Please paste at least 3 recovery fragments.',
       );
       return;
     }
@@ -409,7 +417,7 @@ export default function RecoveryScreen({navigation}) {
       }
     }
 
-    if (connectedPeers.length > 0 && distributor) {
+    if (GUARDIAN_RECOVERY_AVAILABLE && connectedPeers.length > 0 && distributor) {
       try {
         const tag = await deriveRecoveryTag(words);
         const blob = await distributor.recover(tag, connectedPeers, {k: 1});
@@ -438,6 +446,10 @@ export default function RecoveryScreen({navigation}) {
   }, [shamirInputs, connectedPeers, setIdentity, navigation, restoreSeedInput, distributor]);
 
   const handleRecoverFromPeers = useCallback(async () => {
+    if (!GUARDIAN_RECOVERY_AVAILABLE) {
+      Alert.alert('Unavailable', GUARDIAN_RECOVERY_UNAVAILABLE_REASON);
+      return;
+    }
     if (connectedPeers.length === 0) {
       Alert.alert('No Peers', 'Connect to peers first to recover via P2P.');
       return;
@@ -629,7 +641,8 @@ export default function RecoveryScreen({navigation}) {
                   </TouchableOpacity>
                 ) : (
                   <>
-                    {/* Distribution counter */}
+                    {/* Distribution counter — only meaningful when a guardian can hold a fragment */}
+                    {GUARDIAN_RECOVERY_AVAILABLE ? (
                     <View style={[styles.distCounter, {borderColor: safetyColor + '40'}]}>
                       <Text style={[styles.distCounterText, {color: safetyColor}]}>
                         {distributedCount}/7 distributed
@@ -642,6 +655,11 @@ export default function RecoveryScreen({navigation}) {
                             : 'Needs more'}
                       </Text>
                     </View>
+                    ) : (
+                      <Text style={[styles.restoreDesc, {color: theme.textSecondary}]}>
+                        {GUARDIAN_RECOVERY_UNAVAILABLE_REASON}. Copy each fragment and hand it to a different trusted person yourself — the app does not track who holds them.
+                      </Text>
+                    )}
 
                     {/* Fragment list */}
                     {fragments.map((frag, idx) => {
@@ -688,13 +706,16 @@ export default function RecoveryScreen({navigation}) {
                                 {backgroundColor: dist?.distributed ? theme.success + '20' : theme.bgSecondary},
                               ]}
                               onPress={() => handleGiveFragment(frag, idx)}
-                              disabled={distributing}>
+                              disabled={!GUARDIAN_RECOVERY_AVAILABLE || distributing}
+                              accessibilityLabel={GUARDIAN_RECOVERY_AVAILABLE ? undefined : GUARDIAN_RECOVERY_UNAVAILABLE_REASON}>
                               <Text
                                 style={[
                                   styles.fragActionText,
                                   {color: dist?.distributed ? theme.success : theme.textSecondary},
                                 ]}>
-                                {dist?.distributed ? 'SENT' : distributing ? 'SENDING...' : 'SEND P2P'}
+                                {!GUARDIAN_RECOVERY_AVAILABLE
+                                  ? 'P2P UNAVAILABLE'
+                                  : dist?.distributed ? 'SENT' : distributing ? 'SENDING...' : 'SEND P2P'}
                               </Text>
                             </TouchableOpacity>
                           </View>
@@ -887,10 +908,13 @@ export default function RecoveryScreen({navigation}) {
                     STEP 2: SHAMIR FRAGMENTS
                   </Text>
                   <Text style={[styles.restoreDesc, {color: theme.textSecondary}]}>
-                    Paste at least 3 Shamir fragments to reconstruct your identity, or recover from connected peers.
+                    {GUARDIAN_RECOVERY_AVAILABLE
+                      ? 'Paste at least 3 Shamir fragments to reconstruct your identity, or recover from connected peers.'
+                      : 'Paste at least 3 Shamir fragments to reconstruct your identity.'}
                   </Text>
 
                   {/* P2P Recovery Option */}
+                  {GUARDIAN_RECOVERY_AVAILABLE && (
                   <View style={[styles.p2pRecoveryCard, {backgroundColor: theme.accent + '10', borderColor: theme.accent + '30'}]}>
                     <View style={styles.p2pRecoveryHeader}>
                       <Text style={[styles.p2pRecoveryTitle, {color: theme.accent}]}>
@@ -914,10 +938,13 @@ export default function RecoveryScreen({navigation}) {
                       </Text>
                     </TouchableOpacity>
                   </View>
+                  )}
 
-                  <Text style={[styles.restoreDivider, {color: theme.textMuted}]}>
-                    — or paste fragments manually —
-                  </Text>
+                  {GUARDIAN_RECOVERY_AVAILABLE && (
+                    <Text style={[styles.restoreDivider, {color: theme.textMuted}]}>
+                      — or paste fragments manually —
+                    </Text>
+                  )}
 
                   {shamirInputs.map((val, idx) => (
                     <View key={idx} style={styles.shamirInputGroup}>

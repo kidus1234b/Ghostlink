@@ -177,7 +177,11 @@ console.log('\n[8] P2P recovery tag');
   // The tag travels the network, so it must not carry the phrase.
   const joined = phrase.join(' ');
   ok('tag does not contain the phrase', !tagA.includes(joined));
-  ok('tag contains no word from the phrase', !phrase.some(w => w.length > 3 && tagA.includes(w)));
+  // Check the digest, not the constant prefix: 'ghostlink:recovery:' itself
+  // contains BIP-39 words (ghost, host, link, cover, over, very), so matching
+  // against the whole tag failed for ~3.5% of random phrases.
+  const digest = tagA.slice(R.RECOVERY_TAG_PREFIX.length);
+  ok('tag contains no word from the phrase', !phrase.some(w => w.length > 3 && digest.includes(w)));
   ok('tag is a fixed-length digest', tagA.length === R.RECOVERY_TAG_PREFIX.length + 32);
 }
 

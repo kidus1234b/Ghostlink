@@ -76,6 +76,35 @@ ok(settings.includes('visible={MESH_SETUP_AVAILABLE && showMeshSetup}'),
 ok(GUARDIAN_RECOVERY_AVAILABLE === false,
    'Guardian recovery is marked unavailable in this build');
 
+// Nobody may be told a fragment is held when no guardian can hold one: the
+// gate has to cover sending, the status shown, and the service itself.
+const recovery = read('src/screens/RecoveryScreen.js');
+const giveFn = recovery.slice(recovery.indexOf('const handleGiveFragment'), recovery.indexOf('const handleSelectPeer'));
+ok(/if \(!GUARDIAN_RECOVERY_AVAILABLE\) \{[\s\S]*?return;/.test(giveFn),
+   'Sending a fragment to a peer is refused while guardian recovery is unavailable');
+ok(recovery.includes('disabled={!GUARDIAN_RECOVERY_AVAILABLE || distributing}'),
+   'The SEND P2P control is disabled while guardian recovery is unavailable');
+ok(recovery.includes('{GUARDIAN_RECOVERY_AVAILABLE ? (\n                    <View style={[styles.distCounter'),
+   'The "N/7 distributed · Adequate" status is not shown while nothing can be distributed');
+const selectFn = recovery.slice(recovery.indexOf('const handleSelectPeer'), recovery.indexOf('const handleSelectPeer') + 4000);
+ok((selectFn.match(/distributed: true/g) || []).length === 1,
+   'Only a confirmed P2P store marks a fragment distributed — the clipboard fallbacks do not');
+const recoverFn = recovery.slice(recovery.indexOf('const handleRecoverFromPeers'), recovery.indexOf('const handleRecoverFromPeers') + 300);
+ok(recoverFn.includes('if (!GUARDIAN_RECOVERY_AVAILABLE)'),
+   'Recover-from-peers is refused while guardian recovery is unavailable');
+ok(recovery.includes('if (GUARDIAN_RECOVERY_AVAILABLE && connectedPeers.length > 0 && distributor)'),
+   'The fragment restore does not fall through to asking peers');
+
+const dist = read('src/services/MobileDistributor.js');
+ok(/async distribute\([^)]*\) \{\s*if \(!GUARDIAN_RECOVERY_AVAILABLE\)/.test(dist),
+   'MobileDistributor.distribute() refuses while guardian recovery is unavailable');
+ok(/async recover\([^)]*\) \{\s*if \(!GUARDIAN_RECOVERY_AVAILABLE\)/.test(dist),
+   'MobileDistributor.recover() refuses while guardian recovery is unavailable');
+ok(/if \(!GUARDIAN_RECOVERY_AVAILABLE\) \{\s*return \{type: MSG\.STORE_ACK, id: msg\.id, payload: \{ok: false\}\}/.test(dist),
+   'An inbound store is refused, not acknowledged as held');
+ok(dist.includes("ack.payload?.ok !== true"),
+   'distribute() counts only an explicit ok acknowledgement as stored');
+
 // ── The gate must be honest about itself ───────────────────────────────────
 const caps = read('src/utils/capabilities.js');
 for (const flag of ['CALLS_AVAILABLE', 'MESH_SETUP_AVAILABLE', 'GUARDIAN_RECOVERY_AVAILABLE']) {

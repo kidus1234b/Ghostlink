@@ -886,7 +886,7 @@
       if (typeof window === 'undefined' || !window.ghostlink?.ghostMesh) return false;
       
       try {
-        const res = await window.ghostlink.ghostMesh.dial(yggdrasilAddress, 49500);
+        const res = await window.ghostlink.ghostMesh.dial(yggdrasilAddress); // main.js supplies GHOSTMESH_PORT
         if (res.success) {
           const connId = res.connId;
           const identMsg = {

@@ -17,27 +17,40 @@
     "build:desktop:linux": "cd electron && npm run build:linux",
     "install:mobile": "cd mobile && npm install",
     "install:desktop": "cd electron && npm install",
-    "install:all": "npm run install:mobile && npm run install:desktop",
+    "install:all": "npm run install:mobile && npm run install:desktop && npm run install:gmp",
     "build": "esbuild index-entry.js --bundle --minify --format=esm --external:crypto --external:fs --external:path --external:os --external:stream --outfile=app.bundle.js",
     "build:vendor": "node build-vendor.js",
-    "test": "node test/debug-console.test.js && node test/wordlist-parity.test.mjs && node test/phrase-roundtrip.test.mjs && node test/ghost-address-kdf.test.mjs && node test/send-failure.test.mjs && (cd mobile && node test/pbkdf2-native-parity.test.mjs) && node test/at-rest-crypto.test.mjs && node test/markdown-escaping.test.js && node test/mesh-handshake.test.js && node test/message-vault.test.js && node test/message-chain.test.js && node test/peer-lifecycle.test.js && node test/mesh-connector.test.js && node test/inbound-hardening.test.js && node test/file-transfer.test.js && node test/license-storage.test.js && node test/https-server-scope.test.js && node gmp-core/test/ghost-address-test.js && node gmp-core/test/ghost-address-parity-test.js && node gmp-core/test/bridge-ghost-address-test.js && node gmp-core/test/lan-discovery-test.js"
+    "install:gmp": "npm ci --prefix gmp-core --no-audit --no-fund",
+    "build:gmp": "npm run build --prefix gmp-core",
+    "pretest": "npm run install:gmp && npm run build:gmp",
+    "test": "npm run test:web",
+    "test:web": "node test/debug-console.test.js && node test/wordlist-parity.test.mjs && node test/phrase-roundtrip.test.mjs && node test/ghost-address-kdf.test.mjs && node test/send-failure.test.mjs && (cd mobile && node test/pbkdf2-native-parity.test.mjs) && node test/at-rest-crypto.test.mjs && node test/markdown-escaping.test.js && node test/mesh-handshake.test.js && node test/message-vault.test.js && node test/message-chain.test.js && node test/peer-lifecycle.test.js && node test/mesh-connector.test.js && node test/inbound-hardening.test.js && node test/file-transfer.test.js && node test/license-storage.test.js && node test/guardian-gate.test.js && node test/https-server-scope.test.js && node gmp-core/test/ghost-address-test.js && node gmp-core/test/ghost-address-parity-test.js && node gmp-core/test/bridge-ghost-address-test.js && node gmp-core/test/lan-discovery-test.js",
+    "test:gmp": "npm run test --prefix gmp-core",
+    "test:mobile": "npm run test --prefix mobile",
+    "ci": "npm run install:gmp && npm run build:gmp && npm run build && npm run test:web && npm run test:gmp && npm run test:mobile"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ghostlink/ghostlink"
+    "url": "https://github.com/kidus1234b/Ghostlink"
   },
   "license": "GPL-3.0",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.19.0"
   },
   "dependencies": {
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@noble/ciphers": "^1.2.1",
+    "@noble/hashes": "^1.4.0",
     "esbuild": "^0.28.1",
     "htm": "^3.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tweetnacl": "^1.0.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "electron@28.3.3": true
   }
 }

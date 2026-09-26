@@ -45,8 +45,8 @@ cd mobile/android
 Output: `mobile/android/app/build/outputs/apk/release/app-release.apk`
 
 Signing comes from `android/keystore.properties` — see `android/KEYSTORE.md`.
-Without that file the build falls back to the Android debug key and the APK
-**must not be distributed**.
+Without that file the release build **fails** ("Release build refused") — it
+never falls back to the public Android debug key. Debug builds do not need it.
 
 ### Before every release build: bump versionCode
 

@@ -106,8 +106,8 @@ Single HTML file with React 18 + Babel transpilation. No build step needed.
 - Minimize to system tray with badge count
 - Deep link protocol (`ghostlink://`)
 - Auto-update (download + install from GitHub Releases)
-- Signaling server embedded — starts automatically on port 3001
-- Persistent window position and pop-out chat windows
+- Embedded Ghost Mesh node (mesh port 49500, local bridge on 127.0.0.1:3002)
+- Persistent window position
 - Secure storage via `electron-store`
 - Strict Content-Security-Policy headers
 
@@ -227,15 +227,6 @@ relay you have to run.
 |`messages`|0 |Reliable, ordered|Chat messages          |
 |`files`   |1 |Reliable, ordered|Encrypted file transfer|
 |`presence`|2 |Unreliable       |Typing indicators      |
-
-### Signaling Server — `signaling-core.js`
-
-Lightweight WebSocket relay that only passes connection info — never sees message content.
-
-- **Message types:** `join`, `join-room`, `leave-room`, `peer-list`, `offer`, `answer`, `ice-candidate`, `relay`
-- **Deployment:** Embedded in Electron (auto-start, port 3001) or standalone on VPS (`node server/index.js`)
-- **Auto-discovery:** Web app probes `localhost` → `same-host` → `saved URL`
-- **Security:** Rate limiting (200/min), handshake timeout (15s), origin whitelist, max 64KB messages, max 100 peers/room
 
 ### NAT Traversal
 
@@ -398,10 +389,11 @@ python3 -m http.server 8000
 ### Desktop (Electron)
 
 ```bash
-cd desktop
-npm install
+npm ci                                   # at the repo root (workspaces)
+npm run install:gmp && npm run build:gmp # the desktop app loads gmp-core/dist
+cd electron
 npm start
-# Signaling server auto-starts on port 3001
+# Starts the Ghost Mesh node (port 49500) and its local bridge (127.0.0.1:3002)
 ```
 
 ### Mobile (React Native)
@@ -418,28 +410,15 @@ cd ios && pod install && cd ..
 npx react-native run-ios
 ```
 
-### Signaling Server (standalone)
-
-```bash
-cd server
-npm install
-node index.js
-# Runs on port 3001
-```
-
 ### VPS Deployment
 
 ```bash
 # Clone on server
 git clone https://github.com/kidus1234b/Ghostlink.git
 
-# Web app via Nginx
-sudo cp Ghostlink/index.html /var/www/html/ghostlink/index.html
-
-# Signaling relay
-cd Ghostlink/server
-npm install
-node index.js &
+# Web app via Nginx (the page needs its bundle and vendor files alongside it)
+sudo mkdir -p /var/www/html/ghostlink
+sudo cp -r Ghostlink/index.html Ghostlink/app.bundle.js Ghostlink/vendor Ghostlink/src Ghostlink/shared /var/www/html/ghostlink/
 
 # Nginx config
 server {
@@ -451,13 +430,6 @@ server {
     ssl_certificate /etc/letsencrypt/live/ghostlink.yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/ghostlink.yourdomain.com/privkey.pem;
 
-    # WebSocket proxy for signaling
-    location /ws {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $websocket;
-        proxy_set_header Connection "upgrade";
-    }
 }
 ```
 

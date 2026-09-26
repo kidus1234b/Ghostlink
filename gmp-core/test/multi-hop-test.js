@@ -86,9 +86,9 @@ async function runTests() {
 async function testTopologyPropagationAndE2E() {
   console.log('\n=== Test 1, 2, 3: Topology, E2E Encryption, and Key Isolation ===');
 
-  const nodeA = new GMPNode({ port: 49800 });
-  const nodeB = new GMPNode({ port: 49801 });
-  const nodeC = new GMPNode({ port: 49802 });
+  const nodeA = new GMPNode({ port: 0 });
+  const nodeB = new GMPNode({ port: 0 });
+  const nodeC = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('seed A');
   await nodeB.loadIdentity('seed B');
@@ -99,8 +99,8 @@ async function testTopologyPropagationAndE2E() {
   await nodeC.listen();
 
   // A connects to B, B connects to C
-  await nodeA.dial('127.0.0.1', 49801);
-  await nodeB.dial('127.0.0.1', 49802);
+  await nodeA.dial('127.0.0.1', nodeB.port);
+  await nodeB.dial('127.0.0.1', nodeC.port);
 
   // Give topology announcements time to propagate
   await delay(600);
@@ -189,9 +189,9 @@ async function testTopologyPropagationAndE2E() {
 async function testLoopPrevention() {
   console.log('\n=== Test 4: Loop Prevention ===');
 
-  const nodeA = new GMPNode({ port: 49810 });
-  const nodeB = new GMPNode({ port: 49811 });
-  const nodeC = new GMPNode({ port: 49812 });
+  const nodeA = new GMPNode({ port: 0 });
+  const nodeB = new GMPNode({ port: 0 });
+  const nodeC = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('loop A');
   await nodeB.loadIdentity('loop B');
@@ -201,9 +201,9 @@ async function testLoopPrevention() {
   await nodeB.listen();
   await nodeC.listen();
 
-  await nodeA.dial('127.0.0.1', 49811); // A-B
-  await nodeB.dial('127.0.0.1', 49812); // B-C
-  await nodeC.dial('127.0.0.1', 49810); // C-A
+  await nodeA.dial('127.0.0.1', nodeB.port); // A-B
+  await nodeB.dial('127.0.0.1', nodeC.port); // B-C
+  await nodeC.dial('127.0.0.1', nodeA.port); // C-A
 
   await delay(600);
 
@@ -232,11 +232,11 @@ async function testLoopPrevention() {
 async function testTTLExpiry() {
   console.log('\n=== Test 5: TTL Expiry ===');
 
-  const nodeA = new GMPNode({ port: 49820 });
-  const nodeB = new GMPNode({ port: 49821 });
-  const nodeC = new GMPNode({ port: 49822 });
-  const nodeD = new GMPNode({ port: 49823 });
-  const nodeE = new GMPNode({ port: 49824 });
+  const nodeA = new GMPNode({ port: 0 });
+  const nodeB = new GMPNode({ port: 0 });
+  const nodeC = new GMPNode({ port: 0 });
+  const nodeD = new GMPNode({ port: 0 });
+  const nodeE = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('ttl A');
   await nodeB.loadIdentity('ttl B');
@@ -250,10 +250,10 @@ async function testTTLExpiry() {
   await nodeD.listen();
   await nodeE.listen();
 
-  await nodeA.dial('127.0.0.1', 49821); // A-B
-  await nodeB.dial('127.0.0.1', 49822); // B-C
-  await nodeC.dial('127.0.0.1', 49823); // C-D
-  await nodeD.dial('127.0.0.1', 49824); // D-E
+  await nodeA.dial('127.0.0.1', nodeB.port); // A-B
+  await nodeB.dial('127.0.0.1', nodeC.port); // B-C
+  await nodeC.dial('127.0.0.1', nodeD.port); // C-D
+  await nodeD.dial('127.0.0.1', nodeE.port); // D-E
 
   await delay(800);
   
@@ -302,8 +302,8 @@ async function testTTLExpiry() {
 async function testNoRoute() {
   console.log('\n=== Test 6: No Route Handling ===');
 
-  const nodeA = new GMPNode({ port: 49830 });
-  const nodeB = new GMPNode({ port: 49831 });
+  const nodeA = new GMPNode({ port: 0 });
+  const nodeB = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('noroute A');
   await nodeB.loadIdentity('noroute B');
@@ -311,7 +311,7 @@ async function testNoRoute() {
   await nodeA.listen();
   await nodeB.listen();
 
-  await nodeA.dial('127.0.0.1', 49831);
+  await nodeA.dial('127.0.0.1', nodeB.port);
   await delay(200);
 
   let noRouteEmitted = false;
@@ -339,9 +339,9 @@ async function testNoRoute() {
 async function testLinkWithdrawal() {
   console.log('\n=== Test 7: Link Withdrawal Propagation ===');
 
-  const nodeA = new GMPNode({ port: 49840 });
-  const nodeB = new GMPNode({ port: 49841 });
-  const nodeC = new GMPNode({ port: 49842 });
+  const nodeA = new GMPNode({ port: 0 });
+  const nodeB = new GMPNode({ port: 0 });
+  const nodeC = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('withdraw A');
   await nodeB.loadIdentity('withdraw B');
@@ -351,8 +351,8 @@ async function testLinkWithdrawal() {
   await nodeB.listen();
   await nodeC.listen();
 
-  await nodeA.dial('127.0.0.1', 49841); // A-B
-  await nodeB.dial('127.0.0.1', 49842); // B-C
+  await nodeA.dial('127.0.0.1', nodeB.port); // A-B
+  await nodeB.dial('127.0.0.1', nodeC.port); // B-C
 
   await delay(600);
 
@@ -388,13 +388,13 @@ async function testLinkWithdrawal() {
 async function testForwardingRateLimit() {
   console.log('\n=== Test 8: Forwarding Rate Limit ===');
 
-  const nodeA = new GMPNode({ port: 49850 });
+  const nodeA = new GMPNode({ port: 0 });
   const nodeB = new GMPNode({
-    port: 49851,
+    port: 0,
     forwardRateLimitMax: 10,
     forwardRateLimitWindowMs: 5000
   });
-  const nodeC = new GMPNode({ port: 49852 });
+  const nodeC = new GMPNode({ port: 0 });
 
   await nodeA.loadIdentity('ratelimit A');
   await nodeB.loadIdentity('ratelimit B');
@@ -404,8 +404,8 @@ async function testForwardingRateLimit() {
   await nodeB.listen();
   await nodeC.listen();
 
-  await nodeA.dial('127.0.0.1', 49851); // A-B
-  await nodeB.dial('127.0.0.1', 49852); // B-C
+  await nodeA.dial('127.0.0.1', nodeB.port); // A-B
+  await nodeB.dial('127.0.0.1', nodeC.port); // B-C
 
   await delay(600);
 

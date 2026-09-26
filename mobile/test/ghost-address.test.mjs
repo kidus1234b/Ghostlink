@@ -11,12 +11,14 @@ Object.defineProperty(globalThis, 'crypto', {value: webcrypto, configurable: tru
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? (pass++, console.log(`  ok   ${n}`)) : (fail++, console.log(`  FAIL ${n}`)); };
 
-const ROOT = '/home/shadow/Documents/Ghostlink';
+// Repo root, relative to this file — a hardcoded absolute path only ever
+// worked on one developer's machine.
+const ROOT = new URL('../../', import.meta.url);
 
 // The reference: gmp-core, exactly as the desktop and web app use it.
 const {ghostAddressFromNodeId: refAddress, normalizeGhostAddress: refNormalize} =
-  await import(`${ROOT}/gmp-core/dist/ghost-address.js`);
-const {deriveIdentityFromSeedPhrase} = await import(`${ROOT}/gmp-core/dist/identity.js`);
+  await import(new URL('gmp-core/dist/ghost-address.js', ROOT).href);
+const {deriveIdentityFromSeedPhrase} = await import(new URL('gmp-core/dist/identity.js', ROOT).href);
 
 // Mobile's port, with its RN-only import stubbed.
 const prep = (rel, out, reps = []) => {
