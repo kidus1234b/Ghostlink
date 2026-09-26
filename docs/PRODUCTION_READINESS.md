@@ -27,7 +27,7 @@ No cryptographic code, CSP directive or Electron sandbox flag was changed.
 |---|---------|--------|
 | 1 | Fresh clone → `npm test` fails (gmp-core `dist/` not built; `@noble/hashes` / `@noble/ciphers` not declared at the root) | **Fixed** |
 | 2 | Root `.gitignore` ignores every `*.md` / `*.txt`, so new docs are silently skipped by `git add` | **Fixed** |
-| 3 | No CI/CD (`.github/workflows/` empty) | **Fixed** |
+| 3 | No CI/CD (`.github/workflows/` empty) | **Fixed, then withdrawn** — workflows kept locally but removed from the repo on request (see §3) |
 | 4 | Root `repository.url` wrong (`ghostlink/ghostlink`) | **Fixed** |
 | 5 | Version drift (root 2.0.0, others 1.0.0) and no CHANGELOG | **Fixed** |
 | 6 | Electron packaging: `../index.html` / `../src/**` in `build.files` | **Fixed** (verified on Linux; Windows/macOS not yet run — see remaining work) |
@@ -37,6 +37,7 @@ No cryptographic code, CSP directive or Electron sandbox flag was changed.
 | 10 | *New:* desktop mesh node calls the global `crypto`, which Electron 28's main process does not have | **Not fixed** — needs a decision, see below |
 | 11 | *New:* LAN-discovered peers were never resolvable or dialable — caught by CI, where multicast works | **Fixed** |
 | 12 | *New:* mobile test imported gmp-core from a hardcoded `/home/shadow/...` path | **Fixed** |
+| 13 | *New:* claim-checkpoint Test 7 timed a by-design inline write; flaky on slow runners | **Fixed** |
 
 ### 1. Fresh clone → `npm test` fails
 
@@ -63,6 +64,13 @@ The blanket `*.md` / `*.txt` rules are replaced with `docs/archive/*.md` and
 `.env` / `.env.*` (except `.env.example`) and `electron/dist/`.
 
 ### 3. CI/CD
+
+> **Status (2026-09-26):** after merging, the maintainer removed
+> `.github/workflows/` from the repository (the files are kept locally and
+> gitignored). Nothing below runs on GitHub until they are re-added with
+> `git add -f .github/workflows`. Until then `npm run ci` is the only gate.
+> In its short life CI caught three real defects the local runs missed
+> (findings 11, 12 and 13), which is the case for turning it back on.
 
 - **`.github/workflows/ci.yml`** runs on every push and PR to `main`.
   - **test** (Node 20 and 22): `npm ci`, `install:gmp`, `build:gmp`, `build`,
@@ -253,6 +261,23 @@ re-run from a clone with the original checkout hidden by a tmpfs mount
 with the same error CI showed. `git grep /home/` finds no other hardcoded
 paths in code. `gmp-core/PROTOCOL_SPEC.md` still has dead `file:///home/killer/...`
 links in its threat table, which is cosmetic.
+
+### 13. Claim-checkpoint timing test measured the wrong thing — FIXED
+
+`claim-checkpoint-test.js` Test 7 failed on the Node 20 runner with
+`worst 95.7 ms` against a 50 ms bound. Its loop made 60,000 claims without ever
+yielding. A deferred checkpoint cannot run in that situation, so by design
+(`CHECKPOINT_CEILING_RECORDS`) the claim log wrote one inline at claim 50,000.
+The test was therefore timing the checkpoint write itself: under 50 ms on a
+fast machine, over it on a busy runner.
+
+The test now yields every 500 claims, the way a node handling handshakes does.
+It also checks the property structurally: it stats the checkpoint file around
+every `claimSessionKey()` call and asserts that no single call changed it.
+Timing alone could not catch an inline write on a fast machine; a mutation that
+forces inline checkpoints (37 ms, under the bound) passed the old check.
+It now fails with "expected 0, got 2". On the real code the worst claim is
+7–12 ms. The claim-log code is unchanged.
 
 ## How to apply and verify
 

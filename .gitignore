@@ -90,3 +90,9 @@ mobile/android/app/src/main/res/drawable-*/
 # Transient stubs written by tests that load mobile/src from Node
 mobile/.crypto-under-test-*.mjs
 mobile/.roundtrip-*.mjs
+
+# Kept locally, not published: AI agent skill files and the GitHub Actions
+# workflows (removed from the repo on request — re-add with `git add -f` to
+# turn CI back on).
+.agents/
+.github/workflows/

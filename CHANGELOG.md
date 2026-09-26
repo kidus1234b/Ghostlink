@@ -30,6 +30,10 @@ number (see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md#versioni
   `test:mobile`, `ci`.
 
 ### Fixed
+- `claim-checkpoint-test.js` Test 7 no longer times a checkpoint written inline
+  by design, which made it fail on slower machines. It now yields like a real
+  node, and it detects inline checkpoint writes structurally instead of by
+  timing alone.
 - `mobile/test/ghost-address.test.mjs` imported gmp-core from a hardcoded
   `/home/shadow/...` path, so it only passed on one machine. It now resolves
   the repo root relative to itself.
@@ -73,6 +77,11 @@ number (see [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md#versioni
   worked — see the Node 18 note in `CONTRIBUTING.md`).
 - `electron`, `mobile` and `gmp-core` versions aligned with the root (`2.0.0`).
 - Electron pinned to `28.3.3` for reproducible desktop builds.
+
+### Removed
+- `.github/workflows/` (CI and release) and `.agents/skills/` are no longer
+  published in the repository. Both are kept locally and gitignored.
+  `npm run ci` runs the full check locally.
 
 ## [2.0.0] - 2026-09-25
 

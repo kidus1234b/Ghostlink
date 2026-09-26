@@ -237,17 +237,37 @@ function testThresholdBoundsUncleanRestart() {
 }
 
 /** The checkpoint write must stay off the handshake path. */
-function testCheckpointDoesNotStallClaims() {
+async function testCheckpointDoesNotStallClaims() {
   console.log('\n=== Test 7: A checkpoint write does not stall claimSessionKey ===');
   const stateFile = freshFile();
   const store = new NonceStore({ stateFile, seedPhrase: SEED });
 
+  // Yield between batches, as a node handling handshakes does. A loop that
+  // never yields cannot run the deferred write at all, so it hits the ceiling
+  // and pays for one checkpoint inline by design (CHECKPOINT_CEILING_RECORDS);
+  // timing that loop measured the write itself — tens of ms on a fast machine,
+  // ~96 ms on a busy CI runner — not whether claims stay off it.
+  // The timing bound alone cannot tell "deferred" from "inline but fast": on
+  // a quick machine an inline checkpoint also fits under it. So also watch the
+  // checkpoint file itself — if it changes across a single synchronous
+  // claimSessionKey() call, that claim wrote it. (Stat'd outside the timing.)
+  const ckpt = ckptOf(stateFile);
+  const ckptStamp = () => {
+    const st = fs.statSync(ckpt, { throwIfNoEntry: false, bigint: true });
+    return st ? `${st.ino}:${st.mtimeNs}:${st.size}` : '';
+  };
+  let inlineWrites = 0;
   const timings = [];
   for (let i = 0; i < 60_000; i++) {
+    const before = ckptStamp();
     const t = process.hrtime.bigint();
     store.claimSessionKey(peer, fp(i));
     timings.push(Number(process.hrtime.bigint() - t) / 1e6);
+    if (ckptStamp() !== before) inlineWrites++;
+    if (i % 500 === 499) await new Promise((r) => setImmediate(r));
   }
+  // Written by the deferred timer during the loop, not by close() below.
+  const deferredCheckpoint = fs.existsSync(ckptOf(stateFile));
   store.close();
 
   timings.sort((x, y) => x - y);
@@ -255,14 +275,15 @@ function testCheckpointDoesNotStallClaims() {
   const worst = timings[timings.length - 1];
   console.log(`      median ${median.toFixed(3)} ms   worst ${worst.toFixed(1)} ms   over 60,000 claims`);
 
+  assert(deferredCheckpoint, 'A checkpoint was written while claims continued');
+  assertEqual(inlineWrites, 0, 'No claimSessionKey() call wrote the checkpoint itself');
   // A checkpoint of tens of thousands of fingerprints takes tens of
   // milliseconds. Inline, it would land on one unlucky claim.
   assert(worst < 50, `No claim paid for the checkpoint write (worst ${worst.toFixed(1)} ms)`);
-  assert(median < 1, `Median claim stays sub-millisecond (${median.toFixed(3)} ms)`);
   dropDir();
 }
 
-function run() {
+async function run() {
   console.log('╔════════════════════════════════════════════════════════════╗');
   console.log('║  GMP — Claim Checkpoint Tests                              ║');
   console.log('╚════════════════════════════════════════════════════════════╝');
@@ -273,7 +294,7 @@ function run() {
     testCheckpointAheadOfLog();
     testConcurrentAppendIsNotSkipped();
     testThresholdBoundsUncleanRestart();
-    testCheckpointDoesNotStallClaims();
+    await testCheckpointDoesNotStallClaims();
   } catch (err) {
     console.error('\nTest suite error:', err);
     dropDir();

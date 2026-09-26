@@ -62,9 +62,9 @@ npm run mobile:android          # React Native, needs the Android SDK
 | `npm run test:mobile` | Mobile (plain Node, no device needed) | |
 | `npm run ci` | Everything CI runs, in CI's order | install:gmp → build:gmp → build → web → gmp → mobile |
 
-All of it must pass before a PR is merged. CI runs the same commands on
-Node 20 and 22 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) plus
-an `electron-builder --dir` packaging check.
+All of it must pass before a PR is merged. `npm run ci` is the gate: the
+GitHub Actions workflows are not published in the repository at the moment, so
+nothing runs these checks for you — run them locally before opening a PR.
 
 ## The committed web bundle
 
